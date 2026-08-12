@@ -271,7 +271,10 @@ def test_research_agent_runs_real_collector_contract(client, monkeypatch):
 def test_mission_control_renders(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "Mission Control" in response.text
+    assert "Порядок, который работает на ваш бизнес" in response.text
+    assert 'content="http://testserver/static/og.png"' in response.text
+    assert client.get("/mission-control").status_code == 200
+    assert "Mission Control" in client.get("/mission-control").text
 
 
 def test_unified_inbox_content_and_operations_views(client):
@@ -655,3 +658,149 @@ def test_request_analyst_llm_uses_strict_structured_output(monkeypatch):
     assert result["should_create_improvement"] is True
     assert captured["payload"]["text"]["format"]["strict"] is True
     assert captured["payload"]["store"] is False
+
+
+def test_public_website_lead_enters_crm_inbox_and_hot_queue(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "hot_lead_score", 70)
+    payload = {
+        "name": "Анна Петрова",
+        "company": "УК Публичный тест",
+        "phone": "+7 999 123-45-67",
+        "email": "public-hot@example.com",
+        "service": "business_center",
+        "object_area": 5000,
+        "budget": 400000,
+        "urgency": "today",
+        "message": "Нужен быстрый запуск ежедневной уборки",
+        "consent": True,
+        "utm_source": "yandex",
+        "utm_medium": "cpc",
+        "utm_campaign": "public-hot-test",
+    }
+    response = client.post("/api/public/leads", json=payload)
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "qualified"
+    assert result["owner_notification"] in {"queued", "credentials_required"}
+    leads = client.get("/api/records?record_type=lead").json()
+    lead = next(row for row in leads if row["id"] == result["lead_id"])
+    assert lead["source"] == "yandex"
+    assert lead["data"]["utm_campaign"] == "public-hot-test"
+    inbox = client.get("/api/inbox?channel=web").json()
+    assert any(row["record_id"] == result["lead_id"] for row in inbox)
+    tasks = client.get("/api/tasks").json()
+    assert any(row["agent_type"] == "sales" and row["payload"].get("record_id") == result["lead_id"] for row in tasks)
+
+
+def test_public_lead_requires_contact_and_consent(client):
+    base = {"name": "Тест", "service": "commercial", "urgency": "month", "consent": True}
+    assert client.post("/api/public/leads", json=base).status_code == 422
+    assert client.post("/api/public/leads", json={**base, "phone": "+7 999 000-00-00", "consent": False}).status_code == 422
+
+
+def test_published_website_news_and_media_workflow(client):
+    content = client.post("/api/marketing/content", json={"channel": "website", "title": "Запустили новый стандарт", "body": "Проверяем качество по единому регламенту.", "status": "draft"}).json()
+    published = client.patch(f"/api/marketing/content/{content['id']}", json={"status": "published", "metrics": {"cover_url": "/static/cleaning-hero.png"}})
+    assert published.status_code == 200
+    asset = client.post("/api/marketing/media-assets", json={"kind": "image", "title": "Визуал новости", "prompt": "Минималистичный чистый интерьер"}).json()
+    assert asset["provider"] == "codex_imagegen_workflow"
+    completed = client.patch(f"/api/marketing/media-assets/{asset['id']}", headers={"X-Role": "manager"}, json={"status": "published", "public_url": "/static/cleaning-hero.png", "alt_text": "Чистый интерьер"})
+    assert completed.status_code == 200
+    site = client.get("/api/public/site").json()
+    assert any(row["id"] == content["id"] for row in site["news"])
+    assert any(row["id"] == asset["id"] for row in site["media"])
+
+
+def test_marketing_experiment_attribution_and_manual_activation(client):
+    experiment = client.post("/api/marketing/experiments", headers={"X-Role": "manager"}, json={
+        "title": "Спрос на уборку БЦ",
+        "channel": "yandex_direct",
+        "hypothesis": "Уточнение SLA увеличит число квалифицированных лидов",
+        "audience": "Управляющие бизнес-центров",
+        "offer": "Аудит объекта до расчёта",
+        "primary_metric": "qualified_leads",
+        "budget_limit": 0,
+        "utm_campaign": "experiment-attribution-test",
+    }).json()
+    waiting = client.post(f"/api/marketing/experiments/{experiment['id']}/launch", headers={"X-Role": "manager"}, json={}).json()
+    assert waiting["status"] == "approved_waiting_manual_activation"
+    started = client.post(f"/api/marketing/experiments/{experiment['id']}/launch", headers={"X-Role": "manager"}, json={"external_campaign_id": "manual-ya-123"}).json()
+    assert started["status"] == "running"
+    assert started["automatic_spend"] is False
+    client.post("/api/public/leads", json={"name": "Иван Тест", "phone": "+7 999 111-22-33", "service": "business_center", "urgency": "week", "consent": True, "utm_campaign": "experiment-attribution-test"})
+    analytics = client.get(f"/api/marketing/experiments/{experiment['id']}/analytics").json()
+    assert analytics["leads"] == 1
+
+
+def test_marketing_invoice_routes_to_owner_without_payment(client):
+    provider = client.post("/api/marketing/providers", json={"name": "Рекламное агентство Тест", "platform": "agency", "contact": "manager@example.com"}).json()
+    requisites = client.post("/api/company/requisites", json={
+        "profile_name": "Основные тестовые",
+        "legal_name": "ООО Тест Клининг",
+        "inn": "7701234567",
+        "kpp": "770101001",
+        "settlement_account": "40702810000000000001",
+        "bank_name": "Тестовый банк",
+        "bic": "044525001",
+        "correspondent_account": "30101810000000000001",
+    }).json()
+    invoice = client.post("/api/marketing/invoices", headers={"X-Role": "manager"}, json={
+        "provider_id": provider["id"],
+        "requisites_profile_id": requisites["id"],
+        "invoice_number": "MKT-001",
+        "amount": 25000,
+        "description": "Тест рекламной гипотезы",
+    }).json()
+    assert invoice["status"] == "pending_approval"
+    assert invoice["automatic_payment"] is False
+    assert invoice["telegram_notification"] in {"queued", "credentials_required"}
+    decision = client.post(f"/api/approvals/{invoice['approval_id']}/approve", json={"note": "Проверено"}).json()
+    assert decision["execution"] == "not_executed"
+    saved = next(row for row in client.get("/api/marketing/invoices", headers={"X-Role": "manager"}).json() if row["id"] == invoice["id"])
+    assert saved["status"] == "approved_for_manual_payment"
+    assert saved["automatic_payment"] is False
+
+
+def test_ai_provider_router_has_least_privilege_policy(client):
+    response = client.get("/api/ai/providers", headers={"X-Role": "manager"})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["blanket_access"] is False
+    assert result["policy"] == "least_privilege"
+    assert all(row["forbidden"] for row in result["providers"])
+
+
+def test_telegram_owner_notification_uses_existing_approval_buttons(monkeypatch):
+    from app import notifications
+    from app.config import settings
+    from app.models import OwnerNotification
+
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+
+    class Client:
+        def __init__(self, *args, **kwargs): captured["client"] = kwargs
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, url, json): captured.update({"url": url, "payload": json}); return Response()
+
+    monkeypatch.setattr(notifications.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token-value")
+    monkeypatch.setattr(settings, "owner_telegram_id", "999")
+    row = OwnerNotification(
+        idempotency_key="telegram-contract-test",
+        channel="telegram",
+        recipient="999",
+        subject="Счёт на рекламу",
+        body="Одобрение не выполняет оплату",
+        data={"approval_id": 42},
+    )
+    notifications._send_telegram(row)
+    assert captured["url"].endswith("/sendMessage")
+    assert captured["payload"]["chat_id"] == "999"
+    buttons = captured["payload"]["reply_markup"]["inline_keyboard"][0]
+    assert {item["callback_data"] for item in buttons} == {"approve:42", "reject:42"}

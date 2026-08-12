@@ -18,6 +18,9 @@ DOMAIN_STATUSES = {
     "expense": {"planned", "pending", "approved", "paid", "cancelled"},
     "payment": {"planned", "pending", "approved", "paid", "overdue", "cancelled"},
     "campaign": {"draft", "approval", "scheduled", "running", "paused", "completed", "cancelled"},
+    "marketing_provider": {"scouting", "contacted", "proposal", "active", "paused", "rejected"},
+    "marketing_experiment": {"draft", "approval", "approved", "running", "paused", "completed", "cancelled", "rejected"},
+    "marketing_invoice": {"pending_approval", "approved_for_manual_payment", "paid", "rejected", "cancelled"},
 }
 
 TERMINAL_STATUSES = {"won", "lost", "expired", "rejected", "hired", "paid", "cancelled", "completed"}
@@ -53,6 +56,9 @@ def module_summary(db: Session) -> dict[str, Any]:
     tenders = rows("tender")
     candidates = rows("candidate")
     campaigns = rows("campaign")
+    experiments = rows("marketing_experiment")
+    providers = rows("marketing_provider")
+    marketing_invoices = rows("marketing_invoice")
     finance = [x for x in records if x.record_type in {"cashflow", "expense", "payment"}]
     touches = db.scalar(select(func.count(ContactEvent.id))) or 0
     overdue_tenders = sum(1 for x in tenders if x.deadline_at and x.deadline_at < now and x.status not in TERMINAL_STATUSES)
@@ -65,5 +71,5 @@ def module_summary(db: Session) -> dict[str, Any]:
         "tenders": {"total": len(tenders), "active": sum(x.status not in TERMINAL_STATUSES for x in tenders), "awaiting_approval": sum(x.status == "approval" for x in tenders), "overdue": overdue_tenders},
         "hr": {"candidates": len(candidates), "available": sum(bool(x.data.get("available")) for x in candidates), "hired": sum(x.status == "hired" for x in candidates)},
         "finance": {"entries": len(finance), "net_amount": cash_balance, "pending": sum(x.status == "pending" for x in finance), "overdue_payments": overdue_payments},
-        "marketing": {"campaigns": len(campaigns), "active": sum(x.status in {"scheduled", "running"} for x in campaigns), "planned_budget": sum(float(x.data.get("budget", 0) or 0) for x in campaigns)},
+        "marketing": {"campaigns": len(campaigns), "active": sum(x.status in {"scheduled", "running"} for x in campaigns) + sum(x.status == "running" for x in experiments), "experiments": len(experiments), "providers": len(providers), "pending_invoices": sum(x.status == "pending_approval" for x in marketing_invoices), "planned_budget": sum(float(x.data.get("budget", 0) or 0) for x in campaigns) + sum(float(x.data.get("budget_limit", 0) or 0) for x in experiments)},
     }

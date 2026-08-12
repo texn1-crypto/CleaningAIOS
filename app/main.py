@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from html import escape
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -19,7 +21,10 @@ from .platform import company_brain, event_bus
 from .schemas import ApprovalDecision, ContactEventCreate, DecisionCreate, KnowledgeCreate, OutreachCreate, RecordCreate, RecordUpdate, SuppressionCreate, TaskCreate
 from .security import Principal, principal, require_role, valid_unsubscribe_token, validate_production_security
 from .api_v2 import router as api_v2_router
+from .marketing_api import router as marketing_router
+from .public_api import router as public_router
 from .mission_control import MISSION_CONTROL_HTML
+from .public_site import PUBLIC_SITE_HTML, privacy_html
 from .agents import AGENTS
 from .llm import llm_advisor
 from .improvements import workspace_agent_configuration_status
@@ -33,8 +38,11 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=settings.app_name, version="2.0.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.1.0", lifespan=lifespan)
 app.include_router(api_v2_router)
+app.include_router(marketing_router)
+app.include_router(public_router)
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
 def get_db():
@@ -52,7 +60,7 @@ def as_task(row: Task) -> dict:
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
-    return {"status": "ok", "app": settings.app_name, "version": "2.0.0", "database": "ok"}
+    return {"status": "ok", "app": settings.app_name, "version": "2.1.0", "database": "ok"}
 
 
 @app.get("/ready")
@@ -71,6 +79,19 @@ def integrations(_: Principal = Depends(principal)):
         "tender_sources": {"status": "configured" if settings.tender_sources.strip() else "source_configuration_required", "sources": [x.strip() for x in settings.tender_sources.split(",") if x.strip()]},
         "llm": {"status": llm_advisor.configuration_status(), "provider": "openai_compatible_responses", "model": settings.llm_model or None},
         "workspace_agent_handoff": {"status": workspace_agent_configuration_status(), "provider": "chatgpt_workspace_agents"},
+        "owner_hot_lead_email": {"status": "configured" if smtp_ready and settings.owner_notification_email else "credentials_required"},
+        "public_website": {"status": "ready" if settings.public_leads_enabled else "legal_profile_required", "lead_form_enabled": settings.public_leads_enabled},
+        "marketing_channels": {
+            "yandex": "credentials_present_adapter_manual" if settings.yandex_direct_token else "credentials_required",
+            "vk_ads": "credentials_present_adapter_manual" if settings.vk_ads_token else "credentials_required",
+            "2gis": "credentials_present_adapter_manual" if settings.twogis_business_token else "credentials_required",
+            "avito": "credentials_present_adapter_manual" if settings.avito_client_id and settings.avito_client_secret else "credentials_required",
+            "telegram_ads": "credentials_present_adapter_manual" if settings.telegram_ads_token else "credentials_required",
+        },
+        "media_generation": {
+            "image": "codex_workflow_available" if not settings.image_generation_api_key else "credentials_present_adapter_required",
+            "video": "credentials_present_adapter_required" if settings.video_generation_api_key else "credentials_required",
+        },
     }
 
 
@@ -267,10 +288,17 @@ def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db
     elif row.resource_type == "decision":
         decision = db.get(Decision, int(row.resource_id))
         if decision: decision.status = row.status; decision.decided_by = actor.subject; decision.decided_at = row.decided_at
+    elif row.resource_type in {"marketing_invoice", "marketing_experiment"}:
+        resource = db.get(BusinessRecord, int(row.resource_id))
+        if resource and resource.record_type == row.resource_type:
+            if row.resource_type == "marketing_invoice":
+                resource.status = "approved_for_manual_payment" if row.status == "approved" else "rejected"
+            else:
+                resource.status = "approved" if row.status == "approved" else "rejected"
     event_bus.publish(db, f"approval.{row.status}", row.resource_type, row.resource_id, {"approval_id": row.id, "action_kind": row.action_kind}, idempotency_key=f"approval:{row.id}:{row.status}")
     audit(db, actor.subject, f"approval.{row.status}", row.resource_type, row.resource_id, {"approval_id": row.id})
     db.commit()
-    return {"id": row.id, "status": row.status}
+    return {"id": row.id, "status": row.status, "execution": "not_executed", "automatic_commitment": False}
 
 
 @app.post("/api/outreach/suppress", status_code=201)
@@ -314,5 +342,28 @@ def audit_log(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_d
 
 
 @app.get("/", response_class=HTMLResponse)
-def index():
+def index(request: Request):
+    base = str(request.base_url).rstrip("/")
+    return PUBLIC_SITE_HTML.replace("__OG_IMAGE_URL__", escape(base + "/static/og.png", quote=True))
+
+
+@app.get("/mission-control", response_class=HTMLResponse)
+def mission_control():
     return MISSION_CONTROL_HTML
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy():
+    return privacy_html()
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+def robots():
+    return "User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /docs\nDisallow: /mission-control\nSitemap: " + settings.public_base_url.rstrip("/") + "/sitemap.xml\n"
+
+
+@app.get("/sitemap.xml")
+def sitemap():
+    base = settings.public_base_url.rstrip("/")
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>{base}/</loc></url><url><loc>{base}/privacy</loc></url></urlset>'
+    return Response(xml, media_type="application/xml")

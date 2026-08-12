@@ -5,6 +5,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 ## What works
 
 - FastAPI Mission Control with PostgreSQL/SQLite, health and readiness checks;
+- public minimalist cleaning-company website with responsive layout, SEO endpoints, original ImageGen visuals and a privacy-aware lead form;
 - shared records for tenders, leads/CRM, candidates, campaigns, finance and source data;
 - linked business graph: clients, sites, contracts, employees, shifts, vacancies and complaints;
 - persistent orchestrator queue and autonomous worker/scheduler loops;
@@ -21,6 +22,10 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - key-derived production RBAC, immutable audit events, decisions, tasks and agent heartbeats;
 - CSV/XLSX lead import and outreach queue with multiple mailboxes, templates, real attachments, delivery journal, bounce/complaint handling, suppression, unsubscribe, campaign/recipient deduplication, approvals, minute/day limits and SMTP delivery;
 - unified inbound message inbox, content plan, staffing/reserve view, vacancy Telegram drafts, payment calendar and complaint/SLA control;
+- public lead capture into CRM/inbox with consent, abuse protection, UTM attribution, deterministic hot-lead scoring, Sales tasks and owner-email notifications;
+- Russian marketing-provider registry, trackable hypotheses/experiments, manual external campaign binding, media queue and evidence-backed attribution analytics;
+- masked company requisites and marketing invoices routed to Telegram owner approval with no automatic payment;
+- least-privilege AI provider routing for reasoning, product improvements, images and video, with truthful credential/adapter states;
 - backward-compatible Telegram commands plus Mission Control sections;
 - natural-language Russian Telegram dialogue that maps ordinary phrases to read views or auditable agent tasks, without requiring slash commands;
 - Request Analyst Agent that records real capability gaps and prepares a redacted Codex prompt with acceptance criteria and a mandatory test plan;
@@ -49,6 +54,8 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 - `LLM_API_KEY`; optionally override `LLM_BASE_URL` and `LLM_MODEL` (default: OpenAI Responses API and `gpt-5.6-terra`)
 - optional `WORKSPACE_AGENT_TRIGGER_ID` and `WORKSPACE_AGENT_ACCESS_TOKEN` for server-side handoff to a published ChatGPT Workspace Agent
 - `TENDER_SOURCES` and per-source credentials/API keys for external tender ingestion
+- `COMPANY_LEGAL_NAME`, `COMPANY_INN`, company contacts/address and `PRIVACY_CONTACT_EMAIL` before enabling the public production lead form
+- `OWNER_NOTIFICATION_EMAIL` plus SMTP for hot-lead alerts; optional Russian advertising account credentials listed in `.env.example`
 
 See [production deployment](docs/PRODUCTION.md) and [baseline failures](docs/BASELINE.md).
 
@@ -66,7 +73,7 @@ The operational APIs include `/api/events`, `/api/brain`, `/api/agent-runs`,
 `/api/finance/site-economics`, `/api/simulations`, `/api/tenders/{id}/score`,
 `/api/imports/leads`, `/api/inbox`, `/api/hr/staffing`, `/api/finance/payment-calendar`,
 `/api/marketing/content`, `/api/operations/quality` and
-`/api/outreach/campaigns/launch`. Apply migrations through `0005` before deploying.
+`/api/outreach/campaigns/launch`. Apply migrations through `0006` before deploying.
 
 Domain records now have guarded lifecycle transitions through `PATCH /api/records/{id}`.
 CRM touches are stored through `/api/records/{id}/contacts`, and
@@ -74,13 +81,14 @@ CRM touches are stored through `/api/records/{id}/contacts`, and
 Finance and Marketing. Domain rules reject incomplete finance entries, active
 tenders without deadlines and lost leads without a recorded reason.
 
-Open `/` for the live Mission Control dashboard and `/docs` for all operations.
+Open `/` for the public company website, `/mission-control` for the internal dashboard and `/docs` for all operations.
 `/api/integrations` truthfully reports which external credentials or source adapters
 are still missing. External tender portals are never reported as active until their
 source is configured; the LLM is never reported as configured without its key and
 model. The deterministic operating system works without either integration.
 
 See [architecture](docs/ARCHITECTURE.md) for the event flow and module boundaries.
+See [website and Marketing OS](docs/MARKETING_SITE.md) for the lead, media, advertising-platform, invoice and credential flows.
 
 ## Общение с Telegram-ботом
 

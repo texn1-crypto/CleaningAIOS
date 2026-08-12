@@ -367,3 +367,59 @@ class ImprovementRequest(Base):
     last_error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class CompanyRequisite(Base):
+    """Legal payment requisites only; never stores online-banking credentials."""
+    __tablename__ = "company_requisites"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(128), unique=True)
+    legal_name: Mapped[str] = mapped_column(String(255))
+    inn: Mapped[str] = mapped_column(String(12), index=True)
+    kpp: Mapped[str] = mapped_column(String(9), default="")
+    ogrn: Mapped[str] = mapped_column(String(15), default="")
+    settlement_account: Mapped[str] = mapped_column(String(20), default="")
+    bank_name: Mapped[str] = mapped_column(String(255), default="")
+    bic: Mapped[str] = mapped_column(String(9), default="")
+    correspondent_account: Mapped[str] = mapped_column(String(20), default="")
+    legal_address: Mapped[str] = mapped_column(String(500), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class OwnerNotification(Base):
+    __tablename__ = "owner_notifications"
+    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_owner_notification_idempotency"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    channel: Mapped[str] = mapped_column(String(32), index=True)
+    recipient: Mapped[str] = mapped_column(String(320), default="")
+    resource_type: Mapped[str] = mapped_column(String(64), default="")
+    resource_id: Mapped[str] = mapped_column(String(128), default="")
+    subject: Mapped[str] = mapped_column(String(255), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    available_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class MediaAsset(Base):
+    __tablename__ = "media_assets"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    content_item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("content_items.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    provider: Mapped[str] = mapped_column(String(128), default="")
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    public_url: Mapped[str] = mapped_column(String(1024), default="")
+    storage_path: Mapped[str] = mapped_column(String(1024), default="")
+    alt_text: Mapped[str] = mapped_column(String(500), default="")
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

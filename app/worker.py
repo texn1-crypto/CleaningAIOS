@@ -14,6 +14,7 @@ from .db import SessionLocal
 from .orchestrator import run_next
 from .models import OutboundMessage, SenderMailbox, Suppression
 from .platform import process_next_event
+from .notifications import send_next_owner_notification
 from .security import unsubscribe_token
 
 logging.basicConfig(level=logging.INFO)
@@ -77,6 +78,7 @@ def main() -> None:
                 event = process_next_event(db)
                 if event: log.info("published event %s", event.id)
                 send_next_email(db)
+                send_next_owner_notification(db)
             except Exception:
                 db.rollback(); log.exception("task processing failed")
         time.sleep(settings.worker_poll_seconds)

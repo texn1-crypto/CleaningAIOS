@@ -37,6 +37,26 @@ class Settings(BaseSettings):
     workspace_agent_trigger_id: str = ""
     workspace_agent_access_token: str = ""
     workspace_agent_timeout_seconds: int = 20
+    company_name: str = "CleaningAI"
+    company_legal_name: str = ""
+    company_inn: str = ""
+    company_phone: str = ""
+    company_email: str = ""
+    company_address: str = ""
+    company_service_area: str = "Москва и Московская область"
+    privacy_contact_email: str = ""
+    owner_notification_email: str = ""
+    hot_lead_score: int = 70
+    public_lead_rate_limit_per_hour: int = 5
+    public_lead_rate_secret: str = ""
+    yandex_direct_token: str = ""
+    vk_ads_token: str = ""
+    twogis_business_token: str = ""
+    avito_client_id: str = ""
+    avito_client_secret: str = ""
+    telegram_ads_token: str = ""
+    image_generation_api_key: str = ""
+    video_generation_api_key: str = ""
     tender_sources: str = ""
     tender_source_token: str = ""
     tender_request_timeout_seconds: int = 30
@@ -49,6 +69,13 @@ class Settings(BaseSettings):
     @property
     def production(self) -> bool:
         return self.environment.lower() == "production"
+
+    @property
+    def public_leads_enabled(self) -> bool:
+        """Production forms require an identified personal-data controller."""
+        if not self.production:
+            return True
+        return bool(self.company_legal_name and (self.privacy_contact_email or self.company_email))
 
 
 @lru_cache

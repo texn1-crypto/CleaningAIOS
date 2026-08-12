@@ -179,7 +179,7 @@ decision_engine = DecisionEngine()
 agent_runtime = AgentRuntime()
 
 
-DOMAIN_AGENT = {"lead": "sales", "tender": "tender", "candidate": "hr", "cashflow": "finance", "expense": "finance", "payment": "finance", "campaign": "marketing"}
+DOMAIN_AGENT = {"lead": "sales", "tender": "tender", "candidate": "hr", "cashflow": "finance", "expense": "finance", "payment": "finance", "campaign": "marketing", "marketing_provider": "marketing", "marketing_experiment": "marketing", "marketing_invoice": "finance", "media_asset": "marketing", "content_item": "marketing"}
 
 
 def route_event(db: Session, event: DomainEvent) -> Task | None:

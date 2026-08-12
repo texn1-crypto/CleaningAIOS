@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .llm import llm_advisor
-from .models import AgentState, BusinessGoal, BusinessRecord, Decision, DecisionOutcome, OperatingEntity, Task
+from .models import AgentState, BusinessGoal, BusinessRecord, Decision, DecisionOutcome, MediaAsset, OperatingEntity, Task
+from .ai_router import provider_catalog
 from .operations import create_ceo_actions, goal_progress, score_tender, site_economics
 
 
@@ -66,10 +67,13 @@ class MarketingAgent:
     name = "marketing"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         campaigns = db.scalar(select(func.count(BusinessRecord.id)).where(BusinessRecord.record_type == "campaign")) or 0
+        experiments = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "marketing_experiment")).all()
+        providers = db.scalar(select(func.count(BusinessRecord.id)).where(BusinessRecord.record_type == "marketing_provider")) or 0
+        queued_media = db.scalar(select(func.count(MediaAsset.id)).where(MediaAsset.status.in_(["queued", "credentials_required"]))) or 0
         leads = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "lead")).all()
         attribution: dict[str, int] = {}
         for lead in leads: attribution[lead.source] = attribution.get(lead.source, 0) + 1
-        return {"campaigns": campaigns, "content_ideas": payload.get("topics", []), "lead_attribution": attribution, "analytics_requires_connected_sources": not bool(attribution), "evidence": [{"source": key, "leads": value} for key, value in attribution.items()]}
+        return {"campaigns": campaigns, "experiments": len(experiments), "running_experiments": sum(x.status == "running" for x in experiments), "providers": providers, "queued_media": queued_media, "content_ideas": payload.get("topics", []), "lead_attribution": attribution, "analytics_requires_connected_sources": not bool(attribution), "ai_providers": provider_catalog(), "financial_actions_require_owner_approval": True, "evidence": [{"source": key, "leads": value} for key, value in attribution.items()]}
 
 
 class HRAgent:

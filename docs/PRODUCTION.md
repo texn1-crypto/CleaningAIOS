@@ -19,6 +19,7 @@ docker compose up -d web worker scheduler
 docker compose --profile telegram up -d bot
 docker compose ps
 curl --fail http://127.0.0.1:8000/health
+curl --fail http://127.0.0.1:8000/
 curl --fail -H "X-API-Key: $API_KEY" http://127.0.0.1:8000/api/integrations
 ```
 
@@ -45,6 +46,18 @@ Optionally set `WORKSPACE_AGENT_TRIGGER_ID` and `WORKSPACE_AGENT_ACCESS_TOKEN`
 to hand capability gaps to a published ChatGPT Workspace Agent API channel. Without
 them the Request Analyst still stores a complete Codex prompt, acceptance criteria
 and test plan in PostgreSQL and reports `credentials_required`.
+
+Before exposing the website, set `COMPANY_NAME`, `COMPANY_LEGAL_NAME`,
+`COMPANY_INN`, `COMPANY_PHONE`, `COMPANY_EMAIL`, `COMPANY_ADDRESS`,
+`COMPANY_SERVICE_AREA` and `PRIVACY_CONTACT_EMAIL`. The production lead form remains
+disabled until the legal operator name and a privacy contact email exist. Set
+`OWNER_NOTIFICATION_EMAIL` plus SMTP credentials to receive hot leads by email.
+
+Russian advertising tokens (`YANDEX_DIRECT_TOKEN`, `VK_ADS_TOKEN`,
+`TWOGIS_BUSINESS_TOKEN`, `AVITO_CLIENT_ID`, `AVITO_CLIENT_SECRET`,
+`TELEGRAM_ADS_TOKEN`) are optional and must remain server-side. In the current safe
+release they expose readiness only; actual platform campaigns are bound by manually
+recording their external ID after owner approval. See `docs/MARKETING_SITE.md`.
 
 For every additional sender mailbox, set `secret_ref` to the name of an environment
 variable mounted into `web` and `worker` (for example `SMTP_SALES_PASSWORD`). Do not

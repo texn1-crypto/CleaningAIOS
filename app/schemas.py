@@ -241,3 +241,101 @@ class ContentItemCreate(BaseModel):
     status: str = Field(default="idea", pattern="^(idea|draft|approval|scheduled|published|cancelled)$")
     scheduled_at: Optional[datetime] = None
     metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContentItemUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    body: Optional[str] = None
+    status: Optional[str] = Field(default=None, pattern="^(idea|draft|approval|scheduled|published|cancelled)$")
+    scheduled_at: Optional[datetime] = None
+    metrics: Optional[dict[str, Any]] = None
+
+
+class PublicLeadCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(default="", max_length=32)
+    email: Optional[EmailStr] = None
+    company: str = Field(default="", max_length=255)
+    service: str = Field(pattern="^(mcd|business_center|commercial|general|other)$")
+    object_area: Optional[float] = Field(default=None, ge=0, le=10_000_000)
+    budget: Optional[float] = Field(default=None, ge=0, le=1_000_000_000)
+    urgency: str = Field(default="month", pattern="^(today|week|month|planning)$")
+    message: str = Field(default="", max_length=3000)
+    consent: bool
+    source: str = Field(default="website", max_length=128)
+    utm_source: str = Field(default="", max_length=128)
+    utm_medium: str = Field(default="", max_length=128)
+    utm_campaign: str = Field(default="", max_length=128)
+    website: str = Field(default="", max_length=255, description="Spam honeypot; must remain empty")
+
+
+class MarketingProviderCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=255)
+    platform: str = Field(pattern="^(yandex_direct|yandex_business|vk_ads|2gis|avito|telegram_ads|agency|other)$")
+    contact: str = Field(default="", max_length=320)
+    website: str = Field(default="", max_length=1024)
+    status: str = Field(default="scouting", pattern="^(scouting|contacted|proposal|active|paused|rejected)$")
+    capabilities: list[str] = Field(default_factory=list, max_length=50)
+    notes: str = Field(default="", max_length=4000)
+
+
+class MarketingExperimentCreate(BaseModel):
+    title: str = Field(min_length=2, max_length=255)
+    channel: str = Field(pattern="^(yandex_direct|yandex_business|vk_ads|2gis|avito|telegram_ads|seo|content|other)$")
+    hypothesis: str = Field(min_length=5, max_length=4000)
+    audience: str = Field(min_length=2, max_length=2000)
+    offer: str = Field(min_length=2, max_length=2000)
+    primary_metric: str = Field(default="qualified_leads", max_length=128)
+    budget_limit: float = Field(default=0, ge=0, le=1_000_000_000)
+    utm_campaign: str = Field(min_length=2, max_length=128)
+
+
+class MarketingExperimentLaunch(BaseModel):
+    approval_id: Optional[int] = None
+    external_campaign_id: str = Field(default="", max_length=255)
+
+
+class MarketingInvoiceCreate(BaseModel):
+    provider_id: int
+    requisites_profile_id: int
+    invoice_number: str = Field(min_length=1, max_length=128)
+    amount: float = Field(gt=0, le=1_000_000_000)
+    currency: str = Field(default="RUB", pattern="^RUB$")
+    due_at: Optional[datetime] = None
+    document_url: str = Field(default="", max_length=1024)
+    description: str = Field(default="", max_length=2000)
+
+
+class CompanyRequisiteCreate(BaseModel):
+    profile_name: str = Field(min_length=2, max_length=128)
+    legal_name: str = Field(min_length=2, max_length=255)
+    inn: str = Field(pattern="^(?:[0-9]{10}|[0-9]{12})$")
+    kpp: str = Field(default="", pattern="^$|^[0-9]{9}$")
+    ogrn: str = Field(default="", pattern="^$|^(?:[0-9]{13}|[0-9]{15})$")
+    settlement_account: str = Field(default="", pattern="^$|^[0-9]{20}$")
+    bank_name: str = Field(default="", max_length=255)
+    bic: str = Field(default="", pattern="^$|^[0-9]{9}$")
+    correspondent_account: str = Field(default="", pattern="^$|^[0-9]{20}$")
+    legal_address: str = Field(default="", max_length=500)
+
+
+class MediaAssetCreate(BaseModel):
+    content_item_id: Optional[int] = None
+    kind: str = Field(pattern="^(image|video)$")
+    title: str = Field(min_length=2, max_length=255)
+    prompt: str = Field(default="", max_length=8000)
+    provider: str = Field(default="", max_length=128)
+    public_url: str = Field(default="", max_length=1024)
+    storage_path: str = Field(default="", max_length=1024)
+    alt_text: str = Field(default="", max_length=500)
+    status: str = Field(default="queued", pattern="^(queued|generating|ready|published|failed|credentials_required|adapter_required)$")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MediaAssetUpdate(BaseModel):
+    provider: Optional[str] = Field(default=None, max_length=128)
+    public_url: Optional[str] = Field(default=None, max_length=1024)
+    storage_path: Optional[str] = Field(default=None, max_length=1024)
+    alt_text: Optional[str] = Field(default=None, max_length=500)
+    status: Optional[str] = Field(default=None, pattern="^(queued|generating|ready|published|failed|credentials_required|adapter_required)$")
+    metadata: Optional[dict[str, Any]] = None

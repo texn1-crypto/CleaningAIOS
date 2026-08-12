@@ -30,7 +30,7 @@ async def api(method: str, path: str, **kwargs):
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён."); return
-    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
+    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
     keyboard = [[InlineKeyboardButton(label, callback_data=key)] for label, key in rows]
     await update.effective_message.reply_text("CleaningAI OS · выберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -178,13 +178,14 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data == "hr": await records(update, "candidate", "🧹 Кандидаты и HR")
     elif q.data == "finance": await module_summary(update, "finance", "💰 Финансы")
     elif q.data == "marketing": await module_summary(update, "marketing", "📊 Маркетинг")
+    elif q.data == "marketing_invoices": await records(update, "marketing_invoice", "🧾 Счета рекламы · одобрение не выполняет оплату")
     elif q.data == "simulator":
         data = await api("POST", "/api/simulations", json={"payroll_change_percent": 10})
         await update.effective_message.reply_text(f"🧪 Сценарий +10% к фонду оплаты\nТекущая прибыль: {data['current']['profit']} ₽\nБазовый прогноз: {data['base']['profit']} ₽\nОптимистичный: {data['optimistic']['profit']} ₽")
     elif q.data.startswith("approve:") or q.data.startswith("reject:"):
         action, approval_id = q.data.split(":", 1)
         result = await api("POST", f"/api/approvals/{approval_id}/{action}", json={"note": "Решение принято владельцем в Telegram"})
-        await update.effective_message.reply_text(f"Подтверждение #{approval_id}: {result['status']}")
+        await update.effective_message.reply_text(f"Подтверждение #{approval_id}: {result['status']}. Решение записано; автоматическое подписание или списание денег не выполнялось.")
     elif q.data in {"ceo", "meta_brain"}:
         data = await api("POST", "/api/tasks", json={"title": f"{q.data} on-demand review", "agent_type": q.data})
         await update.effective_message.reply_text(f"Задача #{data['id']} поставлена агенту {q.data}.")

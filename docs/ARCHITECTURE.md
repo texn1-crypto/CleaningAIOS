@@ -8,6 +8,10 @@
    object economics, scenario simulation, structured decisions and measured outcomes.
 3. **System of Action** contains the transactional Event Bus, scheduler, persistent
    task queue, Agent Runtime, outreach worker, Telegram and Mission Control.
+4. **Public Growth Surface** contains the company website, consent-aware lead intake,
+   UTM attribution, published website content, media assets, marketing providers,
+   experiments and owner notifications. It writes into the same records and events;
+   it is not a separate CRM.
 
 Request Analyst evaluates each owner Telegram message before normal execution. A
 supported request follows its normal route. A missing credential is reported as
@@ -28,6 +32,12 @@ Decision Engine is deterministic. Financial, legal, contractual, final HR, tende
 submission and bulk outreach actions create a separate owner approval. An approval
 is bound to its exact action and resource, so it cannot authorize another task or
 campaign. Task approval automatically returns the blocked task to the queue.
+
+Marketing invoices and paid experiments use the same financial approval class.
+Approval only records the owner's decision. Invoice state becomes
+`approved_for_manual_payment`, and experiment state becomes `approved`; neither path
+contains a payment executor. External campaign activation is recorded only when an
+operator supplies the campaign ID created in the platform account.
 
 Bulk-outreach approvals are also bound to a digest of the normalized recipient list
 and the exact campaign content. Changing recipients, subject, body, sender mailbox or
@@ -60,3 +70,9 @@ decisions whose outcomes have been recorded.
   and the response must match the configured JSON schema. The adapter has no tools
   and cannot perform business actions. Decisions, scoring, approvals and simulations
   remain deterministic and auditable.
+- The provider router exposes task-specific, least-privilege scopes. Public content
+  may reach image/video providers; CRM personal data, banking credentials and secrets
+  are forbidden. Image/video adapter gaps are reported rather than simulated.
+- Owner notifications use a durable queue with retries. Hot leads use transactional
+  SMTP without unsubscribe markup; marketing invoices use Telegram inline approval
+  buttons handled by the backward-compatible bot.

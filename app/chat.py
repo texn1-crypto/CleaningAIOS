@@ -117,6 +117,8 @@ def understand_russian_message(message: str) -> dict[str, Any]:
     if not action_words and read_words and _contains(text, "финанс", "платеж", "расход", "прибыл", "деньг"):
         return {"kind": "summary", "module": "finance", "title": "💰 Финансы"}
     if not action_words and read_words and _contains(text, "маркет", "реклам", "контент", "smm"):
+        if _contains(text, "счет", "счета", "инвойс"):
+            return {"kind": "records", "record_type": "marketing_invoice", "title": "🧾 Счета рекламы"}
         return {"kind": "summary", "module": "marketing", "title": "📊 Маркетинг"}
     if not action_words and read_words and _contains(text, "агент"):
         return {"kind": "dashboard"}
