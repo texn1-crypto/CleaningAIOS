@@ -70,6 +70,11 @@ services:
   bot:
     <<: *app
     command: ["python", "-m", "app.bot"]
+    # Some cloud routes intermittently black-hole Telegram's DNS-selected IP.
+    # Keep the known-good endpoint configurable so operators can rotate it
+    # without rebuilding the image or exposing the bot token.
+    extra_hosts:
+      - "api.telegram.org=${TELEGRAM_API_IP:-149.154.167.220}"
     depends_on:
       web: {condition: service_healthy}
     profiles: ["telegram"]

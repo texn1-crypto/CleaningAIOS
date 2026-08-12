@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -618,6 +619,13 @@ def test_telegram_application_registers_natural_language_handler(monkeypatch):
     application = build_application()
     handlers = [handler for group in application.handlers.values() for handler in group]
     assert any(isinstance(handler, MessageHandler) for handler in handlers)
+
+
+def test_compose_telegram_route_is_configurable_without_a_secret():
+    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
+    route_line = next(line for line in compose.splitlines() if "api.telegram.org=" in line)
+    assert "api.telegram.org=${TELEGRAM_API_IP:-" in route_line
+    assert "TELEGRAM_BOT_TOKEN" not in route_line
 
 
 def test_sales_agent_generates_downloadable_proposal_pdf(client, monkeypatch, tmp_path):
