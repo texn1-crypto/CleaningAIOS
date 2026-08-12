@@ -63,7 +63,10 @@ def requisite_view(row: CompanyRequisite) -> dict:
         "kpp": _masked(row.kpp),
         "ogrn": _masked(row.ogrn),
         "settlement_account": _masked(row.settlement_account),
+        "currency": row.currency,
         "bank_name": row.bank_name,
+        "bank_inn": _masked(row.bank_inn),
+        "bank_address": row.bank_address,
         "bic": _masked(row.bic),
         "correspondent_account": _masked(row.correspondent_account),
         "legal_address": row.legal_address,
@@ -80,7 +83,9 @@ def ai_providers(actor: Principal = Depends(principal)):
 @router.post("/company/requisites", status_code=201)
 def create_requisites(payload: CompanyRequisiteCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "owner")
-    row = CompanyRequisite(**payload.model_dump())
+    data = payload.model_dump()
+    data["currency"] = "RUB" if data["currency"] == "RUR" else data["currency"]
+    row = CompanyRequisite(**data)
     db.add(row)
     try:
         db.flush()

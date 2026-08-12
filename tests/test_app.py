@@ -742,10 +742,16 @@ def test_marketing_invoice_routes_to_owner_without_payment(client):
         "inn": "7701234567",
         "kpp": "770101001",
         "settlement_account": "40702810000000000001",
+        "currency": "RUR",
         "bank_name": "Тестовый банк",
+        "bank_inn": "7701234567",
+        "bank_address": "Москва, тестовый адрес банка",
         "bic": "044525001",
         "correspondent_account": "30101810000000000001",
     }).json()
+    assert requisites["currency"] == "RUB"
+    assert requisites["bank_inn"].endswith("4567")
+    assert requisites["bank_address"] == "Москва, тестовый адрес банка"
     invoice = client.post("/api/marketing/invoices", headers={"X-Role": "manager"}, json={
         "provider_id": provider["id"],
         "requisites_profile_id": requisites["id"],
