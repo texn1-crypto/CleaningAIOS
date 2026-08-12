@@ -7,6 +7,10 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 from .config import settings
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs full request URLs at INFO. Telegram embeds the bot token in those
+# URLs, so INFO-level HTTP logs would leak a production credential.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 BASE = (settings.internal_api_url or settings.public_base_url or "http://web:8000").rstrip("/")
 HEADERS = {"X-API-Key": settings.api_key, "X-Actor": "telegram-owner", "X-Role": "owner"}
 
