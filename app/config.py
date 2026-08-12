@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     workspace_agent_trigger_id: str = ""
     workspace_agent_access_token: str = ""
     workspace_agent_timeout_seconds: int = 20
-    company_name: str = "CleaningAI"
+    company_name: str = "CleaningAIOS"
     company_legal_name: str = ""
     company_inn: str = ""
     company_phone: str = ""
@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     tender_source_token: str = ""
     tender_request_timeout_seconds: int = 30
     document_storage_path: str = "/data/documents"
+    proposal_font_path: str = ""
     max_document_bytes: int = 25_000_000
     max_attachment_bytes: int = 10_000_000
     max_import_bytes: int = 10_000_000

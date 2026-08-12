@@ -3,10 +3,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from html import escape
+from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -171,6 +172,25 @@ def records(record_type: Optional[str] = Query(None), db: Session = Depends(get_
     query = select(BusinessRecord).order_by(BusinessRecord.id.desc())
     if record_type: query = query.where(BusinessRecord.record_type == record_type)
     return [{"id": x.id, "record_type": x.record_type, "title": x.title, "status": x.status, "score": x.score, "owner": x.owner, "data": x.data, "source": x.source, "deadline_at": x.deadline_at} for x in db.scalars(query).all()]
+
+
+@app.get("/api/proposals/{proposal_id}/download")
+def download_proposal(proposal_id: int, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    row = db.get(BusinessRecord, proposal_id)
+    if not row or row.record_type != "proposal" or row.status not in {"ready", "approved", "sent"}:
+        raise HTTPException(404, "Ready proposal not found")
+    storage_root = Path(settings.document_storage_path).resolve()
+    path = Path(str(row.data.get("storage_path", ""))).resolve()
+    try:
+        path.relative_to(storage_root)
+    except ValueError:
+        raise HTTPException(403, "Proposal path is outside document storage")
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        raise HTTPException(404, "Proposal PDF is unavailable")
+    audit(db, actor.subject, "proposal.downloaded", "proposal", str(row.id), {"client_record_id": row.data.get("lead_id")})
+    db.commit()
+    return FileResponse(path, media_type="application/pdf", filename=str(row.data.get("filename") or path.name))
 
 
 @app.post("/api/records", status_code=201)
@@ -344,7 +364,11 @@ def audit_log(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_d
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     base = str(request.base_url).rstrip("/")
-    return PUBLIC_SITE_HTML.replace("__OG_IMAGE_URL__", escape(base + "/static/og.png", quote=True))
+    return (
+        PUBLIC_SITE_HTML
+        .replace("__OG_IMAGE_URL__", escape(base + "/static/og-cleaningaios.png", quote=True))
+        .replace("__COMPANY_NAME__", escape(settings.company_name, quote=True))
+    )
 
 
 @app.get("/mission-control", response_class=HTMLResponse)

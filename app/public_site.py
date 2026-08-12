@@ -13,20 +13,20 @@ PUBLIC_SITE_HTML = r"""<!doctype html>
   <meta name="description" content="Профессиональный клининг для жилых комплексов, бизнес-центров и коммерческой недвижимости в Москве и Московской области.">
   <meta name="theme-color" content="#f5f5f2">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="CleaningAI — чистота как управляемый сервис">
+  <meta property="og:title" content="__COMPANY_NAME__ — чистота как управляемый сервис">
   <meta property="og:description" content="Клининг для ЖК, БЦ и коммерческой недвижимости с прозрачным контролем качества.">
   <meta property="og:image" content="__OG_IMAGE_URL__">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="CleaningAI — чистота как управляемый сервис">
+  <meta name="twitter:title" content="__COMPANY_NAME__ — чистота как управляемый сервис">
   <meta name="twitter:description" content="Клининг для ЖК, БЦ и коммерческой недвижимости с прозрачным контролем качества.">
   <meta name="twitter:image" content="__OG_IMAGE_URL__">
-  <title>CleaningAI — профессиональный клининг</title>
+  <title>__COMPANY_NAME__ — профессиональный клининг</title>
   <link rel="stylesheet" href="/static/site.css">
   <script defer src="/static/site.js"></script>
 </head>
 <body>
   <header class="site-header" data-header>
-    <a class="brand" href="#top" aria-label="CleaningAI — на главную"><span class="brand-dot"></span><span data-company-name>CleaningAI</span></a>
+    <a class="brand" href="#top" aria-label="__COMPANY_NAME__ — на главную"><span class="brand-dot"></span><span data-company-name>__COMPANY_NAME__</span></a>
     <button class="menu-toggle" type="button" aria-label="Открыть меню" aria-expanded="false" data-menu-toggle>Меню</button>
     <nav class="nav" aria-label="Основная навигация" data-nav>
       <a href="#services">Услуги</a><a href="#approach">Подход</a><a href="#news">Новости</a><a href="#contact">Контакты</a>
@@ -96,7 +96,7 @@ PUBLIC_SITE_HTML = r"""<!doctype html>
     </section>
   </main>
 
-  <footer id="contact"><div><a class="brand footer-brand" href="#top"><span class="brand-dot"></span><span data-company-name>CleaningAI</span></a><p>Профессиональный клининг для объектов, где важны стабильность и контроль.</p></div><div><span>Навигация</span><a href="#services">Услуги</a><a href="#approach">Подход</a><a href="#news">Новости</a></div><div><span>Документы</span><a href="/privacy">Конфиденциальность</a><a href="/mission-control">Mission Control</a></div><div class="footer-bottom">© <span data-year></span> <span data-company-name>CleaningAI</span></div></footer>
+  <footer id="contact"><div><a class="brand footer-brand" href="#top"><span class="brand-dot"></span><span data-company-name>__COMPANY_NAME__</span></a><p>Профессиональный клининг для объектов, где важны стабильность и контроль.</p></div><div><span>Навигация</span><a href="#services">Услуги</a><a href="#approach">Подход</a><a href="#news">Новости</a></div><div><span>Документы</span><a href="/privacy">Конфиденциальность</a><a href="/mission-control">Mission Control</a></div><div class="footer-bottom">© <span data-year></span> <span data-company-name>__COMPANY_NAME__</span></div></footer>
 </body>
 </html>"""
 

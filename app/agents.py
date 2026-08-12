@@ -58,6 +58,9 @@ class TenderAgent:
 class SalesAgent:
     name = "sales"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "generate_proposal":
+            from .proposals import generate_proposal
+            return generate_proposal(db, payload)
         leads = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "lead")).all()
         pipeline = sum(float(x.data.get("budget", 0) or 0) for x in leads if x.status not in {"won", "lost"})
         return {"lead_count": len(leads), "qualified": sum(1 for x in leads if (x.score or 0) >= 60 or x.status == "qualified"), "follow_ups_due": sum(1 for x in leads if x.status == "follow_up"), "pipeline_amount": pipeline, "loss_reasons": [x.data.get("loss_reason") for x in leads if x.status == "lost" and x.data.get("loss_reason")], "evidence": [{"record_id": x.id, "status": x.status} for x in leads]}

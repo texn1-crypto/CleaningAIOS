@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 
@@ -268,11 +270,16 @@ def test_research_agent_runs_real_collector_contract(client, monkeypatch):
     assert result["result"]["created"] == 0
 
 
-def test_mission_control_renders(client):
+def test_mission_control_renders(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "company_name", "CleaningAIOS")
     response = client.get("/")
     assert response.status_code == 200
     assert "Порядок, который работает на ваш бизнес" in response.text
-    assert 'content="http://testserver/static/og.png"' in response.text
+    assert 'content="http://testserver/static/og-cleaningaios.png"' in response.text
+    assert "CleaningAIOS — профессиональный клининг" in response.text
+    assert "__COMPANY_NAME__" not in response.text
     assert client.get("/mission-control").status_code == 200
     assert "Mission Control" in client.get("/mission-control").text
 
@@ -465,6 +472,16 @@ def test_russian_chat_routes_business_requests_to_agents():
     assert sales["payload"]["source"] == "telegram_natural_language"
 
 
+def test_russian_chat_recognizes_proposal_client_without_command():
+    from app.chat import understand_russian_message
+
+    intent = understand_russian_message("Подготовь коммерческое предложение в PDF для тестового клиента Request Analyst")
+    assert intent["kind"] == "task"
+    assert intent["agent_type"] == "sales"
+    assert intent["payload"]["action"] == "generate_proposal"
+    assert intent["payload"]["client_query"] == "Request Analyst"
+
+
 @pytest.mark.parametrize(
     ("message", "agent_type", "action_kind"),
     [
@@ -509,6 +526,109 @@ def test_telegram_application_registers_natural_language_handler(monkeypatch):
     application = build_application()
     handlers = [handler for group in application.handlers.values() for handler in group]
     assert any(isinstance(handler, MessageHandler) for handler in handlers)
+
+
+def test_sales_agent_generates_downloadable_proposal_pdf(client, monkeypatch, tmp_path):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    monkeypatch.setattr(settings, "company_name", "CleaningAIOS")
+    monkeypatch.setattr(settings, "company_legal_name", "ИП Тестовый Владелец")
+    monkeypatch.setattr(settings, "company_inn", "123456789012")
+    lead = client.post("/api/records", json={
+        "record_type": "lead",
+        "title": "Request Analyst",
+        "status": "qualified",
+        "source": "test",
+        "data": {"name": "Request Analyst", "company": "Request Analyst", "service": "business_center", "object_area": 2500, "budget": 180000},
+    }).json()
+    message = "Подготовь коммерческое предложение в PDF для тестового клиента Request Analyst"
+    intent = understand_russian_message(message)
+    assessment = client.post("/api/request-analysis", json={"message": message, "intent": intent}).json()
+    assert assessment["classification"] == "supported"
+    assert assessment["improvement_id"] is None
+    task = client.post("/api/tasks", json={"title": message, "agent_type": "sales", "payload": intent["payload"], "max_attempts": 1}).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    assert completed["status"] == "done"
+    result = completed["result"]
+    assert result["status"] == "ready"
+    assert result["client_record_id"] == lead["id"]
+    assert result["owner_approval_required_before_sending"] is True
+    assert result["sent_to_client"] is False
+    downloaded = client.get(result["download_url"])
+    assert downloaded.status_code == 200
+    assert downloaded.headers["content-type"] == "application/pdf"
+    assert downloaded.content.startswith(b"%PDF")
+    assert len(downloaded.content) > 10_000
+    proposals = client.get("/api/records?record_type=proposal").json()
+    assert any(row["id"] == result["proposal_id"] and row["status"] == "ready" for row in proposals)
+    audit = client.get("/api/audit").json()
+    assert any(row["action"] == "proposal.downloaded" and row["resource_id"] == str(result["proposal_id"]) for row in audit)
+
+
+def test_sales_agent_proposal_failure_is_recorded(client, monkeypatch, tmp_path):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    intent = understand_russian_message("Подготовь коммерческое предложение для клиента Отсутствует Уникально")
+    task = client.post("/api/tasks", json={"title": "Missing CRM proposal", "agent_type": "sales", "payload": intent["payload"], "max_attempts": 1}).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    assert completed["status"] == "failed"
+    assert "не найден в CRM" in completed["result"]["error"]
+    audit = client.get("/api/audit").json()
+    assert any(row["action"] == "task.failed" and row["resource_id"] == str(task["id"]) for row in audit)
+
+
+def test_telegram_proposal_request_returns_real_pdf(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 321, "agent_type": "sales", "title": "КП"}
+        if path == "/api/tasks/321/run":
+            return {"status": "done", "result": {"proposal_number": "KP-TEST", "download_url": "/api/proposals/77/download"}}
+        raise AssertionError(path)
+
+    async def fake_file(path):
+        assert path == "/api/proposals/77/download"
+        return b"%PDF-telegram-test", "proposal-test.pdf"
+
+    class Message:
+        text = "Подготовь коммерческое предложение для клиента Request Analyst"
+        documents = []
+        replies = []
+
+        async def reply_document(self, **kwargs):
+            self.documents.append(kwargs)
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    monkeypatch.setattr(bot, "api_file", fake_file)
+    asyncio.run(bot.natural_language(Update(), None))
+    assert len(Update.effective_message.documents) == 1
+    document = Update.effective_message.documents[0]
+    assert document["filename"] == "proposal-test.pdf"
+    assert document["document"].read().startswith(b"%PDF")
+    assert "не отправлен клиенту" in document["caption"]
+    task_payload = next(kwargs["json"] for method, path, kwargs in calls if path == "/api/tasks")
+    assert task_payload["max_attempts"] == 1
 
 
 def test_request_analyst_accepts_supported_request_without_improvement(client, monkeypatch):
@@ -580,7 +700,7 @@ def test_workspace_agent_handoff_uses_official_trigger_contract(client, monkeypa
     monkeypatch.setattr(settings, "llm_api_key", "")
     monkeypatch.setattr(settings, "workspace_agent_trigger_id", "")
     monkeypatch.setattr(settings, "workspace_agent_access_token", "")
-    message = "Подготовь коммерческое предложение клиенту"
+    message = "Позвони клиенту и согласуй время встречи"
     created = client.post("/api/request-analysis", json={"message": message, "intent": understand_russian_message(message)}).json()
     captured = {}
 

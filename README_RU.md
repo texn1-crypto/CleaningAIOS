@@ -28,6 +28,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - least-privilege AI provider routing for reasoning, product improvements, images and video, with truthful credential/adapter states;
 - backward-compatible Telegram commands plus Mission Control sections;
 - natural-language Russian Telegram dialogue that maps ordinary phrases to read views or auditable agent tasks, without requiring slash commands;
+- CRM-backed commercial-proposal PDF generation from a natural Russian Telegram request, with a downloadable draft, audit evidence and mandatory owner review before client delivery;
 - Request Analyst Agent that records real capability gaps and prepares a redacted Codex prompt with acceptance criteria and a mandatory test plan;
 - Alembic migration, Docker Compose, CI, tests and rollback guide.
 
@@ -94,7 +95,9 @@ See [website and Marketing OS](docs/MARKETING_SITE.md) for the lead, media, adve
 
 Владелец может писать боту обычным русским текстом: «покажи задачи», «что с
 тендерами», «найди тендеры по уборке БЦ», «создай задачу связаться с клиентом» или
-«проанализируй финансы». Чтение данных выполняется сразу, а деловые поручения
+«проанализируй финансы». Фраза «подготовь коммерческое предложение для клиента
+Название» создаёт настоящий PDF по CRM и возвращает владельцу проект документа.
+Чтение данных выполняется сразу, а остальные деловые поручения
 превращаются в задачи подходящего агента. Неизвестные поручения передаются
 Orchestrator. Оплата, договоры, подача заявки на тендер, окончательные кадровые
 решения и массовые рассылки сохраняют обязательное подтверждение владельца.

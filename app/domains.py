@@ -21,6 +21,7 @@ DOMAIN_STATUSES = {
     "marketing_provider": {"scouting", "contacted", "proposal", "active", "paused", "rejected"},
     "marketing_experiment": {"draft", "approval", "approved", "running", "paused", "completed", "cancelled", "rejected"},
     "marketing_invoice": {"pending_approval", "approved_for_manual_payment", "paid", "rejected", "cancelled"},
+    "proposal": {"draft", "ready", "approved", "sent", "cancelled"},
 }
 
 TERMINAL_STATUSES = {"won", "lost", "expired", "rejected", "hired", "paid", "cancelled", "completed"}

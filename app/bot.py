@@ -1,3 +1,4 @@
+import io
 import logging
 
 import httpx
@@ -25,6 +26,15 @@ async def api(method: str, path: str, **kwargs):
         response = await client.request(method, f"{BASE}{path}", **kwargs)
         response.raise_for_status()
         return response.json()
+
+
+async def api_file(path: str) -> tuple[bytes, str]:
+    async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
+        response = await client.get(f"{BASE}{path}")
+        response.raise_for_status()
+        disposition = response.headers.get("content-disposition", "")
+        filename = disposition.split("filename=", 1)[-1].strip('"') if "filename=" in disposition else "commercial-proposal.pdf"
+        return response.content, filename
 
 
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -147,9 +157,30 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "agent_type": intent["agent_type"],
                 "priority": intent["priority"],
                 "payload": intent["payload"],
+                "max_attempts": 1 if intent["payload"].get("action") == "generate_proposal" else 3,
             })
             protection = " Критическое действие будет остановлено до вашего подтверждения." if intent["protected"] else ""
-            if analysis.get("improvement_id"):
+            if intent["payload"].get("action") == "generate_proposal":
+                completed = await api("POST", f"/api/tasks/{data['id']}/run")
+                result = completed.get("result") or {}
+                if completed.get("status") == "done" and result.get("download_url"):
+                    content, filename = await api_file(result["download_url"])
+                    document = io.BytesIO(content)
+                    document.name = filename
+                    await update.effective_message.reply_document(
+                        document=document,
+                        filename=filename,
+                        caption=(
+                            f"Готов проект коммерческого предложения {result['proposal_number']}. "
+                            "Он создан из CRM, не отправлен клиенту и требует вашей проверки перед использованием."
+                        ),
+                    )
+                else:
+                    await update.effective_message.reply_text(
+                        f"Не удалось подготовить КП: {result.get('error', 'неизвестная ошибка')}. "
+                        "Результат записан в задаче и audit log."
+                    )
+            elif analysis.get("improvement_id"):
                 await update.effective_message.reply_text(
                     f"Я сохранил запрос как задачу #{data['id']}, но текущая версия не может гарантировать полный результат. "
                     f"Request Analyst создал улучшение #{analysis['improvement_id']} для Codex и приложил обязательный тест-план."

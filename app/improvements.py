@@ -72,6 +72,19 @@ def deterministic_assessment(message: str, intent: dict[str, Any]) -> dict[str, 
             "should_create_improvement": False,
         }
 
+    if intent.get("payload", {}).get("action") == "generate_proposal":
+        return {
+            "fully_supported": True,
+            "capability_score": 1.0,
+            "classification": "supported",
+            "reason": "Sales Agent формирует проверяемый проект коммерческого предложения из данных CRM.",
+            "missing_capabilities": [],
+            "suggested_function": "",
+            "acceptance_criteria": [],
+            "test_plan": [],
+            "should_create_improvement": False,
+        }
+
     explicit_task = bool(re.search(r"\b(создай|поставь|добавь)\s+(мне\s+)?задач", text))
     if explicit_task:
         return {

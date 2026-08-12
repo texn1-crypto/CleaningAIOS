@@ -73,6 +73,15 @@ def _priority(text: str) -> str:
     return "normal"
 
 
+def _proposal_client_query(message: str) -> str:
+    match = re.search(
+        r"(?:\bдля\b|\bклиент(?:у|а|ом)?\b)\s+(?:тестов\w+\s+)?(?:клиент\w*\s+)?(.+)$",
+        message,
+        flags=re.IGNORECASE,
+    )
+    return match.group(1).strip(" .,:;\"")[:255] if match else ""
+
+
 def understand_russian_message(message: str) -> dict[str, Any]:
     """Map a Russian free-form Telegram message to a safe application intent.
 
@@ -137,6 +146,8 @@ def understand_russian_message(message: str) -> dict[str, Any]:
         payload["action_kind"] = action_kind
     if agent_type == "research" and _contains(text, "тендер", "закупк", "конкурс"):
         payload.update({"collection": "tenders", "query": safe_original[:1000]})
+    if agent_type == "sales" and ("коммерческ" in text or re.search(r"\bкп\b", text)) and "предлож" in text:
+        payload.update({"action": "generate_proposal", "client_query": _proposal_client_query(safe_original)})
     return {
         "kind": "task",
         "title": safe_original[:255],

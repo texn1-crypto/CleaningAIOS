@@ -20,7 +20,7 @@ async function loadSite(){
     const response=await fetch('/api/public/site');
     if(!response.ok)throw new Error('site data unavailable');
     const data=await response.json();
-    $$('[data-company-name]').forEach(node=>node.textContent=data.company.name||'CleaningAI');
+    $$('[data-company-name]').forEach(node=>node.textContent=data.company.name||'CleaningAIOS');
     $('[data-service-area]').textContent=data.company.service_area||'Москва и Московская область';
     const phone=$('[data-company-phone]');
     if(data.company.phone){phone.hidden=false;phone.textContent=data.company.phone;phone.href='tel:'+data.company.phone.replace(/[^+\d]/g,'')}
