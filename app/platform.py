@@ -4,15 +4,33 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .agents import AGENTS, heartbeat
-from .models import AgentRun, ApprovalRequest, CompanyKnowledge, DomainEvent, Task
+from .models import AgentRun, ApprovalRequest, CompanyKnowledge, DomainEvent, EventConsumerReceipt, Task
 
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class EventEnvelope(BaseModel):
+    """Versioned, validated event contract persisted by the transactional outbox."""
+
+    model_config = ConfigDict(frozen=True)
+
+    event_id: str = Field(min_length=36, max_length=36, pattern=r"^[0-9a-f-]{36}$")
+    event_type: str = Field(min_length=3, max_length=128, pattern=r"^[a-z][a-z0-9_.-]+$")
+    schema_version: int = Field(default=1, ge=1)
+    aggregate_type: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_-]*$")
+    aggregate_id: str = Field(default="", max_length=128)
+    correlation_id: str = Field(min_length=1, max_length=128)
+    causation_id: str = Field(default="", max_length=36)
+    actor: str = Field(min_length=1, max_length=128)
+    occurred_at: datetime
+    payload: dict[str, Any]
 
 
 class EventBus:
@@ -28,17 +46,48 @@ class EventBus:
         *,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
+        schema_version: int = 1,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        actor: str | None = None,
     ) -> DomainEvent:
         key = idempotency_key or f"{event_type}:{aggregate_type}:{aggregate_id}:{uuid4()}"
         existing = db.scalar(select(DomainEvent).where(DomainEvent.idempotency_key == key))
         if existing:
             return existing
-        row = DomainEvent(
+        public_event_id = str(uuid4())
+        meta = dict(metadata or {})
+        envelope = EventEnvelope(
+            event_id=public_event_id,
             event_type=event_type,
+            schema_version=schema_version,
             aggregate_type=aggregate_type,
             aggregate_id=aggregate_id,
+            correlation_id=str(correlation_id or meta.get("correlation_id") or public_event_id),
+            causation_id=str(causation_id or meta.get("causation_id") or ""),
+            actor=str(actor or meta.get("actor") or "system"),
+            occurred_at=now_utc(),
             payload=payload or {},
-            metadata_json=metadata or {},
+        )
+        meta.update({
+            "event_id": envelope.event_id,
+            "schema_version": envelope.schema_version,
+            "correlation_id": envelope.correlation_id,
+            "causation_id": envelope.causation_id,
+            "actor": envelope.actor,
+        })
+        row = DomainEvent(
+            event_id=envelope.event_id,
+            event_type=envelope.event_type,
+            schema_version=envelope.schema_version,
+            aggregate_type=envelope.aggregate_type,
+            aggregate_id=envelope.aggregate_id,
+            correlation_id=envelope.correlation_id,
+            causation_id=envelope.causation_id,
+            actor=envelope.actor,
+            occurred_at=envelope.occurred_at,
+            payload=envelope.payload,
+            metadata_json=meta,
             idempotency_key=key,
         )
         db.add(row)
@@ -63,6 +112,45 @@ class EventBus:
         event.last_error = error
         event.status = "dead_letter" if event.attempts >= 5 else "pending"
         event.available_at = now_utc() + timedelta(seconds=min(300, 2 ** event.attempts))
+
+    def claim_consumer(self, db: Session, event: DomainEvent, consumer: str) -> tuple[EventConsumerReceipt, bool]:
+        receipt = db.scalar(select(EventConsumerReceipt).where(
+            EventConsumerReceipt.event_id == event.id,
+            EventConsumerReceipt.consumer == consumer,
+        ))
+        if receipt and receipt.status == "succeeded":
+            return receipt, False
+        if receipt is None:
+            receipt = EventConsumerReceipt(event_id=event.id, consumer=consumer)
+            db.add(receipt)
+            db.flush()
+        receipt.status = "processing"
+        receipt.attempts += 1
+        receipt.claimed_at = now_utc()
+        receipt.processed_at = None
+        receipt.last_error = ""
+        return receipt, True
+
+    def complete_consumer(self, receipt: EventConsumerReceipt, result_ref: str = "") -> None:
+        receipt.status = "succeeded"
+        receipt.result_ref = result_ref
+        receipt.processed_at = now_utc()
+        receipt.last_error = ""
+
+    def fail_consumer(self, db: Session, event: DomainEvent, consumer: str, error: str) -> EventConsumerReceipt:
+        receipt = db.scalar(select(EventConsumerReceipt).where(
+            EventConsumerReceipt.event_id == event.id,
+            EventConsumerReceipt.consumer == consumer,
+        ))
+        if receipt is None:
+            receipt = EventConsumerReceipt(event_id=event.id, consumer=consumer)
+            db.add(receipt)
+        receipt.status = "failed"
+        receipt.attempts = (receipt.attempts or 0) + 1
+        receipt.processed_at = now_utc()
+        receipt.last_error = error[:4000]
+        db.flush()
+        return receipt
 
 
 class CompanyBrain:
@@ -190,7 +278,15 @@ def route_event(db: Session, event: DomainEvent) -> Task | None:
         title=f"Process {event.event_type} #{event.aggregate_id}",
         agent_type=agent_type,
         status="queued",
-        payload={"event_id": event.id, "event_type": event.event_type, "record_id": event.aggregate_id, "correlation_id": event.metadata_json.get("correlation_id", "")},
+        payload={
+            "event_id": event.id,
+            "event_uid": event.event_id,
+            "event_type": event.event_type,
+            "event_schema_version": event.schema_version,
+            "record_id": event.aggregate_id,
+            "correlation_id": event.correlation_id,
+            "causation_id": event.event_id,
+        },
     )
     db.add(task)
     db.flush()
@@ -201,14 +297,19 @@ def process_next_event(db: Session) -> DomainEvent | None:
     event = event_bus.next(db)
     if not event:
         return None
+    consumer = "domain_router"
     try:
-        route_event(db, event)
+        receipt, should_process = event_bus.claim_consumer(db, event, consumer)
+        routed = route_event(db, event) if should_process else None
+        if should_process:
+            event_bus.complete_consumer(receipt, f"task:{routed.id}" if routed else "no_route")
         event_bus.complete(event)
         db.commit()
     except Exception as exc:
         db.rollback()
         event = db.get(DomainEvent, event.id)
         if event:
+            event_bus.fail_consumer(db, event, consumer, str(exc))
             event_bus.fail(event, str(exc))
             db.commit()
         raise

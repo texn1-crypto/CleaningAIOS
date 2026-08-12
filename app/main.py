@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .domains import module_summary, validate_record
-from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, Decision, DomainEvent, MessageTemplate, OutboundMessage, SenderMailbox, Suppression, Task
+from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, Decision, DomainEvent, EventConsumerReceipt, MessageTemplate, OutboundMessage, SenderMailbox, Suppression, Task
 from .orchestrator import audit, dispatch
 from .platform import company_brain, event_bus
 from .schemas import ApprovalDecision, ContactEventCreate, DecisionCreate, KnowledgeCreate, OutreachCreate, RecordCreate, RecordUpdate, SuppressionCreate, TaskCreate
@@ -266,7 +266,34 @@ def list_events(status: Optional[str] = None, db: Session = Depends(get_db), act
     query = select(DomainEvent).order_by(DomainEvent.id.desc())
     if status:
         query = query.where(DomainEvent.status == status)
-    return [{"id": x.id, "event_type": x.event_type, "aggregate_type": x.aggregate_type, "aggregate_id": x.aggregate_id, "status": x.status, "attempts": x.attempts, "created_at": x.created_at} for x in db.scalars(query.limit(200)).all()]
+    rows = db.scalars(query.limit(200)).all()
+    receipts = db.scalars(select(EventConsumerReceipt).where(EventConsumerReceipt.event_id.in_([x.id for x in rows]))).all() if rows else []
+    by_event: dict[int, list[dict]] = {}
+    for receipt in receipts:
+        by_event.setdefault(receipt.event_id, []).append({
+            "consumer": receipt.consumer,
+            "status": receipt.status,
+            "attempts": receipt.attempts,
+            "result_ref": receipt.result_ref,
+            "last_error": receipt.last_error,
+            "processed_at": receipt.processed_at,
+        })
+    return [{
+        "id": x.id,
+        "event_id": x.event_id,
+        "event_type": x.event_type,
+        "schema_version": x.schema_version,
+        "aggregate_type": x.aggregate_type,
+        "aggregate_id": x.aggregate_id,
+        "correlation_id": x.correlation_id,
+        "causation_id": x.causation_id,
+        "actor": x.actor,
+        "status": x.status,
+        "attempts": x.attempts,
+        "occurred_at": x.occurred_at,
+        "created_at": x.created_at,
+        "deliveries": by_event.get(x.id, []),
+    } for x in rows]
 
 
 @app.get("/api/brain")

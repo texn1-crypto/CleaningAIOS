@@ -10,7 +10,7 @@ Audit date: 2026-08-13. Repository: `texn1-crypto/CleaningAIOS`. Branch at audit
 - Entry points: `app.main:app`, `python -m app.worker`, `python -m app.scheduler`,
   and `python -m app.bot`.
 - Persistence: shared relational models in `app/models.py`; migrations `0001` through
-  `0007`; SQLite is restricted to development/test.
+  `0009`; SQLite is restricted to development/test.
 - Core execution: `app/platform.py` (Event Bus, Company Brain, approvals and Agent
   Runtime) and `app/orchestrator.py` (policy, dispatch, retry and evidence gate).
 - Interfaces: legacy `/api/*`, versioned `/api/v2/*`, public site/API, Mission Control,
@@ -40,7 +40,7 @@ a loop when absent and has a regression test. No production deployment was perfo
 | FastAPI/PostgreSQL/Alembic | IMPLEMENTED | Real API, DB session, migrations and Compose health checks are wired. |
 | RBAC and secret validation | IMPLEMENTED | Production derives roles from configured API keys and rejects default owner key. API keys are still static credentials, not a full identity provider. |
 | Audit trail | PARTIAL | Durable audit rows exist for material API/runtime actions; database-level immutability/retention policy is not enforced. |
-| Event Bus/outbox | PARTIAL | Persisted events, idempotency, retry and dead-letter state exist. Typed schemas, payload version, explicit event/correlation/causation IDs, inbox delivery receipts and latency metrics are missing. |
+| Event Bus/outbox | PARTIAL | Persisted versioned envelopes, event/correlation/causation IDs, actor, retry/backoff, dead-letter state and durable idempotent consumer receipts are connected to the worker. Business-specific payload schemas and latency metrics are still missing. |
 | Agent Runtime | PARTIAL | Registry, run history, evidence, cost, retries and policy gate are connected. Capability/tool allowlists, cancellation, enforced timeout, confidence schema and replay API are missing. |
 | Task/workflow engine | PARTIAL | Persistent tasks, priorities, retry/backoff, schedule and owner manual steps work. Dependencies, explicit transition history, compensation, cancellation and recurring workflow definitions are missing. |
 | Approval Engine | PARTIAL | Bound approvals and Telegram decisions protect listed critical actions. Expiry, request-changes, risk/amount policy and database-level single-execution command keys are missing. |
@@ -68,9 +68,10 @@ entry point. External provider readiness states are not treated as integrations.
 
 ## Next P0 slices
 
-1. Version and type the persisted event envelope; add correlation/causation/actor,
-   delivery attempts and idempotent consumer receipts with forward migration tests.
-2. Add explicit task state transitions/dependencies and an immutable transition log.
-3. Enforce agent capabilities, timeout/cancellation and replay diagnostics.
-4. Replace financial floats with integer minor units or Decimal under a safe migration.
-5. Add lint, type checking and dependency/container scanning to CI.
+Completed in migration `0008`: versioned event envelope, correlation/causation/actor
+and durable idempotent consumer receipts.
+
+1. Add explicit task state transitions/dependencies and an immutable transition log.
+2. Enforce agent capabilities, timeout/cancellation and replay diagnostics.
+3. Replace financial floats with integer minor units or Decimal under a safe migration.
+4. Add lint, type checking and dependency/container scanning to CI.

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -138,11 +138,22 @@ class RoleBinding(Base):
 
 class DomainEvent(Base):
     __tablename__ = "domain_events"
-    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_event_idempotency"),)
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_event_idempotency"),
+        UniqueConstraint("event_id", name="uq_domain_event_event_id"),
+        CheckConstraint("schema_version >= 1", name="ck_domain_event_schema_version"),
+        CheckConstraint("correlation_id <> ''", name="ck_domain_event_correlation_id"),
+        CheckConstraint("actor <> ''", name="ck_domain_event_actor"),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(36), index=True)
     event_type: Mapped[str] = mapped_column(String(128), index=True)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
     aggregate_type: Mapped[str] = mapped_column(String(64), index=True)
     aggregate_id: Mapped[str] = mapped_column(String(128), default="")
+    correlation_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    causation_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    actor: Mapped[str] = mapped_column(String(128), default="system", index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     idempotency_key: Mapped[str] = mapped_column(String(255))
@@ -151,7 +162,28 @@ class DomainEvent(Base):
     available_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class EventConsumerReceipt(Base):
+    __tablename__ = "event_consumer_receipts"
+    __table_args__ = (
+        UniqueConstraint("event_id", "consumer", name="uq_event_consumer_receipt"),
+        CheckConstraint("status IN ('pending', 'processing', 'succeeded', 'failed')", name="ck_event_receipt_status"),
+        CheckConstraint("attempts >= 0", name="ck_event_receipt_attempts"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("domain_events.id", ondelete="CASCADE"), index=True)
+    consumer: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    result_ref: Mapped[str] = mapped_column(String(255), default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class CompanyKnowledge(Base):

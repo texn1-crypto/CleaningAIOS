@@ -13,6 +13,15 @@ def audit(db: Session, actor: str, action: str, resource_type: str, resource_id:
     db.add(AuditLog(actor=actor, action=action, resource_type=resource_type, resource_id=resource_id, details=details or {}))
 
 
+def _event_trace(task: Task, actor: str) -> dict[str, str]:
+    payload = task.payload or {}
+    return {
+        "actor": actor,
+        "correlation_id": str(payload.get("correlation_id") or f"task:{task.id}"),
+        "causation_id": str(payload.get("event_uid") or payload.get("causation_id") or ""),
+    }
+
+
 def _execution_gap(task: Task, result: dict) -> tuple[str, bool] | None:
     payload = task.payload or {}
     source = str(payload.get("source", ""))
@@ -81,6 +90,7 @@ def _escalate_execution_gap(db: Session, task: Task, reason: str, *, credentials
         str(task.id),
         incident_result,
         idempotency_key=f"task:{task.id}:agent-incident",
+        **_event_trace(task, "ceo"),
     )
     escalation["ceo_incident_task_id"] = incident.id
     return escalation
@@ -100,7 +110,7 @@ def dispatch(db: Session, task: Task) -> dict:
         result = {"blocked": True, **policy}
         task.result = result
         audit(db, "decision_engine", "task.blocked", "task", str(task.id), result)
-        event_bus.publish(db, "approval.requested", "task", str(task.id), result, idempotency_key=f"task:{task.id}:approval:{policy['approval_id']}")
+        event_bus.publish(db, "approval.requested", "task", str(task.id), result, idempotency_key=f"task:{task.id}:approval:{policy['approval_id']}", **_event_trace(task, "decision_engine"))
         return result
     try:
         result = agent_runtime.execute(db, task)
@@ -119,10 +129,11 @@ def dispatch(db: Session, task: Task) -> dict:
                 str(task.id),
                 task.result,
                 idempotency_key=f"task:{task.id}:incomplete:{task.attempts}",
+                **_event_trace(task, "orchestrator_quality_gate"),
             )
             return task.result
         audit(db, task.agent_type, "task.completed", "task", str(task.id), result)
-        event_bus.publish(db, "task.completed", "task", str(task.id), result, idempotency_key=f"task:{task.id}:completed:{task.attempts}")
+        event_bus.publish(db, "task.completed", "task", str(task.id), result, idempotency_key=f"task:{task.id}:completed:{task.attempts}", **_event_trace(task, task.agent_type))
         return result
     except Exception as exc:
         source = str((task.payload or {}).get("source", ""))
@@ -134,9 +145,9 @@ def dispatch(db: Session, task: Task) -> dict:
             task.status = "queued"
             task.next_retry_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=min(300, 2 ** task.attempts))
             task.run_after = task.next_retry_at
-            event_bus.publish(db, "task.retry_scheduled", "task", str(task.id), {"attempt": task.attempts, "max_attempts": task.max_attempts, "next_retry_at": task.next_retry_at.isoformat()}, idempotency_key=f"task:{task.id}:retry:{task.attempts}")
+            event_bus.publish(db, "task.retry_scheduled", "task", str(task.id), {"attempt": task.attempts, "max_attempts": task.max_attempts, "next_retry_at": task.next_retry_at.isoformat()}, idempotency_key=f"task:{task.id}:retry:{task.attempts}", **_event_trace(task, "orchestrator"))
         else:
-            event_bus.publish(db, "task.failed", "task", str(task.id), task.result, idempotency_key=f"task:{task.id}:failed")
+            event_bus.publish(db, "task.failed", "task", str(task.id), task.result, idempotency_key=f"task:{task.id}:failed", **_event_trace(task, "orchestrator"))
         return task.result
 
 

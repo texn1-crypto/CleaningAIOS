@@ -28,9 +28,12 @@ incident task with the source task, agent, reason, handoff and responsible party
 
 ## Controlled execution
 
-Every domain write and its event are committed in one database transaction. The
-worker routes the event to Sales, Tender, HR, Finance or Marketing. Agent Runtime
-records input, output, evidence, cost and errors. Failed work is retried with backoff
+Every domain write and its event are committed in one database transaction. Each event
+has a stable UUID, schema version, actor, correlation/causation identifiers and UTC
+occurrence time. The worker routes it to Sales, Tender, HR, Finance or Marketing and
+stores a per-consumer receipt in the same transaction as the routed task. A succeeded
+receipt prevents the same consumer from executing the event again after a retry or
+restart. Agent Runtime records input, output, evidence, cost and errors. Failed work is retried with backoff
 up to `max_attempts`; exhausted work remains visible as failed.
 
 Decision Engine is deterministic. Financial, legal, contractual, final HR, tender

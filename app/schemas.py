@@ -25,7 +25,7 @@ class DecisionCreate(BaseModel):
 
 
 class RecordCreate(BaseModel):
-    record_type: str = Field(min_length=2, max_length=64)
+    record_type: str = Field(min_length=2, max_length=64, pattern=r"^[a-z][a-z0-9_-]*$")
     title: str = Field(min_length=2, max_length=255)
     external_id: Optional[str] = None
     status: str = "new"

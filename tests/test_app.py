@@ -49,10 +49,19 @@ def test_company_brain_versions_knowledge(client):
 
 
 def test_record_emits_domain_event(client):
+    from uuid import UUID
+
     record = client.post("/api/records", json={"record_type": "lead", "title": "УК Север"})
     assert record.status_code == 201
     events = client.get("/api/events", headers={"X-Role": "manager"}).json()
-    assert any(x["event_type"] == "lead.created" and x["aggregate_type"] == "lead" for x in events)
+    event = next(x for x in events if x["event_type"] == "lead.created" and x["aggregate_id"] == str(record.json()["id"]))
+    assert str(UUID(event["event_id"])) == event["event_id"]
+    assert event["schema_version"] == 1
+    assert event["correlation_id"] == event["event_id"]
+    assert event["causation_id"] == ""
+    assert event["actor"] == "api-user"
+    assert event["occurred_at"]
+    assert event["deliveries"] == []
 
 
 def test_sales_lifecycle_contacts_and_summary(client):
@@ -69,6 +78,8 @@ def test_sales_lifecycle_contacts_and_summary(client):
 
 
 def test_domain_rules_prevent_incomplete_records(client):
+    invalid_type = client.post("/api/records", json={"record_type": "Invalid Type", "title": "Невалидный тип"})
+    assert invalid_type.status_code == 422
     lost = client.post("/api/records", json={"record_type": "lead", "title": "Неполный лид", "status": "lost"})
     assert lost.status_code == 422
     finance = client.post("/api/records", json={"record_type": "expense", "title": "Без суммы", "status": "pending"})
@@ -87,6 +98,110 @@ def test_event_bus_routes_domain_work_to_agent(client):
             pass
     tasks = client.get("/api/tasks").json()
     assert any(x["agent_type"] == "sales" and x["payload"].get("record_id") == str(lead["id"]) for x in tasks)
+
+
+def test_event_bus_consumer_receipt_prevents_duplicate_routing(client):
+    from sqlalchemy import func, select
+
+    from app.db import SessionLocal
+    from app.models import DomainEvent, EventConsumerReceipt, Task
+    from app.platform import event_bus, process_next_event
+
+    aggregate_id = "receipt-idempotency-test"
+    with SessionLocal() as db:
+        event = event_bus.publish(
+            db,
+            "lead.created",
+            "lead",
+            aggregate_id,
+            {"title": "Receipt test"},
+            idempotency_key="test:event-receipt-idempotency",
+            actor="test-suite",
+            correlation_id="correlation-receipt-test",
+        )
+        db.commit()
+        event_db_id = event.id
+        event_uid = event.event_id
+
+        while True:
+            processed = process_next_event(db)
+            current = db.get(DomainEvent, event_db_id)
+            if current and current.status == "published":
+                break
+            assert processed is not None
+
+        receipt = db.scalar(select(EventConsumerReceipt).where(
+            EventConsumerReceipt.event_id == event_db_id,
+            EventConsumerReceipt.consumer == "domain_router",
+        ))
+        assert receipt is not None
+        assert receipt.status == "succeeded"
+        assert receipt.attempts == 1
+        assert receipt.result_ref.startswith("task:")
+        routed_before = db.scalar(select(func.count(Task.id)).where(Task.payload["event_uid"].as_string() == event_uid))
+
+        current.status = "pending"
+        db.commit()
+        process_next_event(db)
+        routed_after = db.scalar(select(func.count(Task.id)).where(Task.payload["event_uid"].as_string() == event_uid))
+        db.refresh(receipt)
+        assert routed_after == routed_before == 1
+        assert receipt.attempts == 1
+
+    api_event = next(row for row in client.get("/api/events", headers={"X-Role": "manager"}).json() if row["event_id"] == event_uid)
+    assert len(api_event["deliveries"]) == 1
+    delivery = api_event["deliveries"][0]
+    assert delivery["consumer"] == "domain_router"
+    assert delivery["status"] == "succeeded"
+    assert delivery["attempts"] == 1
+    assert delivery["result_ref"].startswith("task:")
+    assert delivery["last_error"] == ""
+    assert delivery["processed_at"]
+
+
+def test_event_bus_persists_failed_consumer_delivery(monkeypatch):
+    from pydantic import ValidationError
+    from sqlalchemy import select
+
+    from app import platform
+    from app.db import SessionLocal
+    from app.models import DomainEvent, EventConsumerReceipt
+
+    with SessionLocal() as db:
+        while platform.process_next_event(db):
+            pass
+        with pytest.raises(ValidationError):
+            platform.event_bus.publish(db, "Invalid Event", "lead", "invalid")
+        db.rollback()
+
+        event = platform.event_bus.publish(
+            db,
+            "lead.created",
+            "lead",
+            "receipt-failure-test",
+            idempotency_key="test:event-receipt-failure",
+        )
+        db.commit()
+        event_db_id = event.id
+
+        def fail_route(db, event):
+            raise RuntimeError("consumer route failed")
+
+        monkeypatch.setattr(platform, "route_event", fail_route)
+        with pytest.raises(RuntimeError, match="consumer route failed"):
+            platform.process_next_event(db)
+
+        failed_event = db.get(DomainEvent, event_db_id)
+        receipt = db.scalar(select(EventConsumerReceipt).where(
+            EventConsumerReceipt.event_id == event_db_id,
+            EventConsumerReceipt.consumer == "domain_router",
+        ))
+        assert failed_event.status == "pending"
+        assert failed_event.attempts == 1
+        assert receipt is not None
+        assert receipt.status == "failed"
+        assert receipt.attempts == 1
+        assert receipt.last_error == "consumer route failed"
 
 
 def test_company_graph_economics_and_simulator(client):
