@@ -1,0 +1,421 @@
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from .db import SessionLocal
+from .config import settings
+from .models import BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, InboxMessage, MessageTemplate, OperatingEntity, OutboundMessage, SenderMailbox, Suppression, TenderDocument
+from .integrations import collect_tenders, download_tender_document
+from .operations import business_graph, create_ceo_actions, entity_view, goal_progress, parse_lead_import, score_tender, simulate_site, site_economics, validate_entity
+from .orchestrator import audit
+from .platform import approval_engine, event_bus
+from .schemas import CampaignLaunch, ContentItemCreate, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, OperatingEntityCreate, OperatingEntityUpdate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
+from .security import Principal, principal, require_role
+
+router = APIRouter(prefix="/api")
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@router.get("/entities")
+def entities(entity_type: Optional[str] = None, parent_id: Optional[int] = None, db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    query = select(OperatingEntity).order_by(OperatingEntity.id.desc())
+    if entity_type:
+        query = query.where(OperatingEntity.entity_type == entity_type)
+    if parent_id is not None:
+        query = query.where(OperatingEntity.parent_id == parent_id)
+    return [entity_view(x) for x in db.scalars(query).all()]
+
+
+@router.post("/entities", status_code=201)
+def create_entity(payload: OperatingEntityCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    validate_entity(db, payload.entity_type, payload.parent_id, payload.data)
+    row = OperatingEntity(**payload.model_dump())
+    db.add(row)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback(); raise HTTPException(409, "Duplicate external entity")
+    event_bus.publish(db, f"{row.entity_type}.created", row.entity_type, str(row.id), {"name": row.name, "status": row.status, "parent_id": row.parent_id})
+    audit(db, actor.subject, f"{row.entity_type}.created", row.entity_type, str(row.id))
+    db.commit(); db.refresh(row)
+    return entity_view(row)
+
+
+@router.patch("/entities/{entity_id}")
+def update_entity(entity_id: int, payload: OperatingEntityUpdate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    row = db.get(OperatingEntity, entity_id)
+    if not row:
+        raise HTTPException(404, "Entity not found")
+    changes = payload.model_dump(exclude_unset=True)
+    data = {**row.data, **(changes.get("data") or {})}
+    parent_id = changes.get("parent_id", row.parent_id)
+    validate_entity(db, row.entity_type, parent_id, data)
+    old_status = row.status
+    for field, value in changes.items():
+        setattr(row, field, data if field == "data" else value)
+    event_type = f"{row.entity_type}.status_changed" if row.status != old_status else f"{row.entity_type}.updated"
+    event_bus.publish(db, event_type, row.entity_type, str(row.id), {"old_status": old_status, "status": row.status, "changes": sorted(changes)})
+    audit(db, actor.subject, event_type, row.entity_type, str(row.id))
+    db.commit(); db.refresh(row)
+    return entity_view(row)
+
+
+@router.get("/company/graph")
+def company_graph(db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    return business_graph(db)
+
+
+@router.get("/finance/site-economics")
+def economics(site_id: Optional[int] = None, db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    return site_economics(db, site_id)
+
+
+@router.post("/simulations")
+def simulate(payload: SimulationRequest, db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    return simulate_site(db, **payload.model_dump())
+
+
+@router.get("/goals")
+def goals(db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    return [goal_progress(x) for x in db.scalars(select(BusinessGoal).order_by(BusinessGoal.id.desc())).all()]
+
+
+@router.post("/goals", status_code=201)
+def create_goal(payload: GoalCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    row = BusinessGoal(**payload.model_dump())
+    db.add(row); db.flush()
+    event_bus.publish(db, "goal.created", "goal", str(row.id), goal_progress(row))
+    audit(db, actor.subject, "goal.created", "goal", str(row.id))
+    db.commit(); db.refresh(row)
+    return goal_progress(row)
+
+
+@router.patch("/goals/{goal_id}/progress")
+def update_goal(goal_id: int, payload: GoalProgressUpdate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    row = db.get(BusinessGoal, goal_id)
+    if not row:
+        raise HTTPException(404, "Goal not found")
+    row.current = payload.current
+    reached = row.current >= row.target if row.target >= row.baseline else row.current <= row.target
+    if reached:
+        row.status = "completed"
+    result = goal_progress(row)
+    event_bus.publish(db, "goal.progress_updated", "goal", str(row.id), {**result, "note": payload.note})
+    db.commit()
+    return result
+
+
+@router.post("/ceo/review")
+def ceo_review(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    tasks = create_ceo_actions(db)
+    event_bus.publish(db, "ceo.review_completed", "company", "1", {"tasks_created": [x.id for x in tasks]})
+    audit(db, actor.subject, "ceo.review_completed", "company", "1", {"tasks_created": len(tasks)})
+    db.commit()
+    return {"tasks_created": [{"id": x.id, "title": x.title, "agent_type": x.agent_type} for x in tasks]}
+
+
+@router.post("/structured-decisions", status_code=201)
+def create_structured_decision(payload: StructuredDecisionCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    data = payload.model_dump()
+    row = Decision(title=payload.title, rationale=payload.problem, kind=payload.approval_kind or "operational", requested_by=actor.subject, payload=data)
+    db.add(row); db.flush()
+    approval = approval_engine.request(db, payload.approval_kind or "business_decision", "decision", str(row.id), actor.subject, data, payload.problem) if payload.requires_approval else None
+    event_bus.publish(db, "decision.proposed", "decision", str(row.id), {"risk": payload.risk, "confidence": payload.confidence, "requires_approval": payload.requires_approval})
+    db.commit(); db.refresh(row)
+    return {"id": row.id, "status": row.status, "approval_id": approval.id if approval else None, **data}
+
+
+@router.put("/decisions/{decision_id}/outcome")
+def measure_decision(decision_id: int, payload: DecisionOutcomeCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    if not db.get(Decision, decision_id):
+        raise HTTPException(404, "Decision not found")
+    row = db.scalar(select(DecisionOutcome).where(DecisionOutcome.decision_id == decision_id))
+    if row:
+        for field, value in payload.model_dump().items(): setattr(row, field, value)
+        row.measured_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    else:
+        row = DecisionOutcome(decision_id=decision_id, **payload.model_dump()); db.add(row)
+    db.flush()
+    event_bus.publish(db, "decision.outcome_measured", "decision", str(decision_id), payload.model_dump())
+    db.commit()
+    return {"decision_id": decision_id, **payload.model_dump()}
+
+
+@router.post("/tenders/{record_id}/documents", status_code=201)
+def add_tender_document(record_id: int, payload: TenderDocumentCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    tender = db.get(BusinessRecord, record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(404, "Tender not found")
+    row = TenderDocument(record_id=record_id, **payload.model_dump())
+    if row.analysis:
+        row.status = "analyzed"; row.analyzed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.add(row)
+    try: db.flush()
+    except IntegrityError: db.rollback(); raise HTTPException(409, "Tender document already registered")
+    event_bus.publish(db, "tender.document_registered", "tender", str(record_id), {"document_id": row.id, "status": row.status})
+    db.commit(); db.refresh(row)
+    return {"id": row.id, "status": row.status, "analysis": row.analysis}
+
+
+@router.post("/tenders/{record_id}/score")
+def calculate_tender_score(record_id: int, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    tender = db.get(BusinessRecord, record_id)
+    if not tender or tender.record_type != "tender": raise HTTPException(404, "Tender not found")
+    result = score_tender(tender.data)
+    tender.score = result["score"]; tender.data = {**tender.data, "score_breakdown": result["breakdown"], "recommendation": result["recommendation"]}
+    event_bus.publish(db, "tender.scored", "tender", str(tender.id), result)
+    db.commit()
+    return result
+
+
+@router.post("/tender-sources/collect")
+def run_tender_collection(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    result = collect_tenders(db)
+    audit(db, actor.subject, "tenders.collected", "tender_feed", "", result)
+    db.commit()
+    return result
+
+
+@router.post("/tender-documents/{document_id}/download")
+def download_document(document_id: int, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    document = db.get(TenderDocument, document_id)
+    if not document: raise HTTPException(404, "Tender document not found")
+    result = download_tender_document(db, document)
+    audit(db, actor.subject, "tender.document_downloaded", "tender_document", str(document.id), {"checksum": document.checksum})
+    db.commit()
+    return result
+
+
+@router.post("/outreach/mailboxes", status_code=201)
+def create_mailbox(payload: MailboxCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "owner")
+    row = SenderMailbox(**payload.model_dump())
+    db.add(row)
+    try: db.commit()
+    except IntegrityError: db.rollback(); raise HTTPException(409, "Mailbox already exists")
+    db.refresh(row)
+    return {"id": row.id, "name": row.name, "address": row.address, "active": row.active, "secret_configured": bool(row.secret_ref)}
+
+
+@router.get("/outreach/mailboxes")
+def mailboxes(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    rows = db.scalars(select(SenderMailbox).order_by(SenderMailbox.id)).all()
+    return [{"id": x.id, "name": x.name, "address": x.address, "active": x.active, "per_minute": x.per_minute, "per_day": x.per_day, "sent_today": x.sent_today, "last_sent_at": x.last_sent_at, "secret_configured": bool(x.secret_ref)} for x in rows]
+
+
+@router.post("/outreach/templates", status_code=201)
+def create_template(payload: TemplateCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    row = MessageTemplate(**payload.model_dump()); db.add(row)
+    try: db.commit()
+    except IntegrityError: db.rollback(); raise HTTPException(409, "Template already exists")
+    db.refresh(row)
+    return {"id": row.id, "name": row.name, "subject": row.subject, "body": row.body, "variables": row.variables}
+
+
+@router.get("/outreach/templates")
+def templates(db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    rows = db.scalars(select(MessageTemplate).where(MessageTemplate.active.is_(True)).order_by(MessageTemplate.name)).all()
+    return [{"id": x.id, "name": x.name, "subject": x.subject, "body": x.body, "variables": x.variables} for x in rows]
+
+
+@router.get("/outreach/messages")
+def delivery_log(status: Optional[str] = None, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    query = select(OutboundMessage).order_by(OutboundMessage.id.desc())
+    if status: query = query.where(OutboundMessage.status == status)
+    rows = db.scalars(query.limit(1000)).all()
+    return [{"id": x.id, "campaign_key": x.campaign_key, "recipient": x.recipient, "mailbox_id": x.mailbox_id, "status": x.status, "scheduled_at": x.scheduled_at, "sent_at": x.sent_at, "error": x.error, "attachment_count": len(x.attachments or [])} for x in rows]
+
+
+@router.post("/outreach/delivery-events", status_code=201)
+def delivery_event(payload: DeliveryEventCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    recipient = str(payload.recipient).lower()
+    message = db.get(OutboundMessage, payload.message_id) if payload.message_id else db.scalar(select(OutboundMessage).where(OutboundMessage.recipient == recipient).order_by(OutboundMessage.id.desc()))
+    if message and message.recipient != recipient: raise HTTPException(409, "Recipient does not match message")
+    if message:
+        message.status = {"delivered": "delivered", "bounce": "bounced", "complaint": "complained", "unsubscribe": "unsubscribed"}[payload.event_type]
+        if payload.reason: message.error = payload.reason
+    if payload.event_type in {"bounce", "complaint", "unsubscribe"}:
+        db.merge(Suppression(address=recipient, reason=payload.event_type))
+    event_bus.publish(db, f"outreach.{payload.event_type}", "outbound_message", str(message.id if message else payload.message_id or ""), {"recipient": recipient, "reason": payload.reason, "data": payload.data})
+    audit(db, actor.subject, f"outreach.{payload.event_type}", "outbound_message", str(message.id if message else ""), {"recipient": recipient})
+    db.commit()
+    return {"accepted": True, "message_id": message.id if message else None, "recipient": recipient, "suppressed": payload.event_type in {"bounce", "complaint", "unsubscribe"}}
+
+
+@router.post("/outreach/campaigns/launch")
+def launch_campaign(payload: CampaignLaunch, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    recipients = sorted(set(str(address).lower() for address in payload.recipients))
+    recipient_digest = hashlib.sha256("\n".join(recipients).encode()).hexdigest()
+    approval_payload = payload.model_dump(mode="json", exclude={"recipients", "approval_id"}) | {"recipient_count": len(recipients), "recipient_digest": recipient_digest}
+    if not approval_engine.authorized(db, "bulk_outreach", payload.approval_id, "campaign", payload.campaign_key, approval_payload):
+        request = approval_engine.request(db, "bulk_outreach", "campaign", payload.campaign_key, actor.subject, approval_payload, "Bulk outreach requires owner approval")
+        event_bus.publish(db, "approval.requested", "campaign", payload.campaign_key, {"approval_id": request.id, "recipient_count": len(payload.recipients)}, idempotency_key=f"campaign:{payload.campaign_key}:approval:{request.id}")
+        db.commit()
+        return {"status": "waiting_approval", "approval_id": request.id, "recipient_count": len(payload.recipients)}
+    if payload.mailbox_id and not db.get(SenderMailbox, payload.mailbox_id): raise HTTPException(404, "Mailbox not found")
+    queued = suppressed = duplicate = 0
+    when = payload.scheduled_at or datetime.now(timezone.utc).replace(tzinfo=None)
+    for address in recipients:
+        if db.get(Suppression, address): suppressed += 1; continue
+        if db.scalar(select(OutboundMessage.id).where(OutboundMessage.campaign_key == payload.campaign_key, OutboundMessage.recipient == address)):
+            duplicate += 1; continue
+        db.add(OutboundMessage(campaign_key=payload.campaign_key, recipient=address, subject=payload.subject, body=payload.body, mailbox_id=payload.mailbox_id, template_id=payload.template_id, scheduled_at=when)); queued += 1
+    event_bus.publish(db, "campaign.queued", "campaign", payload.campaign_key, {"queued": queued, "suppressed": suppressed, "duplicate": duplicate}, idempotency_key=f"campaign:{payload.campaign_key}:queued")
+    audit(db, actor.subject, "campaign.queued", "campaign", payload.campaign_key, {"queued": queued, "suppressed": suppressed, "duplicate": duplicate})
+    db.commit()
+    return {"status": "queued", "queued": queued, "suppressed": suppressed, "duplicate": duplicate}
+
+
+@router.post("/imports/leads", status_code=201)
+def import_leads(payload: ImportFile, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    try: content = base64.b64decode(payload.content_base64, validate=True)
+    except (ValueError, binascii.Error): raise HTTPException(422, "Invalid base64 content")
+    if len(content) > settings.max_import_bytes: raise HTTPException(413, "Import file is too large")
+    job = ImportJob(filename=payload.filename, created_by=actor.subject); db.add(job); db.flush()
+    rows = parse_lead_import(payload.filename, content)
+    errors = []
+    for index, source in enumerate(rows, 2):
+        title = str(source.get("title") or source.get("company") or source.get("name") or "").strip()
+        email = str(source.get("email") or "").strip().lower()
+        if not title:
+            errors.append({"row": index, "error": "missing title/company/name"}); continue
+        external = email or str(source.get("external_id") or "").strip() or None
+        if external and db.scalar(select(BusinessRecord.id).where(BusinessRecord.record_type == "lead", BusinessRecord.external_id == external)):
+            job.skipped_rows += 1; continue
+        record = BusinessRecord(record_type="lead", external_id=external, title=title, source="import", data={k: v for k, v in source.items() if v not in {None, ""}})
+        db.add(record); db.flush(); job.imported_rows += 1
+        event_bus.publish(db, "lead.created", "lead", str(record.id), {"title": record.title, "source": "import"}, idempotency_key=f"import:{job.id}:row:{index}")
+    job.total_rows = len(rows); job.skipped_rows += len(errors); job.errors = errors; job.status = "completed_with_errors" if errors else "completed"; job.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit(); db.refresh(job)
+    return {"job_id": job.id, "status": job.status, "total_rows": job.total_rows, "imported_rows": job.imported_rows, "skipped_rows": job.skipped_rows, "errors": job.errors}
+
+
+@router.get("/inbox")
+def inbox(status: Optional[str] = None, channel: Optional[str] = None, db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    query = select(InboxMessage).order_by(InboxMessage.received_at.desc())
+    if status: query = query.where(InboxMessage.status == status)
+    if channel: query = query.where(InboxMessage.channel == channel)
+    rows = db.scalars(query.limit(500)).all()
+    return [{"id": x.id, "channel": x.channel, "external_id": x.external_id, "sender": x.sender, "recipient": x.recipient, "subject": x.subject, "body": x.body, "status": x.status, "record_id": x.record_id, "data": x.data, "received_at": x.received_at} for x in rows]
+
+
+@router.post("/inbox", status_code=201)
+def receive_message(payload: InboxMessageCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    if payload.record_id and not db.get(BusinessRecord, payload.record_id): raise HTTPException(404, "Record not found")
+    values = payload.model_dump(); values["received_at"] = values["received_at"] or datetime.now(timezone.utc).replace(tzinfo=None)
+    row = InboxMessage(**values); db.add(row)
+    try: db.flush()
+    except IntegrityError: db.rollback(); raise HTTPException(409, "Message already received")
+    aggregate = "lead" if row.record_id else "inbox"
+    aggregate_id = str(row.record_id or row.id)
+    event_bus.publish(db, "inbox.message_received", aggregate, aggregate_id, {"message_id": row.id, "channel": row.channel, "sender": row.sender})
+    db.commit(); db.refresh(row)
+    return {"id": row.id, "status": row.status}
+
+
+@router.patch("/inbox/{message_id}")
+def update_inbox(message_id: int, payload: InboxStatusUpdate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    row = db.get(InboxMessage, message_id)
+    if not row: raise HTTPException(404, "Message not found")
+    if payload.record_id and not db.get(BusinessRecord, payload.record_id): raise HTTPException(404, "Record not found")
+    row.status = payload.status
+    if payload.record_id is not None: row.record_id = payload.record_id
+    event_bus.publish(db, "inbox.message_updated", "inbox", str(row.id), {"status": row.status, "record_id": row.record_id})
+    db.commit()
+    return {"id": row.id, "status": row.status, "record_id": row.record_id}
+
+
+@router.get("/marketing/content")
+def content_plan(status: Optional[str] = None, db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    query = select(ContentItem).order_by(ContentItem.scheduled_at, ContentItem.id)
+    if status: query = query.where(ContentItem.status == status)
+    rows = db.scalars(query).all()
+    return [{"id": x.id, "campaign_id": x.campaign_id, "channel": x.channel, "title": x.title, "body": x.body, "status": x.status, "scheduled_at": x.scheduled_at, "published_at": x.published_at, "metrics": x.metrics} for x in rows]
+
+
+@router.post("/marketing/content", status_code=201)
+def create_content(payload: ContentItemCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    if payload.campaign_id:
+        campaign = db.get(BusinessRecord, payload.campaign_id)
+        if not campaign or campaign.record_type != "campaign": raise HTTPException(404, "Campaign not found")
+    if payload.status == "scheduled" and not payload.scheduled_at: raise HTTPException(422, "Scheduled content requires scheduled_at")
+    row = ContentItem(**payload.model_dump()); db.add(row); db.flush()
+    event_bus.publish(db, "marketing.content_created", "campaign", str(payload.campaign_id or row.id), {"content_id": row.id, "channel": row.channel, "status": row.status})
+    db.commit(); db.refresh(row)
+    return {"id": row.id, "status": row.status}
+
+
+@router.get("/hr/staffing")
+def staffing(db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    employees = db.scalars(select(OperatingEntity).where(OperatingEntity.entity_type == "employee")).all()
+    vacancies = db.scalars(select(OperatingEntity).where(OperatingEntity.entity_type == "vacancy")).all()
+    shifts = db.scalars(select(OperatingEntity).where(OperatingEntity.entity_type == "shift")).all()
+    reserve = [x for x in employees if x.status == "reserve" or x.data.get("reserve")]
+    unfilled = [x for x in shifts if not x.data.get("employee_id") and x.status not in {"completed", "cancelled"}]
+    return {"employees": len(employees), "reserve": [entity_view(x) for x in reserve], "vacancies": [entity_view(x) for x in vacancies if x.status == "active"], "unfilled_shifts": [entity_view(x) for x in unfilled]}
+
+
+@router.get("/hr/vacancies/{vacancy_id}/telegram-draft")
+def vacancy_telegram_draft(vacancy_id: int, db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    vacancy = db.get(OperatingEntity, vacancy_id)
+    if not vacancy or vacancy.entity_type != "vacancy": raise HTTPException(404, "Vacancy not found")
+    data = vacancy.data
+    parts = [f"🧹 {vacancy.name}"]
+    if data.get("district"): parts.append(f"📍 Район: {data['district']}")
+    if data.get("schedule"): parts.append(f"🕒 График: {data['schedule']}")
+    if data.get("rate"): parts.append(f"💰 Ставка: {data['rate']} ₽")
+    if data.get("requirements"): parts.append(f"Требования: {data['requirements']}")
+    if data.get("contact"): parts.append(f"Связь: {data['contact']}")
+    return {"vacancy_id": vacancy.id, "text": "\n".join(parts), "requires_owner_approval_before_hiring": True}
+
+
+@router.get("/finance/payment-calendar")
+def payment_calendar(days: int = Query(default=30, ge=1, le=365), db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    from datetime import timedelta
+    rows = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "payment", BusinessRecord.deadline_at.is_not(None), BusinessRecord.deadline_at <= now + timedelta(days=days)).order_by(BusinessRecord.deadline_at)).all()
+    return [{"id": x.id, "title": x.title, "status": x.status, "amount": float(x.data.get("amount", 0) or 0), "deadline_at": x.deadline_at, "overdue": bool(x.deadline_at and x.deadline_at < now and x.status not in {"paid", "cancelled"})} for x in rows]
+
+
+@router.get("/operations/quality")
+def quality(db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    complaints = db.scalars(select(OperatingEntity).where(OperatingEntity.entity_type == "complaint")).all()
+    open_rows = [x for x in complaints if x.status not in {"resolved", "closed"}]
+    breached = [x for x in open_rows if x.data.get("sla_deadline") and str(x.data["sla_deadline"]) < datetime.now(timezone.utc).isoformat()]
+    return {"total_complaints": len(complaints), "open": len(open_rows), "sla_breached": len(breached), "items": [entity_view(x) for x in open_rows]}

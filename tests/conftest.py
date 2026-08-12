@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_cleaningai.db"
+os.environ["ENVIRONMENT"] = "test"
 Path("test_cleaningai.db").unlink(missing_ok=True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

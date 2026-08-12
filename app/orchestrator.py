@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
-from .agents import AGENTS, heartbeat
-from .models import ApprovalKind, AuditLog, Decision, Task
-
-
-CRITICAL_ACTIONS = {item.value for item in ApprovalKind}
+from .models import AuditLog, Task
+from .platform import agent_runtime, decision_engine, event_bus
 
 
 def audit(db: Session, actor: str, action: str, resource_type: str, resource_id: str = "", details: dict | None = None) -> None:
@@ -17,40 +14,35 @@ def audit(db: Session, actor: str, action: str, resource_type: str, resource_id:
 
 
 def dispatch(db: Session, task: Task) -> dict:
-    if task.payload.get("action_kind") in CRITICAL_ACTIONS:
-        approval_id = task.payload.get("approval_id")
-        approval = db.get(Decision, approval_id) if approval_id else None
-        if not approval or approval.status != "approved":
-            task.status = "blocked"
-            result = {"blocked": True, "reason": "owner_approval_required", "approval_id": approval_id}
-            task.result = result
-            audit(db, "orchestrator", "task.blocked", "task", str(task.id), result)
-            return result
-    agent = AGENTS.get(task.agent_type)
-    if not agent:
-        raise ValueError(f"Unknown agent: {task.agent_type}")
-    task.status = "running"
-    task.attempts += 1
-    heartbeat(db, task.agent_type, "running")
-    db.flush()
-    try:
-        result = agent.execute(db, task.payload)
+    policy = decision_engine.evaluate(db, task)
+    if not policy["allowed"]:
+        task.status = "blocked"
+        result = {"blocked": True, **policy}
         task.result = result
-        task.status = "done"
-        heartbeat(db, task.agent_type, "idle", metrics=result)
+        audit(db, "decision_engine", "task.blocked", "task", str(task.id), result)
+        event_bus.publish(db, "approval.requested", "task", str(task.id), result, idempotency_key=f"task:{task.id}:approval:{policy['approval_id']}")
+        return result
+    try:
+        result = agent_runtime.execute(db, task)
         audit(db, task.agent_type, "task.completed", "task", str(task.id), result)
+        event_bus.publish(db, "task.completed", "task", str(task.id), result, idempotency_key=f"task:{task.id}:completed:{task.attempts}")
         return result
     except Exception as exc:
-        task.status = "failed"
-        task.result = {"error": str(exc)}
-        heartbeat(db, task.agent_type, "error", str(exc))
         audit(db, task.agent_type, "task.failed", "task", str(task.id), task.result)
-        raise
+        if task.attempts < task.max_attempts:
+            task.status = "queued"
+            task.next_retry_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=min(300, 2 ** task.attempts))
+            task.run_after = task.next_retry_at
+            event_bus.publish(db, "task.retry_scheduled", "task", str(task.id), {"attempt": task.attempts, "max_attempts": task.max_attempts, "next_retry_at": task.next_retry_at.isoformat()}, idempotency_key=f"task:{task.id}:retry:{task.attempts}")
+        else:
+            event_bus.publish(db, "task.failed", "task", str(task.id), task.result, idempotency_key=f"task:{task.id}:failed")
+        return task.result
 
 
 def run_next(db: Session) -> Task | None:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    task = db.scalar(select(Task).where(Task.status.in_(["open", "queued"]), Task.run_after <= now).order_by(Task.priority.desc(), Task.id).with_for_update(skip_locked=True))
+    priority_order = case((Task.priority == "critical", 4), (Task.priority == "high", 3), (Task.priority == "normal", 2), (Task.priority == "low", 1), else_=0)
+    task = db.scalar(select(Task).where(Task.status.in_(["open", "queued"]), Task.run_after <= now).order_by(priority_order.desc(), Task.id).with_for_update(skip_locked=True))
     if task:
         dispatch(db, task)
         db.commit()

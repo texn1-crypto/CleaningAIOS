@@ -19,9 +19,24 @@ docker compose up -d web worker scheduler
 docker compose --profile telegram up -d bot
 docker compose ps
 curl --fail http://127.0.0.1:8000/health
+curl --fail -H "X-API-Key: $API_KEY" http://127.0.0.1:8000/api/integrations
 ```
 
 Do not expose PostgreSQL publicly. Terminate TLS in a reverse proxy and restrict `/docs` in production if it is not needed.
+
+`API_KEY` always grants the `owner` role. Configure `MANAGER_API_KEY`,
+`OPERATOR_API_KEY`, and `VIEWER_API_KEY` for lower-privilege clients. In production,
+the server derives the role from the matching key and ignores `X-Role`; this prevents
+clients from raising their own privileges. Give each secret only to its intended
+operator and rotate it if it is exposed.
+
+Set `UNSUBSCRIBE_SECRET` to a separate random value to sign unsubscribe links. If it
+is omitted, `API_KEY` is used as the signing secret. Changing the effective secret
+invalidates links that have already been sent.
+
+For every additional sender mailbox, set `secret_ref` to the name of an environment
+variable mounted into `web` and `worker` (for example `SMTP_SALES_PASSWORD`). Do not
+store SMTP passwords in API payloads or the database.
 
 ## Backup
 

@@ -5,6 +5,7 @@ x-app: &app
   environment:
     DATABASE_URL: postgresql+psycopg://cleaningai:${POSTGRES_PASSWORD}@db:5432/cleaningai
     ENVIRONMENT: ${ENVIRONMENT:-production}
+    INTERNAL_API_URL: http://web:8000
   depends_on:
     migrate:
       condition: service_completed_successfully
@@ -40,6 +41,7 @@ services:
   web:
     <<: *app
     ports: ["${WEB_PORT:-8000}:8000"]
+    volumes: [tender_documents:/data/documents]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -49,6 +51,7 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "app.worker"]
+    volumes: [tender_documents:/data/documents]
     healthcheck:
       test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
       interval: 15s
@@ -78,6 +81,7 @@ services:
 
 volumes:
   postgres_data:
+  tender_documents:
 
 networks:
   backend:

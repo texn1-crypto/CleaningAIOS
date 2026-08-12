@@ -10,20 +10,32 @@ class Settings(BaseSettings):
     environment: str = "development"
     database_url: str = "sqlite:///./cleaningai.db"
     api_key: str = "development-only-change-me"
+    manager_api_key: str = ""
+    operator_api_key: str = ""
+    viewer_api_key: str = ""
     owner_telegram_id: str = ""
     telegram_bot_token: str = ""
     public_base_url: str = "http://localhost:8000"
+    internal_api_url: str = ""
     worker_poll_seconds: float = 2.0
     scheduler_interval_seconds: int = 60
+    ceo_review_interval_hours: int = 24
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
     smtp_from_email: str = ""
+    unsubscribe_secret: str = ""
     outreach_per_minute: int = 10
     outreach_per_day: int = 100
     llm_api_key: str = ""
     tender_sources: str = ""
+    tender_source_token: str = ""
+    tender_request_timeout_seconds: int = 30
+    document_storage_path: str = "/data/documents"
+    max_document_bytes: int = 25_000_000
+    max_attachment_bytes: int = 10_000_000
+    max_import_bytes: int = 10_000_000
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

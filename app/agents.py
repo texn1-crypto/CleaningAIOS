@@ -6,7 +6,9 @@ from typing import Any, Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import AgentState, BusinessRecord, Decision, Task
+from .config import settings
+from .models import AgentState, BusinessGoal, BusinessRecord, Decision, DecisionOutcome, OperatingEntity, Task
+from .operations import create_ceo_actions, goal_progress, score_tender, site_economics
 
 
 class Agent(Protocol):
@@ -17,9 +19,26 @@ class Agent(Protocol):
 class DataCollectorAgent:
     name = "research"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
-        sources = payload.get("sources", [])
+        sources = payload.get("sources") or [x.strip() for x in settings.tender_sources.split(",") if x.strip()]
         query = payload.get("query", "")
-        return {"query": query, "sources_requested": sources, "credentials_required": not bool(sources), "items": []}
+        if payload.get("collection", "tenders") == "tenders":
+            from .integrations import collect_tenders
+            result = collect_tenders(db, sources=sources)
+            return {"collection": "tenders", "query": query, "sources_requested": sources, "credentials_required": not bool(sources), "configured": bool(sources), **result, "evidence": [{"type": "tender_feed_collection", "source_count": len(sources), "created": result["created"], "updated": result["updated"]}]}
+        return {"collection": payload.get("collection"), "query": query, "status": "adapter_required", "sources_requested": sources, "credentials_required": True, "configured": False, "evidence": []}
+
+
+class OrchestratorAgent:
+    name = "orchestrator"
+    def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        created = []
+        for item in payload.get("delegations", []):
+            agent_type = item.get("agent_type")
+            if agent_type not in AGENTS or agent_type == self.name:
+                continue
+            task = Task(title=item.get("title", f"Delegated task for {agent_type}"), agent_type=agent_type, priority=item.get("priority", "normal"), payload=item.get("payload", {}))
+            db.add(task); db.flush(); created.append({"id": task.id, "agent_type": agent_type})
+        return {"coordinated": True, "delegated_tasks": created, "message": payload.get("message", "Task accepted by orchestrator"), "evidence": [{"delegations_requested": len(payload.get("delegations", []))}]}
 
 
 class TenderAgent:
@@ -27,29 +46,39 @@ class TenderAgent:
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         keywords = payload.get("keywords", ["уборка МКД", "клининг БЦ", "ТСЖ", "УК"])
         rows = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "tender")).all()
+        for row in rows:
+            if row.score is None and row.data:
+                calculated = score_tender(row.data); row.score = calculated["score"]; row.data = {**row.data, "score_breakdown": calculated["breakdown"], "recommendation": calculated["recommendation"]}
         ranked = sorted(rows, key=lambda x: x.score or 0, reverse=True)
-        return {"keywords": keywords, "tenders": [{"id": r.id, "title": r.title, "score": r.score, "deadline": r.deadline_at} for r in ranked], "submission_requires_owner_approval": True}
+        return {"keywords": keywords, "tenders": [{"id": r.id, "title": r.title, "score": r.score, "deadline": r.deadline_at, "recommendation": r.data.get("recommendation")} for r in ranked], "submission_requires_owner_approval": True, "evidence": [{"record_id": r.id, "score": r.score} for r in ranked]}
 
 
 class SalesAgent:
     name = "sales"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         leads = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "lead")).all()
-        return {"lead_count": len(leads), "qualified": sum(1 for x in leads if (x.score or 0) >= 60), "follow_ups_due": sum(1 for x in leads if x.status == "follow_up")}
+        pipeline = sum(float(x.data.get("budget", 0) or 0) for x in leads if x.status not in {"won", "lost"})
+        return {"lead_count": len(leads), "qualified": sum(1 for x in leads if (x.score or 0) >= 60 or x.status == "qualified"), "follow_ups_due": sum(1 for x in leads if x.status == "follow_up"), "pipeline_amount": pipeline, "loss_reasons": [x.data.get("loss_reason") for x in leads if x.status == "lost" and x.data.get("loss_reason")], "evidence": [{"record_id": x.id, "status": x.status} for x in leads]}
 
 
 class MarketingAgent:
     name = "marketing"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         campaigns = db.scalar(select(func.count(BusinessRecord.id)).where(BusinessRecord.record_type == "campaign")) or 0
-        return {"campaigns": campaigns, "content_ideas": payload.get("topics", []), "analytics_requires_connected_sources": True}
+        leads = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "lead")).all()
+        attribution: dict[str, int] = {}
+        for lead in leads: attribution[lead.source] = attribution.get(lead.source, 0) + 1
+        return {"campaigns": campaigns, "content_ideas": payload.get("topics", []), "lead_attribution": attribution, "analytics_requires_connected_sources": not bool(attribution), "evidence": [{"source": key, "leads": value} for key, value in attribution.items()]}
 
 
 class HRAgent:
     name = "hr"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         candidates = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "candidate")).all()
-        return {"candidates": len(candidates), "available": sum(1 for x in candidates if x.data.get("available")), "final_decisions_require_owner_approval": True}
+        employees = db.scalars(select(OperatingEntity).where(OperatingEntity.entity_type == "employee")).all()
+        shifts = db.scalars(select(OperatingEntity).where(OperatingEntity.entity_type == "shift")).all()
+        unfilled = [x for x in shifts if not x.data.get("employee_id") and x.status not in {"completed", "cancelled"}]
+        return {"candidates": len(candidates), "available": sum(1 for x in candidates if x.data.get("available")), "employees": len(employees), "unfilled_shifts": len(unfilled), "final_decisions_require_owner_approval": True, "evidence": [{"shift_id": x.id, "site_id": x.parent_id} for x in unfilled]}
 
 
 class FinanceAgent:
@@ -57,7 +86,8 @@ class FinanceAgent:
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         rows = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type.in_(["cashflow", "expense", "payment"]))).all()
         total = sum(float(r.data.get("amount", 0)) for r in rows)
-        return {"entries": len(rows), "net_amount": total, "financial_commitments_require_owner_approval": True}
+        economics = site_economics(db)
+        return {"entries": len(rows), "net_amount": total, "sites": economics, "low_margin_sites": [x for x in economics if x["revenue"] and x["margin_percent"] < 15], "financial_commitments_require_owner_approval": True, "evidence": [{"record_id": r.id, "amount": r.data.get("amount", 0)} for r in rows]}
 
 
 class CEOAgent:
@@ -67,7 +97,12 @@ class CEOAgent:
         pending = db.scalar(select(func.count(Decision.id)).where(Decision.status == "pending")) or 0
         failed = db.scalar(select(func.count(Task.id)).where(Task.status == "failed")) or 0
         health = max(0, 100 - pending * 5 - failed * 10)
-        return {"business_health": health, "open_tasks": open_tasks, "pending_owner_decisions": pending, "recommendations": ["Resolve failed tasks"] if failed else []}
+        goals = [goal_progress(x) for x in db.scalars(select(BusinessGoal).where(BusinessGoal.status == "active")).all()]
+        economics = site_economics(db)
+        created = create_ceo_actions(db)
+        recommendations = ["Resolve failed tasks"] if failed else []
+        recommendations.extend(f"Recover margin at {x['site']}" for x in economics if x["revenue"] and x["margin_percent"] < 15)
+        return {"business_health": health, "open_tasks": open_tasks, "pending_owner_decisions": pending, "goals": goals, "site_economics": economics, "recommendations": recommendations, "tasks_created": [{"id": x.id, "title": x.title, "agent_type": x.agent_type} for x in created], "evidence": [{"type": "database_snapshot", "tasks": open_tasks, "pending": pending, "failed": failed}]}
 
 
 class MetaBrainAgent:
@@ -75,10 +110,15 @@ class MetaBrainAgent:
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         states = db.scalars(select(AgentState)).all()
         gaps = [s.agent_type for s in states if s.last_error or not s.last_heartbeat_at]
-        return {"agents_evaluated": len(states), "data_gaps": gaps, "recommendations": [f"Restore telemetry for {x}" for x in gaps]}
+        outcomes = db.scalars(select(DecisionOutcome)).all()
+        measured = [x for x in outcomes if x.successful is not None]
+        success_rate = round(sum(bool(x.successful) for x in measured) / len(measured) * 100, 2) if measured else None
+        return {"agents_evaluated": len(states), "data_gaps": gaps, "decision_outcomes_measured": len(measured), "decision_success_rate": success_rate, "recommendations": [f"Restore telemetry for {x}" for x in gaps] + (["Start measuring decision outcomes"] if not measured else []), "evidence": [{"decision_id": x.decision_id, "successful": x.successful} for x in measured]}
 
 
-AGENTS: dict[str, Agent] = {a.name: a for a in [DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), MetaBrainAgent()]}
+AGENTS: dict[str, Agent] = {}
+for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), MetaBrainAgent()]:
+    AGENTS[agent.name] = agent
 
 
 def heartbeat(db: Session, agent_type: str, status: str, error: str = "", metrics: dict | None = None) -> None:
