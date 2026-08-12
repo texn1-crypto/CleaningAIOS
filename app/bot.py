@@ -83,6 +83,52 @@ async def improvement_queue(update: Update, _: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(text)
 
 
+def format_activity_report(result: dict) -> str:
+    summary = result.get("summary") or {}
+    lines = [
+        f"📋 Отчёт CleaningAI OS за {result.get('period_hours', 24)} ч.",
+        f"✅ Выполнено задач: {summary.get('tasks_completed', 0)}",
+        f"🔄 В работе и очереди: {summary.get('tasks_active', 0)}",
+        f"⚠️ Ошибок: {summary.get('tasks_failed', 0)}",
+        f"⛔ Заблокировано: {summary.get('tasks_blocked', 0)}",
+        f"🛠 Улучшений в очереди: {summary.get('queued_improvements', 0)}",
+        f"🔐 Ожидают подтверждения: {summary.get('pending_approvals', 0)}",
+    ]
+    recent = result.get("recent_completed_tasks") or []
+    if recent:
+        lines.append("\nПоследние результаты:")
+        lines.extend(
+            f"• #{row['id']} [{row['agent_type']}] {row['title']}"
+            for row in recent[:5]
+        )
+    blockers = result.get("blockers") or []
+    lines.append("\nТребуют внимания: " + ("; ".join(blockers) if blockers else "нет."))
+    return "\n".join(lines)
+
+
+async def activity_report(update: Update, intent: dict):
+    task = await api("POST", "/api/tasks", json={
+        "title": "Сформировать отчёт о проделанной работе",
+        "agent_type": "orchestrator",
+        "priority": "high",
+        "payload": {
+            "action": "system_activity_report",
+            "period_hours": intent.get("period_hours", 24),
+            "source": "telegram_natural_language",
+        },
+        "max_attempts": 1,
+    })
+    completed = await api("POST", f"/api/tasks/{task['id']}/run")
+    result = completed.get("result") or {}
+    if completed.get("status") != "done" or result.get("outcome") != "completed":
+        await update.effective_message.reply_text(
+            f"Не удалось сформировать отчёт. Задача #{task['id']} сохранена с фактическим статусом "
+            f"{completed.get('status', 'unknown')}."
+        )
+        return
+    await update.effective_message.reply_text(format_activity_report(result))
+
+
 async def module_summary(update: Update, module: str, title: str):
     data = (await api("GET", "/api/modules/summary"))[module]
     await update.effective_message.reply_text(title + "\n" + "\n".join(f"{key}: {value}" for key, value in data.items()))
@@ -151,6 +197,8 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(text)
         elif kind == "improvements":
             await improvement_queue(update, context)
+        elif kind == "activity_report":
+            await activity_report(update, intent)
         else:
             data = await api("POST", "/api/tasks", json={
                 "title": intent["title"],

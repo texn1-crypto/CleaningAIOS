@@ -457,6 +457,98 @@ def test_russian_chat_reads_existing_sections():
     assert understand_russian_message("Что с тендерами?")["record_type"] == "tender"
     assert understand_russian_message("Покажи финансы")["module"] == "finance"
     assert understand_russian_message("Как дела у системы?")["kind"] == "dashboard"
+    assert understand_russian_message("Пришли отчет о проделанной работе")["kind"] == "activity_report"
+
+
+def test_activity_report_is_a_real_audited_orchestrator_result(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "Пришли отчёт о проделанной работе"
+    intent = understand_russian_message(message)
+    analysis = client.post("/api/request-analysis", json={"message": message, "intent": intent}).json()
+    assert analysis["classification"] == "supported"
+    assert analysis["improvement_id"] is None
+    active_statuses = {"open", "queued", "running"}
+    active_before = sum(row["status"] in active_statuses for row in client.get("/api/tasks").json())
+
+    task = client.post("/api/tasks", json={
+        "title": "Сформировать отчёт о проделанной работе",
+        "agent_type": "orchestrator",
+        "payload": {"action": "system_activity_report", "period_hours": 24},
+        "max_attempts": 1,
+    }).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    result = completed["result"]
+    assert completed["status"] == "done"
+    assert result["outcome"] == "completed"
+    assert result["report_kind"] == "system_activity"
+    assert result["summary"]["tasks_active"] == active_before
+    assert isinstance(result["recent_completed_tasks"], list)
+    assert any(item["type"] == "database_snapshot" for item in result["evidence"])
+    audit_rows = client.get("/api/audit").json()
+    assert any(
+        row["action"] == "task.completed" and row["resource_id"] == str(task["id"])
+        for row in audit_rows
+    )
+
+
+def test_telegram_activity_report_returns_actual_result(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 401, "agent_type": "orchestrator", "title": "Отчёт"}
+        if path == "/api/tasks/401/run":
+            return {
+                "status": "done",
+                "result": {
+                    "outcome": "completed",
+                    "period_hours": 24,
+                    "summary": {
+                        "tasks_completed": 3,
+                        "tasks_active": 0,
+                        "tasks_failed": 0,
+                        "tasks_blocked": 0,
+                        "queued_improvements": 1,
+                        "pending_approvals": 0,
+                    },
+                    "recent_completed_tasks": [
+                        {"id": 9, "agent_type": "sales", "title": "Подготовить КП"}
+                    ],
+                    "blockers": [],
+                },
+            }
+        raise AssertionError(path)
+
+    class Message:
+        text = "Пришли отчет о проделанной работе"
+        replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    assert "Выполнено задач: 3" in Update.effective_message.replies[-1]
+    assert "#9 [sales] Подготовить КП" in Update.effective_message.replies[-1]
+    task_payload = next(kwargs["json"] for method, path, kwargs in calls if path == "/api/tasks")
+    assert task_payload["payload"]["action"] == "system_activity_report"
+    assert task_payload["max_attempts"] == 1
 
 
 def test_russian_chat_routes_business_requests_to_agents():

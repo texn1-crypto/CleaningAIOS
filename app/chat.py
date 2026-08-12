@@ -100,6 +100,11 @@ def understand_russian_message(message: str) -> dict[str, Any]:
         return {"kind": "help"}
     if text in {"спасибо", "благодарю", "понял", "понятно", "хорошо", "ок", "готово"}:
         return {"kind": "acknowledgement"}
+    if (
+        "отчет" in text
+        and _contains(text, "проделан", "сделано", "выполнен", "работ")
+    ) or _contains(text, "что было сделано", "что уже сделано", "результаты работы системы"):
+        return {"kind": "activity_report", "period_hours": 24}
 
     action_words = _contains(
         text,

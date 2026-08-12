@@ -33,6 +33,10 @@ class DataCollectorAgent:
 class OrchestratorAgent:
     name = "orchestrator"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "system_activity_report":
+            from .reports import build_activity_report
+
+            return build_activity_report(db, period_hours=payload.get("period_hours", 24))
         created = []
         for item in payload.get("delegations", []):
             agent_type = item.get("agent_type")
