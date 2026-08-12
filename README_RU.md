@@ -22,6 +22,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - CSV/XLSX lead import and outreach queue with multiple mailboxes, templates, real attachments, delivery journal, bounce/complaint handling, suppression, unsubscribe, campaign/recipient deduplication, approvals, minute/day limits and SMTP delivery;
 - unified inbound message inbox, content plan, staffing/reserve view, vacancy Telegram drafts, payment calendar and complaint/SLA control;
 - backward-compatible Telegram commands plus Mission Control sections;
+- natural-language Russian Telegram dialogue that maps ordinary phrases to read views or auditable agent tasks, without requiring slash commands;
 - Alembic migration, Docker Compose, CI, tests and rollback guide.
 
 Agents produce operational analysis from the shared database. The core remains deterministic without an LLM. When `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` are configured, AI CEO also requests a structured advisory review and may create only analysis/planning tasks. LLM recommendations that declare an owner decision are not queued, and the policy layer remains authoritative for every protected action. Tender collection similarly reports missing sources instead of inventing results.
@@ -78,3 +79,12 @@ source is configured; the LLM is never reported as configured without its key an
 model. The deterministic operating system works without either integration.
 
 See [architecture](docs/ARCHITECTURE.md) for the event flow and module boundaries.
+
+## Общение с Telegram-ботом
+
+Владелец может писать боту обычным русским текстом: «покажи задачи», «что с
+тендерами», «найди тендеры по уборке БЦ», «создай задачу связаться с клиентом» или
+«проанализируй финансы». Чтение данных выполняется сразу, а деловые поручения
+превращаются в задачи подходящего агента. Неизвестные поручения передаются
+Orchestrator. Оплата, договоры, подача заявки на тендер, окончательные кадровые
+решения и массовые рассылки сохраняют обязательное подтверждение владельца.

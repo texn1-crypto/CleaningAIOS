@@ -438,3 +438,71 @@ def test_telegram_requires_owner_id(monkeypatch):
     monkeypatch.setattr(settings, "owner_telegram_id", "")
     with pytest.raises(RuntimeError, match="OWNER_TELEGRAM_ID is empty"):
         build_application()
+
+
+def test_russian_chat_reads_existing_sections():
+    from app.chat import understand_russian_message
+
+    assert understand_russian_message("Покажи текущие задачи")["kind"] == "tasks"
+    assert understand_russian_message("Что с тендерами?")["record_type"] == "tender"
+    assert understand_russian_message("Покажи финансы")["module"] == "finance"
+    assert understand_russian_message("Как дела у системы?")["kind"] == "dashboard"
+
+
+def test_russian_chat_routes_business_requests_to_agents():
+    from app.chat import understand_russian_message
+
+    research = understand_russian_message("Найди тендеры по уборке бизнес-центров")
+    assert research["kind"] == "task"
+    assert research["agent_type"] == "research"
+    assert research["payload"]["collection"] == "tenders"
+
+    sales = understand_russian_message("Создай задачу связаться с новым клиентом")
+    assert sales["agent_type"] == "sales"
+    assert sales["payload"]["source"] == "telegram_natural_language"
+
+
+@pytest.mark.parametrize(
+    ("message", "agent_type", "action_kind"),
+    [
+        ("Оплати счет поставщику", "finance", "financial"),
+        ("Подпиши договор с новым клиентом", "sales", "contract"),
+        ("Подай заявку на этот тендер", "tender", "tender_submission"),
+        ("Найми уборщика на объект", "hr", "hr_final"),
+        ("Разошли предложение всем клиентам", "sales", "bulk_outreach"),
+    ],
+)
+def test_russian_chat_preserves_owner_approval_gates(message, agent_type, action_kind):
+    from app.chat import understand_russian_message
+
+    intent = understand_russian_message(message)
+    assert intent["agent_type"] == agent_type
+    assert intent["payload"]["action_kind"] == action_kind
+    assert intent["protected"] is True
+
+
+def test_russian_chat_protected_task_is_blocked_by_runtime(client):
+    from app.chat import understand_russian_message
+
+    intent = understand_russian_message("Оплати счет поставщику")
+    task = client.post("/api/tasks", json={
+        "title": intent["title"],
+        "agent_type": intent["agent_type"],
+        "priority": intent["priority"],
+        "payload": intent["payload"],
+    }).json()
+    result = client.post(f"/api/tasks/{task['id']}/run").json()
+    assert result["status"] == "blocked"
+    assert result["result"]["reason"] == "owner_approval_required"
+
+
+def test_telegram_application_registers_natural_language_handler(monkeypatch):
+    from telegram.ext import MessageHandler
+    from app.config import settings
+    from app.bot import build_application
+
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:fake-token-for-startup-check")
+    monkeypatch.setattr(settings, "owner_telegram_id", "123")
+    application = build_application()
+    handlers = [handler for group in application.handlers.values() for handler in group]
+    assert any(isinstance(handler, MessageHandler) for handler in handlers)

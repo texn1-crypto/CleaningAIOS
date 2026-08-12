@@ -2,8 +2,9 @@ import logging
 
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
+from .chat import understand_russian_message
 from .config import settings
 
 logging.basicConfig(level=logging.INFO)
@@ -80,6 +81,58 @@ async def addtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(f"Задача #{data['id']} создана: {data['title']}")
 
 
+async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        await update.effective_message.reply_text("Доступ не разрешён.")
+        return
+    intent = understand_russian_message(update.effective_message.text or "")
+    kind = intent["kind"]
+    try:
+        if kind == "greeting":
+            await update.effective_message.reply_text("Здравствуйте! Напишите обычным русским текстом, что нужно сделать или показать.")
+        elif kind == "acknowledgement":
+            await update.effective_message.reply_text("Хорошо. Я готов к следующему запросу.")
+        elif kind == "help":
+            await update.effective_message.reply_text(
+                "Пишите без команд, например:\n"
+                "• Покажи текущие задачи\n"
+                "• Что с тендерами?\n"
+                "• Найди тендеры по уборке БЦ\n"
+                "• Создай задачу связаться с новым клиентом\n"
+                "• Проанализируй финансы\n\n"
+                "Оплата, договоры, подача тендеров, окончательные кадровые решения и массовые рассылки всегда потребуют вашего подтверждения."
+            )
+        elif kind == "dashboard":
+            await dashboard(update, context)
+        elif kind == "tasks":
+            await tasks(update, context)
+        elif kind == "decisions":
+            await decisions(update, context)
+        elif kind == "approvals":
+            await approvals(update, context)
+        elif kind == "records":
+            await records(update, intent["record_type"], intent["title"])
+        elif kind == "summary":
+            await module_summary(update, intent["module"], intent["title"])
+        elif kind == "inbox":
+            rows = await api("GET", "/api/inbox")
+            text = "📥 Входящие:\n" + "\n".join(f"#{x['id']} [{x['channel']}] {x['subject'] or x['sender']} — {x['status']}" for x in rows[:20]) if rows else "Входящих сообщений пока нет."
+            await update.effective_message.reply_text(text)
+        else:
+            data = await api("POST", "/api/tasks", json={
+                "title": intent["title"],
+                "agent_type": intent["agent_type"],
+                "priority": intent["priority"],
+                "payload": intent["payload"],
+            })
+            protection = " Критическое действие будет остановлено до вашего подтверждения." if intent["protected"] else ""
+            await update.effective_message.reply_text(
+                f"Понял запрос. Создана задача #{data['id']} для агента {data['agent_type']}.{protection}"
+            )
+    except httpx.HTTPError:
+        await update.effective_message.reply_text("Не удалось связаться с CleaningAI OS. Проверьте состояние сервисов в Mission Control.")
+
+
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if not allowed(update): return
@@ -112,6 +165,7 @@ def build_application() -> Application:
     application = Application.builder().token(settings.telegram_bot_token).build()
     for command, handler in [("start", start), ("dashboard", dashboard), ("tasks", tasks), ("decisions", decisions), ("addtask", addtask)]: application.add_handler(CommandHandler(command, handler))
     application.add_handler(CallbackQueryHandler(callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, natural_language))
     return application
 
 
