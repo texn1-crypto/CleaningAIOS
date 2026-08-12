@@ -13,12 +13,13 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, InboxMessage, MessageTemplate, OperatingEntity, OutboundMessage, SenderMailbox, Suppression, TenderDocument
+from .models import BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MessageTemplate, OperatingEntity, OutboundMessage, SenderMailbox, Suppression, Task, TenderDocument
 from .integrations import collect_tenders, download_tender_document
+from .improvements import retry_workspace_handoff
 from .operations import business_graph, create_ceo_actions, entity_view, goal_progress, parse_lead_import, score_tender, simulate_site, site_economics, validate_entity
-from .orchestrator import audit
+from .orchestrator import audit, dispatch
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, ContentItemCreate, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, OperatingEntityCreate, OperatingEntityUpdate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
+from .schemas import CampaignLaunch, ContentItemCreate, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, OperatingEntityCreate, OperatingEntityUpdate, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
 from .security import Principal, principal, require_role
 
 router = APIRouter(prefix="/api")
@@ -30,6 +31,87 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def improvement_view(row: ImprovementRequest) -> dict:
+    return {
+        "id": row.id,
+        "source_channel": row.source_channel,
+        "source_user": row.source_user,
+        "request_text": row.request_text,
+        "intent": row.intent,
+        "capability_score": row.capability_score,
+        "classification": row.classification,
+        "reason": row.reason,
+        "missing_capabilities": row.missing_capabilities,
+        "suggested_function": row.suggested_function,
+        "codex_prompt": row.codex_prompt,
+        "acceptance_criteria": row.acceptance_criteria,
+        "test_plan": row.test_plan,
+        "status": row.status,
+        "occurrence_count": row.occurrence_count,
+        "handoff_status": row.handoff_status,
+        "workspace_conversation_url": row.workspace_conversation_url,
+        "workspace_run_id": row.workspace_run_id,
+        "implementation_summary": row.implementation_summary,
+        "test_evidence": row.test_evidence,
+        "last_error": row.last_error,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+@router.post("/request-analysis")
+def analyze_request(payload: RequestAnalysisCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    task = Task(
+        title=f"Analyze {payload.source_channel} request",
+        agent_type="request_analyst",
+        priority="high",
+        payload=payload.model_dump(),
+    )
+    db.add(task); db.flush()
+    result = dispatch(db, task)
+    audit(db, actor.subject, "request.analyzed", "task", str(task.id), {"classification": result.get("classification"), "improvement_id": result.get("improvement_id")})
+    db.commit()
+    return {"analysis_task_id": task.id, **result}
+
+
+@router.get("/improvements")
+def improvements(status: Optional[str] = None, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    query = select(ImprovementRequest).order_by(ImprovementRequest.id)
+    if status:
+        query = query.where(ImprovementRequest.status == status)
+    return [improvement_view(row) for row in db.scalars(query.limit(500)).all()]
+
+
+@router.patch("/improvements/{improvement_id}")
+def update_improvement(improvement_id: int, payload: ImprovementUpdate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    row = db.get(ImprovementRequest, improvement_id)
+    if not row:
+        raise HTTPException(404, "Improvement request not found")
+    row.status = payload.status
+    if payload.implementation_summary:
+        row.implementation_summary = payload.implementation_summary
+    if payload.test_evidence:
+        row.test_evidence = payload.test_evidence
+    audit(db, actor.subject, "improvement.updated", "improvement_request", str(row.id), {"status": row.status})
+    db.commit(); db.refresh(row)
+    return improvement_view(row)
+
+
+@router.post("/improvements/{improvement_id}/handoff")
+def handoff_improvement(improvement_id: int, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    row = db.get(ImprovementRequest, improvement_id)
+    if not row:
+        raise HTTPException(404, "Improvement request not found")
+    result = retry_workspace_handoff(row)
+    audit(db, actor.subject, "improvement.handoff", "improvement_request", str(row.id), {"status": result["status"]})
+    db.commit(); db.refresh(row)
+    return {**improvement_view(row), "handoff": result}
 
 
 @router.get("/entities")

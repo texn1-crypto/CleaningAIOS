@@ -9,6 +9,14 @@
 3. **System of Action** contains the transactional Event Bus, scheduler, persistent
    task queue, Agent Runtime, outreach worker, Telegram and Mission Control.
 
+Request Analyst evaluates each owner Telegram message before normal execution. A
+supported request follows its normal route. A missing credential is reported as
+configuration work. A genuine capability gap is stored in the durable improvement
+queue with a redacted Codex prompt, acceptance criteria and test plan. Repeated
+requests reuse the same deduplication key. Optional Workspace Agent handoff uses an
+idempotency key; local Codex automation can consume the same queue without sharing
+application secrets.
+
 ## Controlled execution
 
 Every domain write and its event are committed in one database transaction. The

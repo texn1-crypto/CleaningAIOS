@@ -23,6 +23,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - unified inbound message inbox, content plan, staffing/reserve view, vacancy Telegram drafts, payment calendar and complaint/SLA control;
 - backward-compatible Telegram commands plus Mission Control sections;
 - natural-language Russian Telegram dialogue that maps ordinary phrases to read views or auditable agent tasks, without requiring slash commands;
+- Request Analyst Agent that records real capability gaps and prepares a redacted Codex prompt with acceptance criteria and a mandatory test plan;
 - Alembic migration, Docker Compose, CI, tests and rollback guide.
 
 Agents produce operational analysis from the shared database. The core remains deterministic without an LLM. When `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` are configured, AI CEO also requests a structured advisory review and may create only analysis/planning tasks. LLM recommendations that declare an owner decision are not queued, and the policy layer remains authoritative for every protected action. Tender collection similarly reports missing sources instead of inventing results.
@@ -46,6 +47,7 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` for delivery
 - `UNSUBSCRIBE_SECRET` for independently rotatable signed unsubscribe links (falls back to `API_KEY`)
 - `LLM_API_KEY`; optionally override `LLM_BASE_URL` and `LLM_MODEL` (default: OpenAI Responses API and `gpt-5.6-terra`)
+- optional `WORKSPACE_AGENT_TRIGGER_ID` and `WORKSPACE_AGENT_ACCESS_TOKEN` for server-side handoff to a published ChatGPT Workspace Agent
 - `TENDER_SOURCES` and per-source credentials/API keys for external tender ingestion
 
 See [production deployment](docs/PRODUCTION.md) and [baseline failures](docs/BASELINE.md).
@@ -64,7 +66,7 @@ The operational APIs include `/api/events`, `/api/brain`, `/api/agent-runs`,
 `/api/finance/site-economics`, `/api/simulations`, `/api/tenders/{id}/score`,
 `/api/imports/leads`, `/api/inbox`, `/api/hr/staffing`, `/api/finance/payment-calendar`,
 `/api/marketing/content`, `/api/operations/quality` and
-`/api/outreach/campaigns/launch`. Apply migrations through `0004` before deploying.
+`/api/outreach/campaigns/launch`. Apply migrations through `0005` before deploying.
 
 Domain records now have guarded lifecycle transitions through `PATCH /api/records/{id}`.
 CRM touches are stored through `/api/records/{id}/contacts`, and
@@ -88,3 +90,25 @@ See [architecture](docs/ARCHITECTURE.md) for the event flow and module boundarie
 превращаются в задачи подходящего агента. Неизвестные поручения передаются
 Orchestrator. Оплата, договоры, подача заявки на тендер, окончательные кадровые
 решения и массовые рассылки сохраняют обязательное подтверждение владельца.
+
+## Request Analyst и контур улучшений
+
+Каждая обычная фраза владельца дополнительно анализируется агентом
+`request_analyst`. Запросы, которые уже поддерживаются, продолжают выполняться
+обычным маршрутом. Отсутствующие credentials отмечаются как необходимость
+настройки, а не как новая функция. Если бот может только сохранить поручение, но
+не способен гарантировать реальный результат, создаётся запись в
+`improvement_requests` со следующими полями:
+
+- исходный текст с удалёнными токенами и паролями;
+- причина неполной поддержки и недостающие возможности;
+- готовый промт для Codex;
+- критерии приёмки и обязательный тест-план;
+- состояние handoff, реализации и тестовые доказательства.
+
+Очередь доступна через `GET /api/improvements`, а в Telegram — кнопкой
+«🛠 Улучшения» или фразой «покажи улучшения». Повтор одинакового запроса не
+создаёт дубликат, а увеличивает его счётчик. Локальный Codex может периодически
+забирать очередь; для полностью серверной передачи можно опционально подключить
+опубликованный ChatGPT Workspace Agent. Без его credentials система честно
+показывает `credentials_required` и сохраняет готовый handoff в PostgreSQL.

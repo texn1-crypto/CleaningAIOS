@@ -22,6 +22,7 @@ from .api_v2 import router as api_v2_router
 from .mission_control import MISSION_CONTROL_HTML
 from .agents import AGENTS
 from .llm import llm_advisor
+from .improvements import workspace_agent_configuration_status
 
 
 @asynccontextmanager
@@ -69,6 +70,7 @@ def integrations(_: Principal = Depends(principal)):
         "smtp_default": {"status": "configured" if smtp_ready else "credentials_required"},
         "tender_sources": {"status": "configured" if settings.tender_sources.strip() else "source_configuration_required", "sources": [x.strip() for x in settings.tender_sources.split(",") if x.strip()]},
         "llm": {"status": llm_advisor.configuration_status(), "provider": "openai_compatible_responses", "model": settings.llm_model or None},
+        "workspace_agent_handoff": {"status": workspace_agent_configuration_status(), "provider": "chatgpt_workspace_agents"},
     }
 
 

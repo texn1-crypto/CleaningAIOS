@@ -153,8 +153,28 @@ class MetaBrainAgent:
         return {"agents_evaluated": len(states), "data_gaps": gaps, "decision_outcomes_measured": len(measured), "decision_success_rate": success_rate, "recommendations": [f"Restore telemetry for {x}" for x in gaps] + (["Start measuring decision outcomes"] if not measured else []), "evidence": [{"decision_id": x.decision_id, "successful": x.successful} for x in measured]}
 
 
+class RequestAnalystAgent:
+    name = "request_analyst"
+
+    def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        from .improvements import analyze_and_record
+
+        result = analyze_and_record(db, payload)
+        return {
+            **result,
+            "evidence": [
+                {
+                    "type": "request_capability_assessment",
+                    "classification": result["classification"],
+                    "capability_score": result["capability_score"],
+                    "improvement_id": result.get("improvement_id"),
+                }
+            ],
+        }
+
+
 AGENTS: dict[str, Agent] = {}
-for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), MetaBrainAgent()]:
+for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), MetaBrainAgent(), RequestAnalystAgent()]:
     AGENTS[agent.name] = agent
 
 

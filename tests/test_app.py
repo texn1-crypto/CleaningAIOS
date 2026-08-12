@@ -506,3 +506,152 @@ def test_telegram_application_registers_natural_language_handler(monkeypatch):
     application = build_application()
     handlers = [handler for group in application.handlers.values() for handler in group]
     assert any(isinstance(handler, MessageHandler) for handler in handlers)
+
+
+def test_request_analyst_accepts_supported_request_without_improvement(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    intent = understand_russian_message("Покажи текущие задачи")
+    result = client.post("/api/request-analysis", json={"message": "Покажи текущие задачи", "intent": intent}).json()
+    assert result["classification"] == "supported"
+    assert result["fully_supported"] is True
+    assert result["improvement_id"] is None
+
+
+def test_request_analyst_creates_deduplicated_codex_prompt(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    monkeypatch.setattr(settings, "workspace_agent_trigger_id", "")
+    monkeypatch.setattr(settings, "workspace_agent_access_token", "")
+    message = "Позвони клиенту и договорись о встрече"
+    intent = understand_russian_message(message)
+    first = client.post("/api/request-analysis", json={"message": message, "intent": intent}).json()
+    second = client.post("/api/request-analysis", json={"message": message, "intent": intent}).json()
+    assert first["classification"] == "capability_gap"
+    assert first["improvement_id"] == second["improvement_id"]
+    assert first["handoff_status"] == "credentials_required"
+    queued = client.get("/api/improvements?status=queued").json()
+    row = next(x for x in queued if x["id"] == first["improvement_id"])
+    assert row["occurrence_count"] == 2
+    assert "телефонии" in row["suggested_function"]
+    assert "Required test plan" in row["codex_prompt"]
+    assert row["acceptance_criteria"]
+    assert row["test_plan"]
+
+
+def test_request_analyst_redacts_secrets_before_storage(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    secret = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd"
+    message = f"Добавь новую функцию, token={secret}"
+    intent = understand_russian_message(message)
+    result = client.post("/api/request-analysis", json={"message": message, "intent": intent}).json()
+    row = next(x for x in client.get("/api/improvements").json() if x["id"] == result["improvement_id"])
+    assert secret not in row["request_text"]
+    assert secret not in row["codex_prompt"]
+    assert "[REDACTED]" in row["request_text"]
+
+
+def test_request_analyst_does_not_turn_approval_policy_into_feature_gap(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "Оплати счет поставщику"
+    result = client.post("/api/request-analysis", json={"message": message, "intent": understand_russian_message(message)}).json()
+    assert result["classification"] == "approval_required"
+    assert result["improvement_id"] is None
+
+
+def test_workspace_agent_handoff_uses_official_trigger_contract(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+    from app import improvements as improvement_module
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    monkeypatch.setattr(settings, "workspace_agent_trigger_id", "")
+    monkeypatch.setattr(settings, "workspace_agent_access_token", "")
+    message = "Подготовь коммерческое предложение клиенту"
+    created = client.post("/api/request-analysis", json={"message": message, "intent": understand_russian_message(message)}).json()
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+        def json(self): return {"conversation_url": "https://chatgpt.com/c/improvement-test", "agent_trigger_run_id": "apirun_test"}
+
+    class Client:
+        def __init__(self, *args, **kwargs): captured["client"] = kwargs
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, url, headers, json): captured.update({"url": url, "headers": headers, "payload": json}); return Response()
+
+    monkeypatch.setattr(improvement_module.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "workspace_agent_trigger_id", "agtch_cleaning_test")
+    monkeypatch.setattr(settings, "workspace_agent_access_token", "workspace-secret")
+    handed_off = client.post(f"/api/improvements/{created['improvement_id']}/handoff").json()
+    assert handed_off["handoff_status"] == "queued"
+    assert handed_off["workspace_run_id"] == "apirun_test"
+    assert captured["url"] == "https://api.chatgpt.com/v1/workspace_agents/agtch_cleaning_test/trigger"
+    assert captured["headers"]["Authorization"] == "Bearer workspace-secret"
+    assert captured["headers"]["Idempotency-Key"]
+    assert captured["payload"]["input"].startswith("CleaningAI OS improvement request")
+
+
+def test_codex_can_update_improvement_with_test_evidence(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "Добавь интеграцию календаря для встреч"
+    created = client.post("/api/request-analysis", json={"message": message, "intent": understand_russian_message(message)}).json()
+    updated = client.patch(f"/api/improvements/{created['improvement_id']}", json={
+        "status": "implemented",
+        "implementation_summary": "Добавлена календарная интеграция",
+        "test_evidence": [{"command": "pytest -q", "result": "passed"}],
+    }).json()
+    assert updated["status"] == "implemented"
+    assert updated["test_evidence"][0]["result"] == "passed"
+
+
+def test_request_analyst_llm_uses_strict_structured_output(monkeypatch):
+    import json
+    from app import llm
+    from app.config import settings
+
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+        def json(self):
+            analysis = {
+                "capability_score": 0.3,
+                "reason": "Нет исполняемой функции",
+                "missing_capabilities": ["proposal_generator"],
+                "suggested_function": "Добавить генератор КП",
+                "acceptance_criteria": ["КП создаётся из CRM"],
+                "test_plan": ["Проверить PDF"],
+                "should_create_improvement": True,
+            }
+            return {"status": "completed", "model": "test-model", "output_text": json.dumps(analysis)}
+
+    class Client:
+        def __init__(self, *args, **kwargs): captured["headers"] = kwargs["headers"]
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, url, json): captured.update({"url": url, "payload": json}); return Response()
+
+    monkeypatch.setattr(llm.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "llm_api_key", "test-secret")
+    monkeypatch.setattr(settings, "llm_base_url", "https://api.example/v1")
+    monkeypatch.setattr(settings, "llm_model", "test-model")
+    result = llm.llm_advisor.analyze_request("Подготовь КП", {"kind": "task"}, {"should_create_improvement": True})
+    assert result["status"] == "succeeded"
+    assert result["should_create_improvement"] is True
+    assert captured["payload"]["text"]["format"]["strict"] is True
+    assert captured["payload"]["store"] is False

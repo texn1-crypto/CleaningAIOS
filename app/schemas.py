@@ -212,6 +212,19 @@ class InboxStatusUpdate(BaseModel):
     record_id: Optional[int] = None
 
 
+class RequestAnalysisCreate(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    intent: dict[str, Any] = Field(default_factory=dict)
+    source_channel: str = Field(default="telegram", pattern="^(telegram|web|api|other)$")
+    source_user: str = Field(default="owner", min_length=1, max_length=128)
+
+
+class ImprovementUpdate(BaseModel):
+    status: str = Field(pattern="^(queued|handed_off|in_progress|implemented|rejected|blocked)$")
+    implementation_summary: str = Field(default="", max_length=8000)
+    test_evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class DeliveryEventCreate(BaseModel):
     event_type: str = Field(pattern="^(delivered|bounce|complaint|unsubscribe)$")
     recipient: EmailStr

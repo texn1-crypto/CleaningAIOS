@@ -12,6 +12,19 @@ def _contains(text: str, *needles: str) -> bool:
     return any(needle in text for needle in needles)
 
 
+def redact_sensitive_text(text: str) -> str:
+    """Remove common credentials before a Telegram request reaches storage or AI."""
+    patterns = [
+        (r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b", "[TELEGRAM_TOKEN_REDACTED]"),
+        (r"\bsk-[A-Za-z0-9_-]{16,}\b", "[API_KEY_REDACTED]"),
+        (r"(?i)\b(api[_ -]?key|token|пароль|password)\s*[:=]\s*\S+", r"\1=[REDACTED]"),
+    ]
+    safe = text
+    for pattern, replacement in patterns:
+        safe = re.sub(pattern, replacement, safe)
+    return safe
+
+
 def _task_agent(text: str) -> str:
     if _contains(text, "тендер", "закупк", "конкурс"):
         if _contains(text, "найди", "найти", "ищи", "поиск", "собери", "монитор"):
@@ -67,6 +80,7 @@ def understand_russian_message(message: str) -> dict[str, Any]:
     instructions into auditable tasks. It never bypasses protected-action policy.
     """
     original = " ".join(message.split()).strip()
+    safe_original = redact_sensitive_text(original)
     text = _normalize(original)
     if not text:
         return {"kind": "help"}
@@ -108,20 +122,22 @@ def understand_russian_message(message: str) -> dict[str, Any]:
         return {"kind": "dashboard"}
     if not action_words and read_words and _contains(text, "входящ", "inbox", "сообщени"):
         return {"kind": "inbox"}
+    if not action_words and (read_words or _contains(text, "что бот не умеет", "чего не хватает")) and _contains(text, "улучш", "не уме", "не хватает", "доработ"):
+        return {"kind": "improvements"}
 
     action_kind = _protected_action(text)
     agent_type = _task_agent(text)
     payload: dict[str, Any] = {
         "source": "telegram_natural_language",
-        "original_message": original[:4000],
+        "original_message": safe_original[:4000],
     }
     if action_kind:
         payload["action_kind"] = action_kind
     if agent_type == "research" and _contains(text, "тендер", "закупк", "конкурс"):
-        payload.update({"collection": "tenders", "query": original[:1000]})
+        payload.update({"collection": "tenders", "query": safe_original[:1000]})
     return {
         "kind": "task",
-        "title": original[:255],
+        "title": safe_original[:255],
         "agent_type": agent_type,
         "priority": _priority(text),
         "payload": payload,

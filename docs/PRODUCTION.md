@@ -41,6 +41,11 @@ Set `LLM_API_KEY` to enable the advisory AI CEO review. The defaults use
 unencrypted HTTP LLM endpoint. The application works deterministically when the key
 is absent or the provider is unavailable.
 
+Optionally set `WORKSPACE_AGENT_TRIGGER_ID` and `WORKSPACE_AGENT_ACCESS_TOKEN`
+to hand capability gaps to a published ChatGPT Workspace Agent API channel. Without
+them the Request Analyst still stores a complete Codex prompt, acceptance criteria
+and test plan in PostgreSQL and reports `credentials_required`.
+
 For every additional sender mailbox, set `secret_ref` to the name of an environment
 variable mounted into `web` and `worker` (for example `SMTP_SALES_PASSWORD`). Do not
 store SMTP passwords in API payloads or the database.

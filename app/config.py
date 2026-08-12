@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     llm_reasoning_effort: str = "low"
     llm_timeout_seconds: int = 60
     llm_max_output_tokens: int = 1200
+    workspace_agent_trigger_id: str = ""
+    workspace_agent_access_token: str = ""
+    workspace_agent_timeout_seconds: int = 20
     tender_sources: str = ""
     tender_source_token: str = ""
     tender_request_timeout_seconds: int = 30

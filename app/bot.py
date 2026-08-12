@@ -30,7 +30,7 @@ async def api(method: str, path: str, **kwargs):
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён."); return
-    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["📣 Рассылки", "outreach"]]
+    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
     keyboard = [[InlineKeyboardButton(label, callback_data=key)] for label, key in rows]
     await update.effective_message.reply_text("CleaningAI OS · выберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -62,6 +62,17 @@ async def approvals(update: Update, _: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(f"🔐 #{row['id']} · {row['action_kind']}\n{row['resource_type']} #{row['resource_id']}\n{row['rationale']}", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
+async def improvement_queue(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    rows = await api("GET", "/api/improvements?status=queued")
+    if not rows:
+        await update.effective_message.reply_text("🛠 Очередь улучшений пуста.")
+        return
+    text = "🛠 Запросы на улучшение:\n" + "\n".join(
+        f"#{x['id']} {x['suggested_function']} — {x['status']}" for x in rows[:20]
+    )
+    await update.effective_message.reply_text(text)
+
+
 async def module_summary(update: Update, module: str, title: str):
     data = (await api("GET", "/api/modules/summary"))[module]
     await update.effective_message.reply_text(title + "\n" + "\n".join(f"{key}: {value}" for key, value in data.items()))
@@ -88,6 +99,15 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intent = understand_russian_message(update.effective_message.text or "")
     kind = intent["kind"]
     try:
+        try:
+            analysis = await api("POST", "/api/request-analysis", json={
+                "message": update.effective_message.text or "",
+                "intent": intent,
+                "source_channel": "telegram",
+                "source_user": str(update.effective_user.id if update.effective_user else "owner"),
+            })
+        except httpx.HTTPError:
+            analysis = {"classification": "analysis_unavailable", "improvement_id": None}
         if kind == "greeting":
             await update.effective_message.reply_text("Здравствуйте! Напишите обычным русским текстом, что нужно сделать или показать.")
         elif kind == "acknowledgement":
@@ -100,6 +120,7 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• Найди тендеры по уборке БЦ\n"
                 "• Создай задачу связаться с новым клиентом\n"
                 "• Проанализируй финансы\n\n"
+                "Request Analyst проверяет каждый запрос. Если функции не хватает, он создаёт техническое задание для Codex с критериями и тест-планом.\n\n"
                 "Оплата, договоры, подача тендеров, окончательные кадровые решения и массовые рассылки всегда потребуют вашего подтверждения."
             )
         elif kind == "dashboard":
@@ -118,6 +139,8 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rows = await api("GET", "/api/inbox")
             text = "📥 Входящие:\n" + "\n".join(f"#{x['id']} [{x['channel']}] {x['subject'] or x['sender']} — {x['status']}" for x in rows[:20]) if rows else "Входящих сообщений пока нет."
             await update.effective_message.reply_text(text)
+        elif kind == "improvements":
+            await improvement_queue(update, context)
         else:
             data = await api("POST", "/api/tasks", json={
                 "title": intent["title"],
@@ -126,9 +149,19 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "payload": intent["payload"],
             })
             protection = " Критическое действие будет остановлено до вашего подтверждения." if intent["protected"] else ""
-            await update.effective_message.reply_text(
-                f"Понял запрос. Создана задача #{data['id']} для агента {data['agent_type']}.{protection}"
-            )
+            if analysis.get("improvement_id"):
+                await update.effective_message.reply_text(
+                    f"Я сохранил запрос как задачу #{data['id']}, но текущая версия не может гарантировать полный результат. "
+                    f"Request Analyst создал улучшение #{analysis['improvement_id']} для Codex и приложил обязательный тест-план."
+                )
+            elif analysis.get("classification") == "configuration_required":
+                await update.effective_message.reply_text(
+                    f"Создана задача #{data['id']} для агента {data['agent_type']}, но для полного выполнения нужны внешние credentials или источники."
+                )
+            else:
+                await update.effective_message.reply_text(
+                    f"Понял запрос. Создана задача #{data['id']} для агента {data['agent_type']}.{protection}"
+                )
     except httpx.HTTPError:
         await update.effective_message.reply_text("Не удалось связаться с CleaningAI OS. Проверьте состояние сервисов в Mission Control.")
 
@@ -156,6 +189,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = await api("POST", "/api/tasks", json={"title": f"{q.data} on-demand review", "agent_type": q.data})
         await update.effective_message.reply_text(f"Задача #{data['id']} поставлена агенту {q.data}.")
     elif q.data == "agents": await dashboard(update, context)
+    elif q.data == "improvements": await improvement_queue(update, context)
     elif q.data == "outreach": await update.effective_message.reply_text("📣 Рассылки управляются через /docs. Отправка требует настроенного SMTP и owner approval для bulk-кампаний.")
 
 
