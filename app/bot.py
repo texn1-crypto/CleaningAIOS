@@ -1,8 +1,14 @@
+import asyncio
 import io
 import logging
+import re
+import secrets
+from pathlib import Path
+from urllib.parse import unquote
 
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .chat import understand_russian_message
@@ -33,8 +39,141 @@ async def api_file(path: str) -> tuple[bytes, str]:
         response = await client.get(f"{BASE}{path}")
         response.raise_for_status()
         disposition = response.headers.get("content-disposition", "")
-        filename = disposition.split("filename=", 1)[-1].strip('"') if "filename=" in disposition else "commercial-proposal.pdf"
+        encoded = re.search(r"filename\*=UTF-8''([^;]+)", disposition, flags=re.IGNORECASE)
+        plain = re.search(r'filename="?([^";]+)', disposition, flags=re.IGNORECASE)
+        filename = unquote(encoded.group(1)) if encoded else (plain.group(1) if plain else "commercial-proposal.pdf")
         return response.content, filename
+
+
+def _safe_document_filename(filename: str) -> str:
+    name = Path(filename or "proposal.docx").name
+    stem = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._ -]+", "-", Path(name).stem).strip(" .-_")[:120] or "proposal"
+    return f"{stem}{Path(name).suffix.lower()}"
+
+
+async def _create_revision_task(update: Update, *, source_path: str = "", filename: str, caption: str, credentials_required: bool = False) -> dict:
+    payload = {
+        "action": "revise_proposal",
+        "source": "telegram_document",
+        "source_path": source_path,
+        "source_filename": filename,
+        "request_text": caption[:4000],
+        "original_message": caption[:4000],
+    }
+    if credentials_required:
+        payload["document_status"] = "credentials_required"
+    await api("POST", "/api/request-analysis", json={
+        "message": caption,
+        "intent": {
+            "kind": "task",
+            "title": caption[:255] or f"Обновить коммерческое предложение {filename}",
+            "agent_type": "orchestrator",
+            "priority": "high",
+            "payload": payload,
+            "protected": False,
+        },
+        "source_channel": "telegram",
+        "source_user": str(update.effective_user.id if update.effective_user else "owner"),
+    })
+    task = await api("POST", "/api/tasks", json={
+        "title": f"Профессионально обновить коммерческое предложение: {filename}"[:255],
+        "agent_type": "orchestrator",
+        "priority": "high",
+        "payload": payload,
+        "max_attempts": 1,
+    })
+    return await api("POST", f"/api/tasks/{task['id']}/run")
+
+
+async def proposal_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        await update.effective_message.reply_text("Доступ не разрешён.")
+        return
+    message = update.effective_message
+    document = message.document
+    filename = _safe_document_filename(document.file_name or "proposal.docx")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".docx", ".pdf"}:
+        await message.reply_text("Файл получен, но редактор КП принимает DOCX или PDF. Пришлите документ в одном из этих форматов.")
+        return
+    caption = " ".join((message.caption or "").split())
+    normalized = caption.lower().replace("ё", "е")
+    is_proposal_request = bool(
+        re.search(r"\bкп\b", normalized)
+        or "коммерческ" in normalized
+        or ("предложен" in normalized and any(word in normalized for word in ("красив", "профессион", "обнов", "измен", "редакт")))
+    )
+    if not is_proposal_request:
+        await message.reply_text(
+            "Файл получен и не проигнорирован. Чтобы запустить редакцию, подпишите его, например: «Сделай это коммерческое предложение профессиональнее и представь мне на утверждение»."
+        )
+        return
+    file_size = int(document.file_size or 0)
+    if file_size > settings.max_document_bytes:
+        await message.reply_text(
+            f"Файл получен, но его размер превышает безопасный лимит {settings.max_document_bytes // 1_000_000} МБ. "
+            "Уменьшите размер DOCX/PDF и пришлите повторно."
+        )
+        return
+    try:
+        if file_size > settings.telegram_cloud_download_limit_bytes and not settings.telegram_bot_api_base_url:
+            completed = await _create_revision_task(
+                update,
+                filename=filename,
+                caption=caption,
+                credentials_required=True,
+            )
+            result = completed.get("result") or {}
+            await message.reply_text(
+                f"Файл и запрос зарегистрированы как задача #{completed['id']}, но Telegram Cloud Bot API не даёт скачать документ больше 20 МБ. "
+                f"Создано улучшение #{result.get('improvement_id', '—')}; CEO получил отчёт #{result.get('ceo_incident_task_id', '—')}. "
+                "Нужно настроить локальный Telegram Bot API server и TELEGRAM_BOT_API_BASE_URL — после этого пришлите файл повторно."
+            )
+            return
+        directory = Path(settings.document_storage_path) / "telegram-inbox"
+        directory.mkdir(parents=True, exist_ok=True)
+        stored = directory / f"{secrets.token_hex(10)}-{filename}"
+        telegram_file = await context.bot.get_file(document.file_id)
+        await telegram_file.download_to_drive(custom_path=str(stored))
+        if not stored.is_file() or not stored.stat().st_size:
+            raise RuntimeError("Telegram вернул пустой документ")
+        if stored.stat().st_size > settings.max_document_bytes:
+            stored.unlink(missing_ok=True)
+            raise RuntimeError("Скачанный документ превышает безопасный лимит")
+        stored.chmod(0o600)
+        completed = await _create_revision_task(update, source_path=str(stored), filename=filename, caption=caption)
+        result = completed.get("result") or {}
+        if completed.get("status") != "done" or result.get("status") != "ready_for_owner_review":
+            await message.reply_text(
+                f"Редакция не завершена. Задача #{completed['id']}: {completed.get('status')}. "
+                f"Улучшение: #{result.get('improvement_id', '—')}; отчёт CEO: #{result.get('ceo_incident_task_id', '—')}. "
+                f"Причина: {result.get('execution_gap') or result.get('error') or result.get('reason') or 'неизвестна'}."
+            )
+            return
+        urls = result.get("download_urls") or {}
+        approval_id = result.get("approval_id")
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Утвердить", callback_data=f"approve:{approval_id}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{approval_id}"),
+        ]]) if approval_id else None
+        for kind in ("docx", "pdf"):
+            if not urls.get(kind):
+                continue
+            content, output_name = await api_file(urls[kind])
+            stream = io.BytesIO(content)
+            stream.name = output_name
+            await message.reply_document(
+                document=stream,
+                filename=output_name,
+                caption=(
+                    f"Обновлённое КП {result['proposal_number']} · {kind.upper()}. "
+                    "Текст подготовил Copywriter Agent, оформление — Creative Agent. Клиенту ничего не отправлено. "
+                    "Проверьте факты и условия; утверждение фиксирует только ваше решение по проекту."
+                ),
+                reply_markup=keyboard if kind == "pdf" else None,
+            )
+    except (httpx.HTTPError, TelegramError, OSError, RuntimeError) as exc:
+        await message.reply_text(f"Файл получен, но обработка остановилась: {type(exc).__name__}: {str(exc)[:300]}. Запрос не считается выполненным.")
 
 
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -171,6 +310,57 @@ async def system_self_check(update: Update):
     await update.effective_message.reply_text(format_system_self_check(result))
 
 
+def format_task_timing(result: dict) -> str:
+    if result.get("outcome") == "needs_clarification":
+        return result.get("message", "Укажите номер задачи.")
+    task = result.get("task") or {}
+    lines = [
+        f"⏱ Задача #{task.get('id')}: {task.get('title')}",
+        f"Фактический статус: {task.get('status')}",
+    ]
+    if result.get("timing_status") == "completed":
+        lines.append("Осталось: 0 — подтверждённый результат уже готов.")
+    elif result.get("timing_status") == "result_unverified":
+        lines.append("Честный срок сейчас определить нельзя: задача помечена выполненной, но результата или файла нет.")
+    else:
+        lines.append("Честный срок пока определить нельзя.")
+    actual = result.get("actual_runtime_seconds")
+    if actual is not None:
+        lines.append(f"Техническая попытка заняла {actual:g} сек.; это не равно времени выполнения бизнес-задачи.")
+    estimate = result.get("planning_estimate") or {}
+    if estimate:
+        lines.append(
+            f"Предварительный ориентир: {estimate['min_hours']:g}–{estimate['max_hours']:g} ч. "
+            f"после выполнения условий запуска (точность: {estimate['confidence']})."
+        )
+        lines.append("До старта нужно: " + "; ".join(estimate.get("starts_after") or []))
+    lines.append("Причина: " + result.get("reason", "нет данных"))
+    return "\n".join(lines)
+
+
+async def task_timing(update: Update, intent: dict):
+    task = await api("POST", "/api/tasks", json={
+        "title": "Оценить срок выполнения задачи",
+        "agent_type": "orchestrator",
+        "priority": "high",
+        "payload": {
+            "action": "task_timing_report",
+            "task_id": intent.get("task_id"),
+            "source": "telegram_read_request",
+        },
+        "max_attempts": 1,
+    })
+    completed = await api("POST", f"/api/tasks/{task['id']}/run")
+    result = completed.get("result") or {}
+    if completed.get("status") != "done":
+        await update.effective_message.reply_text(
+            f"Не удалось оценить срок. Проверка #{task['id']} завершилась со статусом "
+            f"{completed.get('status', 'unknown')}."
+        )
+        return
+    await update.effective_message.reply_text(format_task_timing(result))
+
+
 async def module_summary(update: Update, module: str, title: str):
     data = (await api("GET", "/api/modules/summary"))[module]
     await update.effective_message.reply_text(title + "\n" + "\n".join(f"{key}: {value}" for key, value in data.items()))
@@ -243,6 +433,8 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await activity_report(update, intent)
         elif kind == "system_self_check":
             await system_self_check(update)
+        elif kind == "task_eta":
+            await task_timing(update, intent)
         else:
             data = await api("POST", "/api/tasks", json={
                 "title": intent["title"],
@@ -320,9 +512,18 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def build_application() -> Application:
     if not settings.telegram_bot_token: raise RuntimeError("TELEGRAM_BOT_TOKEN is empty")
     if not settings.owner_telegram_id: raise RuntimeError("OWNER_TELEGRAM_ID is empty")
-    application = Application.builder().token(settings.telegram_bot_token).build()
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+    builder = Application.builder().token(settings.telegram_bot_token)
+    if settings.telegram_bot_api_base_url:
+        local_base = settings.telegram_bot_api_base_url.rstrip("/")
+        builder = builder.base_url(f"{local_base}/bot").base_file_url(f"{local_base}/file/bot").local_mode(True)
+    application = builder.build()
     for command, handler in [("start", start), ("dashboard", dashboard), ("tasks", tasks), ("decisions", decisions), ("addtask", addtask)]: application.add_handler(CommandHandler(command, handler))
     application.add_handler(CallbackQueryHandler(callback))
+    application.add_handler(MessageHandler(filters.Document.ALL, proposal_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, natural_language))
     return application
 

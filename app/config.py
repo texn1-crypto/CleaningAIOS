@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     viewer_api_key: str = ""
     owner_telegram_id: str = ""
     telegram_bot_token: str = ""
+    telegram_bot_api_base_url: str = ""
+    telegram_cloud_download_limit_bytes: int = 20_000_000
     public_base_url: str = "http://localhost:8000"
     internal_api_url: str = ""
     worker_poll_seconds: float = 2.0
@@ -62,7 +64,7 @@ class Settings(BaseSettings):
     tender_request_timeout_seconds: int = 30
     document_storage_path: str = "/data/documents"
     proposal_font_path: str = ""
-    max_document_bytes: int = 25_000_000
+    max_document_bytes: int = 50_000_000
     max_attachment_bytes: int = 10_000_000
     max_import_bytes: int = 10_000_000
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

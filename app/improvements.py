@@ -14,10 +14,10 @@ from sqlalchemy.orm import Session
 from .chat import redact_sensitive_text
 from .config import settings
 from .llm import llm_advisor
-from .models import ImprovementRequest
+from .models import ImprovementRequest, Task
 
 
-READ_INTENTS = {"greeting", "acknowledgement", "help", "dashboard", "tasks", "decisions", "approvals", "records", "summary", "inbox", "improvements", "activity_report", "system_self_check"}
+READ_INTENTS = {"greeting", "acknowledgement", "help", "dashboard", "tasks", "decisions", "approvals", "records", "summary", "inbox", "improvements", "activity_report", "system_self_check", "task_eta"}
 
 
 def _normalize(text: str) -> str:
@@ -72,12 +72,12 @@ def deterministic_assessment(message: str, intent: dict[str, Any]) -> dict[str, 
             "should_create_improvement": False,
         }
 
-    if intent.get("payload", {}).get("action") == "generate_proposal":
+    if intent.get("payload", {}).get("action") in {"generate_proposal", "revise_proposal"}:
         return {
             "fully_supported": True,
             "capability_score": 1.0,
             "classification": "supported",
-            "reason": "Sales Agent формирует проверяемый проект коммерческого предложения из данных CRM.",
+            "reason": "Система формирует проверяемый проект коммерческого предложения и не отправляет его без проверки владельца.",
             "missing_capabilities": [],
             "suggested_function": "",
             "acceptance_criteria": [],
@@ -317,3 +317,73 @@ def analyze_and_record(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
     handoff = retry_workspace_handoff(row) if row.handoff_status in {"pending", "credentials_required", "failed"} else {"status": row.handoff_status}
     result.update({"improvement_id": row.id, "handoff_status": handoff["status"], "workspace_conversation_url": row.workspace_conversation_url})
     return result
+
+
+def record_execution_gap(db: Session, task: Task, reason: str, *, credentials_required: bool = False) -> dict[str, Any]:
+    """Create one privacy-minimized, deduplicated Codex handoff for a failed user task."""
+    action = str((task.payload or {}).get("action") or "unspecified")[:128]
+    safe_reason = redact_sensitive_text(str(reason))[:1000]
+    request_text = (
+        f"Execution gap in Telegram task #{task.id}: agent={task.agent_type}, "
+        f"action={action}, status={task.status}. Reason: {safe_reason}"
+    )
+    missing = ["external_credentials"] if credentials_required else ["verified_agent_execution"]
+    assessment = {
+        "fully_supported": False,
+        "capability_score": 0.0,
+        "classification": "configuration_required" if credentials_required else "execution_gap",
+        "reason": safe_reason,
+        "missing_capabilities": missing,
+        "suggested_function": f"Устранить препятствие выполнения агента {task.agent_type} и добавить регрессионный тест",
+        "acceptance_criteria": [
+            f"Повтор задачи #{task.id} завершается проверяемым результатом, а не только постановкой в очередь.",
+            "При неуспехе бот честно сообщает причину, improvement ID и ответственную сторону.",
+            "CEO получает связанный отчёт об инциденте с исходной задачей и доказательствами.",
+            "Owner approval и остальные защитные политики не обходятся.",
+        ],
+        "test_plan": [
+            "Воспроизвести исходный сценарий через API/Telegram handler.",
+            "Проверить дедупликацию improvement и связанный CEO incident report.",
+            "Добавить регрессионный тест успешного и ошибочного сценариев.",
+            "Запустить полный pytest и Docker health checks.",
+        ],
+        "should_create_improvement": True,
+    }
+    signature = json.dumps(
+        {"source_task_id": task.id, "agent": task.agent_type, "action": action, "reason": safe_reason},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    dedup_key = hashlib.sha256(signature.encode()).hexdigest()
+    row = db.scalar(select(ImprovementRequest).where(ImprovementRequest.dedup_key == dedup_key))
+    if row:
+        row.occurrence_count += 1
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        if row.status in {"implemented", "rejected"}:
+            row.status = "queued"
+            row.handoff_status = "pending"
+    else:
+        row = ImprovementRequest(
+            dedup_key=dedup_key,
+            source_channel="system",
+            source_user="orchestrator_quality_gate",
+            request_text=request_text,
+            intent={"kind": "execution_gap", "source_task_id": task.id, "agent_type": task.agent_type, "action": action},
+            capability_score=0.0,
+            classification=assessment["classification"],
+            reason=safe_reason,
+            missing_capabilities=missing,
+            suggested_function=assessment["suggested_function"],
+            codex_prompt=build_codex_prompt(request_text, assessment),
+            acceptance_criteria=assessment["acceptance_criteria"],
+            test_plan=assessment["test_plan"],
+        )
+        db.add(row)
+        db.flush()
+        row.codex_prompt = build_codex_prompt(request_text, assessment, row.id)
+    handoff = retry_workspace_handoff(row) if row.handoff_status in {"pending", "credentials_required", "failed"} else {"status": row.handoff_status}
+    return {
+        "improvement_id": row.id,
+        "handoff_status": handoff["status"],
+        "responsible_party": "owner_configuration" if credentials_required else "system_codex",
+    }

@@ -162,6 +162,8 @@ def build_system_self_check(db: Session, *, registered_agents: list[str]) -> dic
         "Marketing/SMM": "marketing",
         "Meta Brain": "meta_brain",
         "Request Analyst": "request_analyst",
+        "Copywriter Agent": "copywriter",
+        "Creative Agent": "creative",
     }
     for label, agent_type in internal_agents.items():
         add(
@@ -296,5 +298,199 @@ def build_system_self_check(db: Session, *, registered_agents: list[str]) -> dic
                     "website": integrations["public_website"]["status"],
                 },
             },
+        ],
+    }
+
+
+_INTERNAL_REPORT_ACTIONS = {
+    "system_activity_report",
+    "system_self_check",
+    "task_timing_report",
+}
+
+
+def _is_user_business_task(task: Task) -> bool:
+    payload = task.payload or {}
+    return (
+        task.agent_type != "request_analyst"
+        and payload.get("action") not in _INTERNAL_REPORT_ACTIONS
+        and payload.get("source") in {"telegram_natural_language", "telegram_document"}
+    )
+
+
+def _verified_task_result(task: Task) -> bool:
+    result = task.result or {}
+    if result.get("credentials_required") or result.get("status") in {
+        "adapter_required",
+        "credentials_required",
+    }:
+        return False
+    payload = task.payload or {}
+    request_text = f"{task.title} {payload.get('original_message', '')}".lower()
+    requested_files = any(
+        token in request_text for token in ("pdf", "xls", "xlsx", "word", "docx")
+    )
+    artifact_keys = (
+        "download_url",
+        "storage_path",
+        "proposal_id",
+        "workspace_conversation_url",
+    )
+    if requested_files and not any(result.get(key) for key in artifact_keys):
+        evidence = result.get("evidence")
+        artifact_types = {
+            "proposal_pdf",
+            "file_export",
+            "document_export",
+            "dataset_export",
+        }
+        return isinstance(evidence, list) and any(
+            isinstance(item, dict) and item.get("type") in artifact_types
+            for item in evidence
+        )
+    evidence = result.get("evidence")
+    if isinstance(evidence, list) and evidence:
+        return any(
+            not (isinstance(item, dict) and set(item) == {"delegations_requested"})
+            for item in evidence
+        )
+    return any(result.get(key) for key in artifact_keys)
+
+
+def _scope_estimate(task: Task) -> dict[str, Any] | None:
+    payload = task.payload or {}
+    text_value = f"{task.title} {payload.get('original_message', '')}".lower().replace("ё", "е")
+    external_research = any(
+        phrase in text_value
+        for phrase in (
+            "собери базу",
+            "всех возможных источников",
+            "найди сайты",
+            "найди там почты",
+            "проверкой реально ли",
+        )
+    )
+    formats = sum(token in text_value for token in ("pdf", "xls", "xlsx", "word", "docx"))
+    if external_research and formats >= 2:
+        return {
+            "min_hours": 8,
+            "max_hours": 24,
+            "confidence": "low",
+            "starts_after": [
+                "утверждены и подключены источники данных",
+                "реализован проверяемый сбор с дедупликацией",
+                "доступен экспорт в запрошенные форматы",
+            ],
+            "basis": "массовый сбор и проверка контактов плюс несколько форматов экспорта",
+        }
+    if external_research:
+        return {
+            "min_hours": 2,
+            "max_hours": 8,
+            "confidence": "low",
+            "starts_after": ["утверждены и подключены источники данных"],
+            "basis": "внешний сбор и проверка данных",
+        }
+    if payload.get("action") == "generate_proposal":
+        return {
+            "min_hours": 0.02,
+            "max_hours": 0.08,
+            "confidence": "high",
+            "starts_after": ["клиент найден в CRM"],
+            "basis": "автоматическая генерация одного PDF из CRM",
+        }
+    if payload.get("action") == "revise_proposal":
+        return {
+            "min_hours": 0.05,
+            "max_hours": 0.25,
+            "confidence": "medium",
+            "starts_after": ["DOCX/PDF успешно скачан из Telegram"],
+            "basis": "локальная редакция текста, вёрстка DOCX/PDF и создание owner approval",
+        }
+    return None
+
+
+def build_task_timing_report(db: Session, *, task_id: int | None = None) -> dict[str, Any]:
+    """Return a truthful task ETA or explain why one cannot yet be promised."""
+    task = db.get(Task, int(task_id)) if task_id is not None else None
+    selection = "explicit_id" if task_id is not None else "latest_telegram_business_task"
+    if task_id is None:
+        candidates = db.scalars(select(Task).order_by(Task.id.desc()).limit(200)).all()
+        task = next((row for row in candidates if _is_user_business_task(row)), None)
+    if task is None:
+        return {
+            "outcome": "needs_clarification",
+            "report_kind": "task_timing",
+            "task_id": task_id,
+            "message": "Задача не найдена. Укажите её номер, например: «Сколько времени нужно на задачу #9?»",
+            "evidence": [{"type": "task_lookup", "selection": selection, "found": False}],
+        }
+
+    run = db.scalar(
+        select(AgentRun)
+        .where(AgentRun.task_id == task.id)
+        .order_by(AgentRun.id.desc())
+        .limit(1)
+    )
+    actual_seconds = None
+    if run and run.started_at and run.finished_at:
+        actual_seconds = round(max(0.0, (run.finished_at - run.started_at).total_seconds()), 3)
+
+    verified = _verified_task_result(task)
+    estimate = _scope_estimate(task)
+    if task.status == "done" and verified:
+        timing_status = "completed"
+        remaining_seconds = 0
+        reason = "Результат завершён и подтверждён evidence или артефактом."
+    elif task.status == "done":
+        timing_status = "result_unverified"
+        remaining_seconds = None
+        reason = "Задача помечена done, но подтверждённый результат или файл отсутствует; считать её выполненной нельзя."
+    elif task.status == "blocked":
+        timing_status = "blocked"
+        remaining_seconds = None
+        reason = "Задача ожидает обязательного решения владельца или другой блокирующей зависимости."
+    elif task.status == "failed":
+        timing_status = "failed"
+        remaining_seconds = None
+        reason = "Последняя попытка завершилась ошибкой; срок появится после устранения причины."
+    elif task.status == "running":
+        timing_status = "running"
+        remaining_seconds = None
+        reason = "Исполнитель работает, но подтверждённая бизнес-оценка срока в задаче не задана."
+    else:
+        timing_status = "queued"
+        remaining_seconds = None
+        reason = "Задача ожидает запуска; технический timeout попытки не является сроком бизнес-результата."
+
+    return {
+        "outcome": "completed",
+        "report_kind": "task_timing",
+        "generated_at": _utcnow().isoformat(),
+        "selection": selection,
+        "task": {
+            "id": task.id,
+            "title": task.title,
+            "agent_type": task.agent_type,
+            "status": task.status,
+            "attempts": task.attempts,
+            "max_attempts": task.max_attempts,
+        },
+        "timing_status": timing_status,
+        "remaining_seconds": remaining_seconds,
+        "actual_runtime_seconds": actual_seconds,
+        "result_verified": verified,
+        "reason": reason,
+        "planning_estimate": estimate,
+        "evidence": [
+            {
+                "type": "task_timing_snapshot",
+                "task_id": task.id,
+                "task_status": task.status,
+                "result_verified": verified,
+                "run_id": run.id if run else None,
+                "run_status": run.status if run else None,
+                "actual_runtime_seconds": actual_seconds,
+            }
         ],
     }

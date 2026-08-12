@@ -13,7 +13,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - versioned Company Brain facts with confidence, source and expiry;
 - deterministic Decision Engine, separate owner Approval Engine and auditable Agent Runtime runs;
 - automatic event routing from Sales, Tenders, HR, Finance and Marketing records to their agents;
-- AI CEO, Research, Tender, Sales, Marketing, HR, Finance and Meta Brain agents;
+- AI CEO, Research, Tender, Sales, Marketing, HR, Finance, Copywriter, Creative and Meta Brain agents;
 - optional OpenAI-compatible Responses API advisor with strict JSON output, aggregate-only input and deterministic fallback;
 - business goals/KPI progress, structured decisions, outcome measurement and three-scenario simulator;
 - tender opportunity scoring and document registry with structured analysis;
@@ -29,6 +29,8 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - backward-compatible Telegram commands plus Mission Control sections;
 - natural-language Russian Telegram dialogue that maps ordinary phrases to read views or auditable agent tasks, without requiring slash commands;
 - CRM-backed commercial-proposal PDF generation from a natural Russian Telegram request, with a downloadable draft, audit evidence and mandatory owner review before client delivery;
+- DOCX/PDF proposal revision from a Telegram attachment: Copywriter edits the text locally, Creative applies the layout, and the owner receives both formats with no automatic client delivery;
+- an Orchestrator evidence gate that rejects unsupported `done` results and creates a deduplicated improvement plus a linked AI CEO incident report;
 - Request Analyst Agent that records real capability gaps and prepares a redacted Codex prompt with acceptance criteria and a mandatory test plan;
 - Alembic migration, Docker Compose, CI, tests and rollback guide.
 
@@ -50,6 +52,7 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 
 - `POSTGRES_PASSWORD`, `API_KEY`; optionally separate `MANAGER_API_KEY`, `OPERATOR_API_KEY`, `VIEWER_API_KEY`
 - `TELEGRAM_BOT_TOKEN`, `OWNER_TELEGRAM_ID` for Telegram
+- optional `TELEGRAM_BOT_API_BASE_URL` for Telegram documents over 20 MB; without it the bot records a visible `credentials_required` blocker instead of ignoring the file
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` for delivery
 - `UNSUBSCRIBE_SECRET` for independently rotatable signed unsubscribe links (falls back to `API_KEY`)
 - `LLM_API_KEY`; optionally override `LLM_BASE_URL` and `LLM_MODEL` (default: OpenAI Responses API and `gpt-5.6-terra`)
@@ -97,6 +100,11 @@ See [website and Marketing OS](docs/MARKETING_SITE.md) for the lead, media, adve
 тендерами», «найди тендеры по уборке БЦ», «создай задачу связаться с клиентом» или
 «проанализируй финансы». Фраза «подготовь коммерческое предложение для клиента
 Название» создаёт настоящий PDF по CRM и возвращает владельцу проект документа.
+Приложенный DOCX/PDF с просьбой улучшить КП проходит через Orchestrator, отдельных
+агентов текста и дизайна и возвращается владельцу в обоих форматах. Облачный Bot
+API ограничивает скачивание 20 МБ; для большего исходника нужен локальный Telegram
+Bot API server и `TELEGRAM_BOT_API_BASE_URL`. Без него запрос остаётся видимой
+заблокированной задачей с improvement ID и отчётом AI CEO.
 Чтение данных выполняется сразу, а остальные деловые поручения
 превращаются в задачи подходящего агента. Неизвестные поручения передаются
 Orchestrator. Оплата, договоры, подача заявки на тендер, окончательные кадровые
@@ -123,3 +131,8 @@ Orchestrator. Оплата, договоры, подача заявки на т�
 забирать очередь; для полностью серверной передачи можно опционально подключить
 опубликованный ChatGPT Workspace Agent. Без его credentials система честно
 показывает `credentials_required` и сохраняет готовый handoff в PostgreSQL.
+
+После пользовательского запуска Orchestrator проверяет наличие запрошенного файла
+или другого evidence. Неполный результат не считается выполненным: создаётся одно
+дедуплицированное улучшение, а AI CEO формирует связанный отчёт с причиной, handoff
+и ответственной стороной.

@@ -82,6 +82,11 @@ def _proposal_client_query(message: str) -> str:
     return match.group(1).strip(" .,:;\"")[:255] if match else ""
 
 
+def _referenced_task_id(text: str) -> int | None:
+    match = re.search(r"(?:#|№|(?:задач(?:а|и|у|е)?|номер)\s*)(\d+)\b", text)
+    return int(match.group(1)) if match else None
+
+
 def understand_russian_message(message: str) -> dict[str, Any]:
     """Map a Russian free-form Telegram message to a safe application intent.
 
@@ -105,6 +110,17 @@ def understand_russian_message(message: str) -> dict[str, Any]:
         and _contains(text, "проделан", "сделано", "выполнен", "работ")
     ) or _contains(text, "что было сделано", "что уже сделано", "результаты работы системы"):
         return {"kind": "activity_report", "period_hours": 24}
+    if _contains(
+        text,
+        "сколько нужно времени",
+        "сколько времени",
+        "сколько займет",
+        "когда будет готов",
+        "когда закончится",
+        "срок выполнения",
+        "оценка времени",
+    ) and _contains(text, "задач", "поручен", "работ"):
+        return {"kind": "task_eta", "task_id": _referenced_task_id(text)}
     if _contains(text, "весь функционал", "все функции", "полную проверку") and _contains(
         text, "бот", "систем"
     ):

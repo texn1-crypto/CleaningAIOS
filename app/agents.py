@@ -41,6 +41,56 @@ class OrchestratorAgent:
             from .reports import build_system_self_check
 
             return build_system_self_check(db, registered_agents=sorted(AGENTS))
+        if payload.get("action") == "task_timing_report":
+            from .reports import build_task_timing_report
+
+            return build_task_timing_report(db, task_id=payload.get("task_id"))
+        if payload.get("action") == "revise_proposal":
+            if payload.get("document_status") == "credentials_required":
+                return {
+                    "status": "credentials_required",
+                    "credentials_required": ["TELEGRAM_BOT_API_BASE_URL"],
+                    "reason": "Telegram Cloud Bot API не скачивает этот файл: нужен локальный Bot API server для документов больше 20 МБ.",
+                    "evidence": [],
+                }
+            from .orchestrator import dispatch
+            from .proposal_studio import create_proposal_revision
+
+            copy_task = Task(
+                title="Профессиональная редакция текста коммерческого предложения",
+                agent_type="copywriter",
+                priority="high",
+                payload={
+                    "source": "proposal_pipeline",
+                    "source_path": payload.get("source_path"),
+                    "source_filename": payload.get("source_filename"),
+                },
+                max_attempts=1,
+            )
+            db.add(copy_task)
+            db.flush()
+            copy_result = dispatch(db, copy_task)
+            if copy_task.status != "done" or copy_result.get("status") != "ready":
+                raise RuntimeError(f"Текстовый агент не завершил редакцию: {copy_result.get('error') or copy_result.get('reason') or copy_task.status}")
+
+            creative_task = Task(
+                title="Дизайн и компоновка коммерческого предложения",
+                agent_type="creative",
+                priority="high",
+                payload={"source": "proposal_pipeline", "copy": copy_result},
+                max_attempts=1,
+            )
+            db.add(creative_task)
+            db.flush()
+            creative_result = dispatch(db, creative_task)
+            if creative_task.status != "done" or creative_result.get("status") != "ready":
+                raise RuntimeError(f"Creative Agent не завершил дизайн: {creative_result.get('error') or creative_result.get('reason') or creative_task.status}")
+            return create_proposal_revision(
+                db,
+                {**payload, "copy_task_id": copy_task.id, "creative_task_id": creative_task.id},
+                copy_result,
+                creative_result,
+            )
         created = []
         for item in payload.get("delegations", []):
             agent_type = item.get("agent_type")
@@ -109,6 +159,22 @@ class FinanceAgent:
 class CEOAgent:
     name = "ceo"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "agent_incident_report":
+            return {
+                "outcome": "completed",
+                "report_kind": "agent_incident",
+                "source_task_id": payload.get("source_task_id"),
+                "agent_type": payload.get("failed_agent_type"),
+                "failure_reason": payload.get("failure_reason"),
+                "improvement_id": payload.get("improvement_id"),
+                "handoff_status": payload.get("handoff_status"),
+                "responsible_party": payload.get("responsible_party"),
+                "evidence": [{
+                    "type": "agent_incident",
+                    "source_task_id": payload.get("source_task_id"),
+                    "improvement_id": payload.get("improvement_id"),
+                }],
+            }
         open_tasks = db.scalar(select(func.count(Task.id)).where(Task.status.in_(["open", "queued", "running"]))) or 0
         pending = db.scalar(select(func.count(Decision.id)).where(Decision.status == "pending")) or 0
         failed = db.scalar(select(func.count(Task.id)).where(Task.status == "failed")) or 0
@@ -188,8 +254,26 @@ class RequestAnalystAgent:
         }
 
 
+class CopywriterAgent:
+    name = "copywriter"
+
+    def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        from .proposal_studio import build_professional_copy
+
+        return build_professional_copy(payload)
+
+
+class CreativeAgent:
+    name = "creative"
+
+    def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        from .proposal_studio import build_creative_direction
+
+        return build_creative_direction(payload)
+
+
 AGENTS: dict[str, Agent] = {}
-for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), MetaBrainAgent(), RequestAnalystAgent()]:
+for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), MetaBrainAgent(), RequestAnalystAgent(), CopywriterAgent(), CreativeAgent()]:
     AGENTS[agent.name] = agent
 
 

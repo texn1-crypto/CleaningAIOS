@@ -460,6 +460,133 @@ def test_russian_chat_reads_existing_sections():
     assert understand_russian_message("Как дела у системы?")["kind"] == "dashboard"
     assert understand_russian_message("Пришли отчет о проделанной работе")["kind"] == "activity_report"
     assert understand_russian_message("Запусти весь функционал чат бота")["kind"] == "system_self_check"
+    assert understand_russian_message("Сколько нужно времени на выполнение задачи?") == {
+        "kind": "task_eta",
+        "task_id": None,
+    }
+    assert understand_russian_message("Когда будет готова задача 42?") == {
+        "kind": "task_eta",
+        "task_id": 42,
+    }
+
+
+def test_task_timing_report_does_not_treat_empty_agent_summary_as_completion(client):
+    from app.chat import understand_russian_message
+
+    message = (
+        "Собери базу управляющих компаний из всех возможных источников, "
+        "найди сайты и почты, проверь их и выгрузи PDF, XLSX и Word"
+    )
+    intent = understand_russian_message("Сколько нужно времени на выполнение задачи?")
+    assessment = client.post(
+        "/api/request-analysis",
+        json={"message": "Сколько нужно времени на выполнение задачи?", "intent": intent},
+    ).json()
+    assert assessment["classification"] == "supported"
+    assert assessment["improvement_id"] is None
+
+    business_task = client.post("/api/tasks", json={
+        "title": message,
+        "agent_type": "marketing",
+        "payload": {
+            "source": "telegram_natural_language",
+            "original_message": message,
+        },
+    }).json()
+    quality_gated = client.post(f"/api/tasks/{business_task['id']}/run").json()
+    assert quality_gated["status"] == "blocked"
+    assert quality_gated["result"]["improvement_id"]
+    assert quality_gated["result"]["ceo_incident_task_id"]
+
+    timing_task = client.post("/api/tasks", json={
+        "title": "Оценить срок выполнения задачи",
+        "agent_type": "orchestrator",
+        "payload": {
+            "action": "task_timing_report",
+            "task_id": None,
+            "source": "telegram_read_request",
+        },
+        "max_attempts": 1,
+    }).json()
+    completed = client.post(f"/api/tasks/{timing_task['id']}/run").json()
+    result = completed["result"]
+
+    assert completed["status"] == "done"
+    assert result["task"]["id"] == business_task["id"]
+    assert result["timing_status"] == "blocked"
+    assert result["result_verified"] is False
+    assert result["remaining_seconds"] is None
+    assert result["actual_runtime_seconds"] is not None
+    assert result["planning_estimate"]["min_hours"] == 8
+    assert result["planning_estimate"]["max_hours"] == 24
+    assert any(
+        row["action"] == "task.completed" and row["resource_id"] == str(timing_task["id"])
+        for row in client.get("/api/audit").json()
+    )
+
+
+def test_telegram_task_timing_returns_truthful_result(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 601}
+        if path == "/api/tasks/601/run":
+            return {
+                "status": "done",
+                "result": {
+                    "outcome": "completed",
+                    "task": {"id": 9, "title": "Собрать базу УК", "status": "done"},
+                    "timing_status": "result_unverified",
+                    "actual_runtime_seconds": 0.013,
+                    "planning_estimate": {
+                        "min_hours": 8,
+                        "max_hours": 24,
+                        "confidence": "low",
+                        "starts_after": ["подключены источники"],
+                    },
+                    "reason": "Подтвержденный результат отсутствует.",
+                },
+            }
+        raise AssertionError(path)
+
+    class Message:
+        text = "Сколько нужно времени на выполнение задачи?"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+
+    reply = Update.effective_message.replies[-1]
+    assert "Задача #9" in reply
+    assert "результата или файла нет" in reply
+    assert "8–24 ч" in reply
+    assert "это не равно" in reply
+    task_payload = next(kwargs["json"] for _, path, kwargs in calls if path == "/api/tasks")
+    assert task_payload["payload"] == {
+        "action": "task_timing_report",
+        "task_id": None,
+        "source": "telegram_read_request",
+    }
+    assert task_payload["max_attempts"] == 1
 
 
 def test_system_self_check_is_safe_audited_and_truthful(client, monkeypatch):
@@ -1022,6 +1149,308 @@ def test_request_analyst_llm_uses_strict_structured_output(monkeypatch):
     assert result["should_create_improvement"] is True
     assert captured["payload"]["text"]["format"]["strict"] is True
     assert captured["payload"]["store"] is False
+
+
+def test_orchestrator_revises_attached_proposal_with_copy_and_creative_agents(client, monkeypatch, tmp_path):
+    from docx import Document
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    monkeypatch.setattr(settings, "company_name", "CleaningAIOS")
+    monkeypatch.setattr(settings, "company_legal_name", "ИП Тестовый Владелец")
+    monkeypatch.setattr(settings, "company_inn", "123456789012")
+    source = tmp_path / "КП ИП СОКОЛОВ А С ЖК РЕЧНОЙ.docx"
+    document = Document()
+    document.add_paragraph("Коммерческое предложение для ЖК Речной")
+    document.add_paragraph("Площадь объекта: 4 500 м²")
+    document.add_paragraph("Стоимость услуг: 320 000 руб. в месяц")
+    document.add_paragraph("График: ежедневно, 2 смены")
+    document.save(source)
+
+    task = client.post("/api/tasks", json={
+        "title": "Обновить приложенное КП",
+        "agent_type": "orchestrator",
+        "priority": "high",
+        "payload": {
+            "action": "revise_proposal",
+            "source": "telegram_document",
+            "source_path": str(source),
+            "source_filename": source.name,
+            "request_text": "Сделай КП красивее и профессиональнее, представь мне на утверждение",
+            "original_message": "Сделай КП красивее и профессиональнее, представь мне на утверждение",
+        },
+        "max_attempts": 1,
+    }).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    result = completed["result"]
+    assert completed["status"] == "done"
+    assert result["status"] == "ready_for_owner_review"
+    assert result["owner_approval_required_before_sending"] is True
+    assert result["sent_to_client"] is False
+    assert {item["type"] for item in result["evidence"]} >= {
+        "proposal_copy_review", "proposal_design_review", "document_export"
+    }
+
+    tasks = client.get("/api/tasks").json()
+    copy_task = next(row for row in tasks if row["id"] == result["copy_task_id"])
+    creative_task = next(row for row in tasks if row["id"] == result["creative_task_id"])
+    assert copy_task["agent_type"] == "copywriter"
+    assert copy_task["result"]["external_ai_used"] is False
+    assert creative_task["agent_type"] == "creative"
+    assert creative_task["result"]["preset"] == "narrative_proposal"
+
+    docx_response = client.get(result["download_urls"]["docx"])
+    pdf_response = client.get(result["download_urls"]["pdf"])
+    assert docx_response.status_code == 200
+    assert docx_response.content.startswith(b"PK")
+    assert pdf_response.status_code == 200
+    assert pdf_response.content.startswith(b"%PDF")
+
+    approval = client.post(
+        f"/api/approvals/{result['approval_id']}/approve",
+        json={"note": "Утверждаю только проект, без отправки клиенту"},
+    ).json()
+    assert approval["status"] == "approved"
+    revision = next(
+        row for row in client.get("/api/records?record_type=proposal_revision").json()
+        if row["id"] == result["proposal_revision_id"]
+    )
+    assert revision["status"] == "approved"
+    assert revision["data"]["sent_to_client"] is False
+
+
+def test_proposal_studio_separates_source_price_rows_and_total():
+    from app.proposal_studio import _fact_lines
+
+    text = """
+    Уборка МОП (2 уборщица) 217 600
+    Снабжение 14 900
+    Придомовая территория (2 дворника) 232 545 Итоговая стоимость
+    Менеджер клининга 35 400 500 445 руб.
+    """
+    assert _fact_lines(text) == [
+        "Уборка МОП (2 уборщицы) — 217 600 руб.",
+        "Снабжение — 14 900 руб.",
+        "Придомовая территория (2 дворника) — 232 545 руб.",
+        "Менеджер клининга — 35 400 руб.",
+        "Итоговая стоимость — 500 445 руб.",
+    ]
+
+
+def test_proposal_studio_enforces_document_layout_preset(tmp_path):
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.shared import Inches, Pt
+    from pypdf import PdfReader
+
+    from app.proposal_studio import _build_docx, _build_pdf
+
+    copy = {
+        "client_name": "ЖК Речной",
+        "sections": {
+            "opening": "Профессиональное предложение — на проверку владельцу.",
+            "value": "Решение по задачам объекта.",
+            "quality": "Контроль качества.",
+            "launch": "Порядок запуска.",
+        },
+        "source_facts": ["Уборка МОП — 217 600 руб.", "Итоговая стоимость — 500 445 руб."],
+        "source_contacts": {"phone": "8-995-599-60-95"},
+    }
+    docx_path = tmp_path / "proposal.docx"
+    pdf_path = tmp_path / "proposal.pdf"
+    _build_docx(docx_path, copy)
+    _build_pdf(pdf_path, copy)
+
+    document = Document(docx_path)
+    section = document.sections[0]
+    assert section.page_width == Inches(8.5)
+    assert section.page_height == Inches(11)
+    assert section.top_margin == section.right_margin == section.bottom_margin == section.left_margin == Inches(1)
+    normal = document.styles["Normal"]
+    assert normal.font.name == "Calibri"
+    assert normal.font.size == Pt(11)
+    assert normal.paragraph_format.space_after == Pt(8)
+    assert normal.paragraph_format.line_spacing == pytest.approx(1.333, abs=0.001)
+    assert normal.paragraph_format.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+    heading = document.styles["Heading 1"]
+    assert heading.font.size == Pt(16)
+    assert str(heading.font.color.rgb) == "2E74B5"
+    assert heading.paragraph_format.space_before == Pt(18)
+    assert heading.paragraph_format.space_after == Pt(10)
+
+    for table in document.tables:
+        assert table.style.name == "Table Grid"
+        width = table._tbl.tblPr.first_child_found_in("w:tblW")
+        assert width.get(qn("w:w")) == "9360"
+        assert width.get(qn("w:type")) == "dxa"
+        assert sum(int(node.get(qn("w:w"))) for node in table._tbl.tblGrid) == 9360
+
+    assert len(PdfReader(str(pdf_path)).pages) == 2
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(str(pdf_path)).pages)
+    assert "—" not in pdf_text
+    assert "ПРОЕКТ · ТРЕБУЕТ ПРОВЕРКИ И УТВЕРЖДЕНИЯ ВЛАДЕЛЬЦА" in pdf_text
+
+
+def test_incomplete_telegram_task_creates_deduplicated_improvement_and_ceo_report(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "workspace_agent_trigger_id", "")
+    monkeypatch.setattr(settings, "workspace_agent_access_token", "")
+    task = client.post("/api/tasks", json={
+        "title": "Обработать крупное приложенное КП",
+        "agent_type": "orchestrator",
+        "payload": {
+            "action": "revise_proposal",
+            "source": "telegram_document",
+            "document_status": "credentials_required",
+            "source_filename": "large-proposal.docx",
+        },
+        "max_attempts": 1,
+    }).json()
+    first = client.post(f"/api/tasks/{task['id']}/run").json()
+    assert first["status"] == "blocked"
+    assert first["result"]["improvement_id"]
+    assert first["result"]["ceo_incident_task_id"]
+    assert first["result"]["handoff_status"] == "credentials_required"
+    assert first["result"]["responsible_party"] == "owner_configuration"
+
+    incident = next(
+        row for row in client.get("/api/tasks").json()
+        if row["id"] == first["result"]["ceo_incident_task_id"]
+    )
+    assert incident["agent_type"] == "ceo"
+    assert incident["result"]["report_kind"] == "agent_incident"
+    assert incident["result"]["source_task_id"] == task["id"]
+    runs = client.get("/api/agent-runs", headers={"X-Role": "manager"}).json()
+    source_run = next(row for row in runs if row["task_id"] == task["id"])
+    assert source_run["status"] == "incomplete"
+
+
+def test_telegram_large_proposal_is_not_silently_ignored(monkeypatch):
+    from app import bot
+    from app.config import settings
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported"}
+        if path == "/api/tasks":
+            return {"id": 701}
+        if path == "/api/tasks/701/run":
+            return {"id": 701, "status": "blocked", "result": {"improvement_id": 81, "ceo_incident_task_id": 702}}
+        raise AssertionError(path)
+
+    class Document:
+        file_name = "КП ЖК Речной.docx"
+        file_size = 29_800_000
+        file_id = "telegram-file-id"
+
+    class Message:
+        document = Document()
+        caption = "Сделай коммерческое предложение более красивым и профессиональным и представь на утверждение"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(settings, "telegram_bot_api_base_url", "")
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.proposal_document(Update(), None))
+    assert "зарегистрированы как задача #701" in Update.effective_message.replies[-1]
+    assert "улучшение #81" in Update.effective_message.replies[-1].lower()
+    task_payload = next(kwargs["json"] for method, path, kwargs in calls if path == "/api/tasks")
+    assert task_payload["payload"]["document_status"] == "credentials_required"
+    assert task_payload["payload"]["source"] == "telegram_document"
+
+
+def test_telegram_small_proposal_returns_docx_and_pdf_for_owner_review(monkeypatch, tmp_path):
+    from app import bot
+    from app.config import settings
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported"}
+        if path == "/api/tasks":
+            return {"id": 801}
+        if path == "/api/tasks/801/run":
+            return {
+                "id": 801,
+                "status": "done",
+                "result": {
+                    "status": "ready_for_owner_review",
+                    "proposal_number": "KPR-TEST",
+                    "approval_id": 91,
+                    "download_urls": {"docx": "/revision.docx", "pdf": "/revision.pdf"},
+                },
+            }
+        raise AssertionError(path)
+
+    async def fake_file(path):
+        return (b"PK-test", "revision.docx") if path.endswith("docx") else (b"%PDF-test", "revision.pdf")
+
+    class TelegramFile:
+        async def download_to_drive(self, custom_path):
+            Path(custom_path).write_bytes(b"source-docx")
+
+    class TelegramBot:
+        async def get_file(self, file_id):
+            assert file_id == "file-id"
+            return TelegramFile()
+
+    class Context:
+        bot = TelegramBot()
+
+    class Document:
+        file_name = "КП ЖК Речной.docx"
+        file_size = 100
+        file_id = "file-id"
+
+    class Message:
+        document = Document()
+        caption = "Сделай это КП профессиональнее и представь мне на утверждение"
+
+        def __init__(self):
+            self.replies = []
+            self.documents = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+        async def reply_document(self, **kwargs):
+            self.documents.append(kwargs)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    monkeypatch.setattr(settings, "telegram_bot_api_base_url", "")
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    monkeypatch.setattr(bot, "api_file", fake_file)
+    asyncio.run(bot.proposal_document(Update(), Context()))
+    assert [item["filename"] for item in Update.effective_message.documents] == ["revision.docx", "revision.pdf"]
+    assert "Клиенту ничего не отправлено" in Update.effective_message.documents[-1]["caption"]
+    assert Update.effective_message.documents[-1]["reply_markup"] is not None
 
 
 def test_public_website_lead_enters_crm_inbox_and_hot_queue(client, monkeypatch):

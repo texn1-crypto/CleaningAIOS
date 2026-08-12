@@ -48,6 +48,14 @@ Set `TELEGRAM_API_IP` in the server `.env`, then recreate only the bot:
 docker compose --profile telegram up -d --force-recreate bot
 ```
 
+Telegram's cloud Bot API cannot download files larger than 20 MB. For larger
+commercial-proposal attachments, operate the official local Bot API server
+separately, provide `api_id` and `api_hash` only to that server, expose it on the
+private Docker network, and set `TELEGRAM_BOT_API_BASE_URL` to its root URL (for
+example `http://telegram-bot-api:8081`). Until this is configured, the application
+stores the request as blocked with an improvement and CEO incident report. Never
+send `api_id`, `api_hash`, or bot tokens through Telegram.
+
 Do not expose PostgreSQL publicly. Terminate TLS in a reverse proxy and restrict `/docs` in production if it is not needed.
 
 `API_KEY` always grants the `owner` role. Configure `MANAGER_API_KEY`,

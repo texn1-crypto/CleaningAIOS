@@ -21,6 +21,11 @@ requests reuse the same deduplication key. Optional Workspace Agent handoff uses
 idempotency key; local Codex automation can consume the same queue without sharing
 application secrets.
 
+For owner Telegram tasks, Orchestrator applies a post-run evidence gate. Requests
+for files cannot become `done` without an artifact; credentials and adapter gaps are
+also incomplete. The gate creates one deduplicated improvement and a linked AI CEO
+incident task with the source task, agent, reason, handoff and responsible party.
+
 ## Controlled execution
 
 Every domain write and its event are committed in one database transaction. The
@@ -58,6 +63,9 @@ decisions whose outcomes have been recorded.
 ## External integrations
 
 - Telegram polling starts only when bot token and owner ID are provided.
+- Telegram DOCX/PDF proposal attachments use protected shared storage and run through
+  Orchestrator, Copywriter and Creative. Files over the cloud 20 MB download limit
+  require a separately operated local Bot API endpoint.
 - SMTP passwords are supplied through environment variables. Additional mailbox
   records contain only an environment-variable name in `secret_ref`, never a password.
 - `TENDER_SOURCES` declares comma-separated HTTP JSON feeds. A feed returns either a

@@ -172,6 +172,35 @@ def download_proposal(proposal_id: int, db: Session = Depends(get_db), actor: Pr
     return FileResponse(path, media_type="application/pdf", filename=str(row.data.get("filename") or path.name))
 
 
+@app.get("/api/proposal-revisions/{revision_id}/files/{file_kind}")
+def download_proposal_revision_file(
+    revision_id: int,
+    file_kind: str,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "operator")
+    if file_kind not in {"docx", "pdf"}:
+        raise HTTPException(404, "Proposal revision format not found")
+    row = db.get(BusinessRecord, revision_id)
+    if not row or row.record_type != "proposal_revision" or row.status not in {"ready", "approved"}:
+        raise HTTPException(404, "Ready proposal revision not found")
+    item = (row.data.get("files") or {}).get(file_kind) or {}
+    storage_root = Path(settings.document_storage_path).resolve()
+    path = Path(str(item.get("storage_path", ""))).resolve()
+    try:
+        path.relative_to(storage_root)
+    except ValueError:
+        raise HTTPException(403, "Proposal revision path is outside document storage")
+    expected_suffix = f".{file_kind}"
+    if not path.is_file() or path.suffix.lower() != expected_suffix:
+        raise HTTPException(404, "Proposal revision file is unavailable")
+    media_type = "application/pdf" if file_kind == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    audit(db, actor.subject, "proposal_revision.downloaded", "proposal_revision", str(row.id), {"format": file_kind})
+    db.commit()
+    return FileResponse(path, media_type=media_type, filename=str(item.get("filename") or path.name))
+
+
 @app.post("/api/records", status_code=201)
 def create_record(payload: RecordCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "operator")
@@ -287,11 +316,19 @@ def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db
     elif row.resource_type == "decision":
         decision = db.get(Decision, int(row.resource_id))
         if decision: decision.status = row.status; decision.decided_by = actor.subject; decision.decided_at = row.decided_at
-    elif row.resource_type in {"marketing_invoice", "marketing_experiment"}:
+    elif row.resource_type in {"marketing_invoice", "marketing_experiment", "proposal_revision"}:
         resource = db.get(BusinessRecord, int(row.resource_id))
         if resource and resource.record_type == row.resource_type:
             if row.resource_type == "marketing_invoice":
                 resource.status = "approved_for_manual_payment" if row.status == "approved" else "rejected"
+            elif row.resource_type == "proposal_revision":
+                resource.status = "approved" if row.status == "approved" else "rejected"
+                resource.data = {
+                    **resource.data,
+                    "owner_approved": row.status == "approved",
+                    "sent_to_client": False,
+                    "approval_decision_at": row.decided_at.isoformat() if row.decided_at else None,
+                }
             else:
                 resource.status = "approved" if row.status == "approved" else "rejected"
     event_bus.publish(db, f"approval.{row.status}", row.resource_type, row.resource_id, {"approval_id": row.id, "action_kind": row.action_kind}, idempotency_key=f"approval:{row.id}:{row.status}")

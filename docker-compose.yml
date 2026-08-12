@@ -77,6 +77,7 @@ services:
       - "api.telegram.org=${TELEGRAM_API_IP:-149.154.167.220}"
     depends_on:
       web: {condition: service_healthy}
+    volumes: [tender_documents:/data/documents]
     profiles: ["telegram"]
     healthcheck:
       test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
