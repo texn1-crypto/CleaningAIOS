@@ -182,7 +182,78 @@ def test_structured_decision_creates_bound_approval(client):
 def test_integration_status_is_truthful(client):
     status = client.get("/api/integrations").json()
     assert status["tender_sources"]["status"] in {"configured", "source_configuration_required"}
-    assert status["llm"]["status"] in {"adapter_required", "credentials_and_adapter_required"}
+    assert status["llm"]["status"] in {"configured", "credentials_required", "model_configuration_required"}
+    assert status["llm"]["provider"] == "openai_compatible_responses"
+
+
+def test_llm_adapter_uses_structured_responses_contract(monkeypatch):
+    import json
+    from app.config import settings
+    from app import llm
+
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+        def json(self):
+            output = {
+                "summary": "Стабильное состояние",
+                "risks": ["Один риск"],
+                "data_gaps": ["Нет данных источника"],
+                "recommendations": [{"title": "Проверить маржу", "agent_type": "finance", "rationale": "Маржа требует проверки", "priority": "high", "needs_owner_decision": False}],
+            }
+            return {"status": "completed", "model": "test-model", "output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(output)}]}], "usage": {"total_tokens": 42}}
+
+    class Client:
+        def __init__(self, *args, **kwargs): captured["headers"] = kwargs["headers"]
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, url, json): captured.update({"url": url, "payload": json}); return Response()
+
+    monkeypatch.setattr(llm.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "llm_api_key", "test-secret")
+    monkeypatch.setattr(settings, "llm_base_url", "https://api.example/v1")
+    monkeypatch.setattr(settings, "llm_model", "test-model")
+    result = llm.llm_advisor.review({"business_health": 90})
+    assert result["status"] == "succeeded"
+    assert result["recommendations"][0]["agent_type"] == "finance"
+    assert captured["url"] == "https://api.example/v1/responses"
+    assert captured["payload"]["text"]["format"]["strict"] is True
+    assert captured["payload"]["store"] is False
+    assert captured["headers"]["Authorization"] == "Bearer test-secret"
+
+
+def test_ai_ceo_falls_back_without_llm_credentials(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    task = client.post("/api/tasks", json={"title": "CEO fallback check", "agent_type": "ceo"}).json()
+    result = client.post(f"/api/tasks/{task['id']}/run").json()["result"]
+    assert result["llm_advice"]["status"] == "credentials_required"
+    assert isinstance(result["business_health"], int)
+
+
+def test_ai_ceo_creates_only_safe_llm_tasks(client, monkeypatch):
+    from app.agents import llm_advisor
+
+    monkeypatch.setattr(llm_advisor, "review", lambda snapshot: {
+        "status": "succeeded",
+        "model": "test-model",
+        "summary": "Test",
+        "risks": [],
+        "data_gaps": [],
+        "recommendations": [
+            {"title": "LLM safe finance analysis unique", "agent_type": "finance", "rationale": "Проверить данные", "priority": "high", "needs_owner_decision": False},
+            {"title": "LLM protected commitment unique", "agent_type": "finance", "rationale": "Оплатить счет", "priority": "high", "needs_owner_decision": True},
+        ],
+    })
+    task = client.post("/api/tasks", json={"title": "CEO LLM task check", "agent_type": "ceo"}).json()
+    result = client.post(f"/api/tasks/{task['id']}/run").json()["result"]
+    created = {x["title"]: x for x in result["tasks_created"]}
+    assert created["LLM safe finance analysis unique"]["source"] == "llm_advisory"
+    assert "LLM protected commitment unique" not in created
+    queued = {x["title"]: x for x in client.get("/api/tasks").json()}
+    assert queued["LLM safe finance analysis unique"]["payload"]["advisory_only"] is True
 
 
 def test_research_agent_runs_real_collector_contract(client, monkeypatch):

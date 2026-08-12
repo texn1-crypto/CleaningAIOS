@@ -12,7 +12,8 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - versioned Company Brain facts with confidence, source and expiry;
 - deterministic Decision Engine, separate owner Approval Engine and auditable Agent Runtime runs;
 - automatic event routing from Sales, Tenders, HR, Finance and Marketing records to their agents;
-- AI CEO, Research, Tender, Sales, Marketing, HR, Finance and Meta Brain deterministic agents;
+- AI CEO, Research, Tender, Sales, Marketing, HR, Finance and Meta Brain agents;
+- optional OpenAI-compatible Responses API advisor with strict JSON output, aggregate-only input and deterministic fallback;
 - business goals/KPI progress, structured decisions, outcome measurement and three-scenario simulator;
 - tender opportunity scoring and document registry with structured analysis;
 - configurable HTTP JSON-feed tender collection and size-limited document download with SHA-256 verification;
@@ -23,7 +24,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - backward-compatible Telegram commands plus Mission Control sections;
 - Alembic migration, Docker Compose, CI, tests and rollback guide.
 
-Agents produce deterministic operational analysis from the shared database. An LLM is optional and is not claimed as active until `LLM_API_KEY` and a provider integration are configured. Tender collection similarly reports missing sources instead of inventing results.
+Agents produce operational analysis from the shared database. The core remains deterministic without an LLM. When `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` are configured, AI CEO also requests a structured advisory review and may create only analysis/planning tasks. LLM recommendations that declare an owner decision are not queued, and the policy layer remains authoritative for every protected action. Tender collection similarly reports missing sources instead of inventing results.
 
 ## Local development
 
@@ -43,7 +44,7 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 - `TELEGRAM_BOT_TOKEN`, `OWNER_TELEGRAM_ID` for Telegram
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` for delivery
 - `UNSUBSCRIBE_SECRET` for independently rotatable signed unsubscribe links (falls back to `API_KEY`)
-- `LLM_API_KEY` only when a chosen LLM adapter is added
+- `LLM_API_KEY`; optionally override `LLM_BASE_URL` and `LLM_MODEL` (default: OpenAI Responses API and `gpt-5.6-terra`)
 - `TENDER_SOURCES` and per-source credentials/API keys for external tender ingestion
 
 See [production deployment](docs/PRODUCTION.md) and [baseline failures](docs/BASELINE.md).
@@ -71,9 +72,9 @@ Finance and Marketing. Domain rules reject incomplete finance entries, active
 tenders without deadlines and lost leads without a recorded reason.
 
 Open `/` for the live Mission Control dashboard and `/docs` for all operations.
-`/api/integrations` truthfully reports which external credentials or adapters are
-still missing. External tender portals and an LLM are never reported as active until
-their source adapter is configured; the deterministic operating system works without
-them.
+`/api/integrations` truthfully reports which external credentials or source adapters
+are still missing. External tender portals are never reported as active until their
+source is configured; the LLM is never reported as configured without its key and
+model. The deterministic operating system works without either integration.
 
 See [architecture](docs/ARCHITECTURE.md) for the event flow and module boundaries.

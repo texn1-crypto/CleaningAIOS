@@ -29,9 +29,13 @@ schedule creates a new approval request.
 
 The scheduler checks tender deadlines, overdue payments and unfilled shifts. It also
 queues a periodic CEO review. AI CEO reads goals, task health and site economics,
-then creates deduplicated Finance/HR recovery tasks for material deviations. Meta
-Brain measures telemetry gaps and the success rate of decisions whose outcomes have
-been recorded.
+then creates deduplicated Finance/HR recovery tasks for material deviations. When
+configured, the OpenAI-compatible Responses adapter receives only this aggregate
+snapshot and returns a strict JSON advisory review. Safe analysis/planning
+recommendations can become deduplicated tasks; protected recommendations stay
+advisory and require the owner's normal approval path. LLM failures fall back to the
+deterministic review. Meta Brain measures telemetry gaps and the success rate of
+decisions whose outcomes have been recorded.
 
 ## External integrations
 
@@ -43,5 +47,8 @@ been recorded.
   `deadline_at`, scoring data and `documents`. `TENDER_SOURCE_TOKEN` supplies an
   optional bearer token. Portal-specific authentication or non-JSON formats still
   require a legal provider adapter. No fabricated tenders are used.
-- The LLM key is reserved for a future explicit provider adapter. Current decisions,
-  scoring, policies and simulations are deterministic and auditable.
+- `LLM_BASE_URL` targets an OpenAI-compatible Responses API; the default is OpenAI.
+  `LLM_API_KEY` is sent only in the Authorization header, `store=false` is requested,
+  and the response must match the configured JSON schema. The adapter has no tools
+  and cannot perform business actions. Decisions, scoring, approvals and simulations
+  remain deterministic and auditable.

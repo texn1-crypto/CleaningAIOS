@@ -34,6 +34,13 @@ Set `UNSUBSCRIBE_SECRET` to a separate random value to sign unsubscribe links. I
 is omitted, `API_KEY` is used as the signing secret. Changing the effective secret
 invalidates links that have already been sent.
 
+Set `LLM_API_KEY` to enable the advisory AI CEO review. The defaults use
+`https://api.openai.com/v1`, model `gpt-5.6-terra`, low reasoning effort and
+`store=false`; override `LLM_BASE_URL`, `LLM_MODEL`, `LLM_REASONING_EFFORT`,
+`LLM_TIMEOUT_SECONDS` or `LLM_MAX_OUTPUT_TOKENS` when needed. Production rejects an
+unencrypted HTTP LLM endpoint. The application works deterministically when the key
+is absent or the provider is unavailable.
+
 For every additional sender mailbox, set `secret_ref` to the name of an environment
 variable mounted into `web` and `worker` (for example `SMTP_SALES_PASSWORD`). Do not
 store SMTP passwords in API payloads or the database.

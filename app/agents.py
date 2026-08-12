@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
+from .llm import llm_advisor
 from .models import AgentState, BusinessGoal, BusinessRecord, Decision, DecisionOutcome, OperatingEntity, Task
 from .operations import create_ceo_actions, goal_progress, score_tender, site_economics
 
@@ -102,7 +103,43 @@ class CEOAgent:
         created = create_ceo_actions(db)
         recommendations = ["Resolve failed tasks"] if failed else []
         recommendations.extend(f"Recover margin at {x['site']}" for x in economics if x["revenue"] and x["margin_percent"] < 15)
-        return {"business_health": health, "open_tasks": open_tasks, "pending_owner_decisions": pending, "goals": goals, "site_economics": economics, "recommendations": recommendations, "tasks_created": [{"id": x.id, "title": x.title, "agent_type": x.agent_type} for x in created], "evidence": [{"type": "database_snapshot", "tasks": open_tasks, "pending": pending, "failed": failed}]}
+        llm_advice = llm_advisor.review({
+            "business_health": health,
+            "open_tasks": open_tasks,
+            "failed_tasks": failed,
+            "pending_owner_decisions": pending,
+            "goals": goals,
+            "site_economics": economics,
+        })
+        llm_tasks: list[Task] = []
+        if llm_advice.get("status") == "succeeded":
+            for item in llm_advice.get("recommendations", [])[:5]:
+                if not isinstance(item, dict) or item.get("needs_owner_decision"):
+                    continue
+                agent_type = item.get("agent_type")
+                title = str(item.get("title", "")).strip()[:240]
+                if agent_type not in AGENTS or agent_type in {"ceo", "orchestrator"} or not title:
+                    continue
+                exists = db.scalar(select(Task.id).where(Task.title == title, Task.status.in_(["open", "queued", "running", "blocked"])))
+                if exists:
+                    continue
+                task = Task(
+                    title=title,
+                    agent_type=agent_type,
+                    priority=item.get("priority") if item.get("priority") in {"low", "normal", "high"} else "normal",
+                    payload={"origin": "llm_ceo", "advisory_only": True, "rationale": str(item.get("rationale", ""))[:2000]},
+                )
+                db.add(task)
+                llm_tasks.append(task)
+            db.flush()
+        tasks_created = [
+            {"id": x.id, "title": x.title, "agent_type": x.agent_type, "source": "deterministic_policy"}
+            for x in created
+        ] + [
+            {"id": x.id, "title": x.title, "agent_type": x.agent_type, "source": "llm_advisory"}
+            for x in llm_tasks
+        ]
+        return {"business_health": health, "open_tasks": open_tasks, "pending_owner_decisions": pending, "goals": goals, "site_economics": economics, "recommendations": recommendations, "llm_advice": llm_advice, "tasks_created": tasks_created, "evidence": [{"type": "database_snapshot", "tasks": open_tasks, "pending": pending, "failed": failed}, {"type": "llm_advisory", "status": llm_advice.get("status"), "model": llm_advice.get("model")} ]}
 
 
 class MetaBrainAgent:

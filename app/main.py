@@ -21,6 +21,7 @@ from .security import Principal, principal, require_role, valid_unsubscribe_toke
 from .api_v2 import router as api_v2_router
 from .mission_control import MISSION_CONTROL_HTML
 from .agents import AGENTS
+from .llm import llm_advisor
 
 
 @asynccontextmanager
@@ -67,7 +68,7 @@ def integrations(_: Principal = Depends(principal)):
         "telegram": {"status": "configured" if settings.telegram_bot_token and settings.owner_telegram_id else "credentials_required"},
         "smtp_default": {"status": "configured" if smtp_ready else "credentials_required"},
         "tender_sources": {"status": "configured" if settings.tender_sources.strip() else "source_configuration_required", "sources": [x.strip() for x in settings.tender_sources.split(",") if x.strip()]},
-        "llm": {"status": "adapter_required" if settings.llm_api_key else "credentials_and_adapter_required"},
+        "llm": {"status": llm_advisor.configuration_status(), "provider": "openai_compatible_responses", "model": settings.llm_model or None},
     }
 
 
