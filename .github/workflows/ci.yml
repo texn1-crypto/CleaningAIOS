@@ -1,0 +1,17 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - run: pytest --cov=app --cov-report=term-missing
+      - run: cp .env.example .env
+      - run: docker compose --env-file .env.example config
+      - run: docker build -t cleaningai-os:${{ github.sha }} .
