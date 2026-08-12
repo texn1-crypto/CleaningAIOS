@@ -17,7 +17,7 @@ from .llm import llm_advisor
 from .models import ImprovementRequest
 
 
-READ_INTENTS = {"greeting", "acknowledgement", "help", "dashboard", "tasks", "decisions", "approvals", "records", "summary", "inbox", "improvements", "activity_report"}
+READ_INTENTS = {"greeting", "acknowledgement", "help", "dashboard", "tasks", "decisions", "approvals", "records", "summary", "inbox", "improvements", "activity_report", "system_self_check"}
 
 
 def _normalize(text: str) -> str:

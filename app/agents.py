@@ -37,6 +37,10 @@ class OrchestratorAgent:
             from .reports import build_activity_report
 
             return build_activity_report(db, period_hours=payload.get("period_hours", 24))
+        if payload.get("action") == "system_self_check":
+            from .reports import build_system_self_check
+
+            return build_system_self_check(db, registered_agents=sorted(AGENTS))
         created = []
         for item in payload.get("delegations", []):
             agent_type = item.get("agent_type")

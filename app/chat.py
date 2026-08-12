@@ -105,6 +105,10 @@ def understand_russian_message(message: str) -> dict[str, Any]:
         and _contains(text, "проделан", "сделано", "выполнен", "работ")
     ) or _contains(text, "что было сделано", "что уже сделано", "результаты работы системы"):
         return {"kind": "activity_report", "period_hours": 24}
+    if _contains(text, "весь функционал", "все функции", "полную проверку") and _contains(
+        text, "бот", "систем"
+    ):
+        return {"kind": "system_self_check"}
 
     action_words = _contains(
         text,

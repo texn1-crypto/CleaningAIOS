@@ -459,6 +459,150 @@ def test_russian_chat_reads_existing_sections():
     assert understand_russian_message("Покажи финансы")["module"] == "finance"
     assert understand_russian_message("Как дела у системы?")["kind"] == "dashboard"
     assert understand_russian_message("Пришли отчет о проделанной работе")["kind"] == "activity_report"
+    assert understand_russian_message("Запусти весь функционал чат бота")["kind"] == "system_self_check"
+
+
+def test_system_self_check_is_safe_audited_and_truthful(client, monkeypatch):
+    import json
+
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "telegram_bot_token", "test-secret-must-not-leak")
+    monkeypatch.setattr(settings, "owner_telegram_id", "123")
+    monkeypatch.setattr(settings, "smtp_password", "smtp-secret-must-not-leak")
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "Запусти весь функционал чат бота"
+    intent = understand_russian_message(message)
+    analysis = client.post("/api/request-analysis", json={"message": message, "intent": intent}).json()
+    assert analysis["classification"] == "supported"
+    assert analysis["improvement_id"] is None
+    approvals_before = len(client.get("/api/approvals").json())
+
+    task = client.post("/api/tasks", json={
+        "title": "Безопасная самопроверка функционала чат-бота",
+        "agent_type": "orchestrator",
+        "payload": {"action": "system_self_check"},
+        "max_attempts": 1,
+    }).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    result = completed["result"]
+
+    assert completed["status"] == "done"
+    assert result["outcome"] == "completed"
+    assert result["check_kind"] == "system_functional_readiness"
+    assert result["overall_status"] in {"ready", "partial"}
+    assert result["summary"]["total"] == len(result["checks"])
+    assert result["safety"] == {
+        "protected_actions_executed": False,
+        "external_messages_sent": False,
+        "financial_commitments_created": False,
+        "owner_approval_bypassed": False,
+    }
+    assert {row["name"] for row in result["checks"]} >= {
+        "PostgreSQL", "API и Orchestrator", "Telegram-бот", "Sales/CRM",
+        "Тендеры и Research", "Email и горячие лиды", "Публичный сайт и лид-форма",
+    }
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "test-secret-must-not-leak" not in serialized
+    assert "smtp-secret-must-not-leak" not in serialized
+    assert len(client.get("/api/approvals").json()) == approvals_before
+    assert any(item["type"] == "database_probe" for item in result["evidence"])
+    assert any(
+        row["action"] == "task.completed" and row["resource_id"] == str(task["id"])
+        for row in client.get("/api/audit").json()
+    )
+
+
+def test_telegram_system_self_check_returns_result_not_task_acceptance(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 501, "agent_type": "orchestrator", "title": "Самопроверка"}
+        if path == "/api/tasks/501/run":
+            return {
+                "status": "done",
+                "result": {
+                    "outcome": "completed",
+                    "overall_status": "partial",
+                    "summary": {"ready": 8, "total": 14},
+                    "checks": [
+                        {"name": "PostgreSQL", "status": "ready", "detail": "Контрольный запрос выполнен."},
+                        {"name": "Email", "status": "credentials_required", "detail": "SMTP не настроен."},
+                    ],
+                    "credentials_required": ["SMTP_PASSWORD"],
+                },
+            }
+        raise AssertionError(path)
+
+    class Message:
+        text = "Запусти весь функционал чат бота"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    reply = Update.effective_message.replies[-1]
+    assert "частично готово" in reply
+    assert "PostgreSQL" in reply
+    assert "Платежи, договоры" in reply
+    assert "Task accepted" not in reply
+    task_payload = next(kwargs["json"] for method, path, kwargs in calls if path == "/api/tasks")
+    assert task_payload["payload"]["action"] == "system_self_check"
+    assert task_payload["max_attempts"] == 1
+
+
+def test_telegram_system_self_check_preserves_failed_status(monkeypatch):
+    from app import bot
+
+    async def fake_api(method, path, **kwargs):
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 502}
+        if path == "/api/tasks/502/run":
+            return {"status": "failed", "result": {"error": "database unavailable"}}
+        raise AssertionError(path)
+
+    class Message:
+        text = "Запусти весь функционал чат бота"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    assert "не завершилась" in Update.effective_message.replies[-1]
+    assert "failed" in Update.effective_message.replies[-1]
 
 
 def test_activity_report_is_a_real_audited_orchestrator_result(client, monkeypatch):

@@ -129,6 +129,48 @@ async def activity_report(update: Update, intent: dict):
     await update.effective_message.reply_text(format_activity_report(result))
 
 
+def format_system_self_check(result: dict) -> str:
+    icons = {
+        "ready": "✅",
+        "configuration_required": "⚙️",
+        "credentials_required": "🔑",
+        "unavailable": "❌",
+    }
+    summary = result.get("summary") or {}
+    lines = [
+        "🧪 Самопроверка CleaningAI OS",
+        f"Общий статус: {'готово' if result.get('overall_status') == 'ready' else 'частично готово'}",
+        f"Готово модулей: {summary.get('ready', 0)} из {summary.get('total', 0)}",
+        "",
+    ]
+    for item in result.get("checks") or []:
+        lines.append(f"{icons.get(item['status'], '•')} {item['name']}: {item['detail']}")
+    required = result.get("credentials_required") or []
+    if required:
+        lines.append("\nНужны настройки: " + ", ".join(required))
+    lines.append("\nПлатежи, договоры, заявки, массовые рассылки и кадровые решения не выполнялись.")
+    return "\n".join(lines)
+
+
+async def system_self_check(update: Update):
+    task = await api("POST", "/api/tasks", json={
+        "title": "Безопасная самопроверка функционала чат-бота",
+        "agent_type": "orchestrator",
+        "priority": "high",
+        "payload": {"action": "system_self_check", "source": "telegram_natural_language"},
+        "max_attempts": 1,
+    })
+    completed = await api("POST", f"/api/tasks/{task['id']}/run")
+    result = completed.get("result") or {}
+    if completed.get("status") != "done" or result.get("outcome") != "completed":
+        await update.effective_message.reply_text(
+            f"Самопроверка не завершилась. Задача #{task['id']} имеет фактический статус "
+            f"{completed.get('status', 'unknown')}."
+        )
+        return
+    await update.effective_message.reply_text(format_system_self_check(result))
+
+
 async def module_summary(update: Update, module: str, title: str):
     data = (await api("GET", "/api/modules/summary"))[module]
     await update.effective_message.reply_text(title + "\n" + "\n".join(f"{key}: {value}" for key, value in data.items()))
@@ -199,6 +241,8 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await improvement_queue(update, context)
         elif kind == "activity_report":
             await activity_report(update, intent)
+        elif kind == "system_self_check":
+            await system_self_check(update)
         else:
             data = await api("POST", "/api/tasks", json={
                 "title": intent["title"],
