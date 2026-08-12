@@ -23,6 +23,16 @@ curl --fail http://127.0.0.1:8000/
 curl --fail -H "X-API-Key: $API_KEY" http://127.0.0.1:8000/api/integrations
 ```
 
+On Yandex Cloud, if the standard Debian CDN is unreachable from the selected
+availability zone, build against Yandex's regional Debian mirror instead:
+
+```bash
+docker compose build --build-arg DEBIAN_MIRROR=mirror.yandex.ru
+```
+
+The default remains `deb.debian.org`; the mirror override only affects the image
+build and is not stored in the runtime environment.
+
 Do not expose PostgreSQL publicly. Terminate TLS in a reverse proxy and restrict `/docs` in production if it is not needed.
 
 `API_KEY` always grants the `owner` role. Configure `MANAGER_API_KEY`,
