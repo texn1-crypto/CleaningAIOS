@@ -5,6 +5,7 @@ import smtplib
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from sqlalchemy import select
@@ -85,7 +86,29 @@ def _send_telegram(row: OwnerNotification) -> None:
                 {"text": "❌ Отклонить", "callback_data": f"reject:{approval_id}"},
             ]]
         }
-    with httpx.Client(timeout=15) as client:
+    preview_posts = row.data.get("preview_posts") if isinstance(row.data, dict) else None
+    with httpx.Client(timeout=30) as client:
+        if isinstance(preview_posts, list) and preview_posts:
+            media: list[dict[str, str]] = []
+            for post in preview_posts[:10]:
+                image_url = str(post.get("image_url") or "")
+                if image_url.startswith("/static/"):
+                    image_url = urljoin(settings.public_base_url.rstrip("/") + "/", image_url.lstrip("/"))
+                parsed = urlparse(image_url)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    raise RuntimeError("Social preview image URL is not public")
+                channel = str(post.get("channel") or "").upper()
+                schedule = str(post.get("scheduled_at") or "")
+                body = str(post.get("body") or "")
+                caption = f"{channel} · {schedule} UTC\n\n{body}"
+                if len(caption) > 1024:
+                    raise RuntimeError("Social preview caption exceeds Telegram limit")
+                media.append({"type": "photo", "media": image_url, "caption": caption})
+            response = client.post(
+                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMediaGroup",
+                json={"chat_id": row.recipient, "media": media},
+            )
+            response.raise_for_status()
         response = client.post(f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage", json=payload)
         response.raise_for_status()
 

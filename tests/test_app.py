@@ -454,6 +454,47 @@ def test_mission_control_renders(client, monkeypatch):
     assert "Mission Control" in client.get("/mission-control").text
 
 
+def test_public_site_has_real_multipage_catalog_prices_and_sitemap(client):
+    from app.site_pages import PRICE_ROWS, SERVICE_DETAILS, _price
+
+    for path in ("/services", "/prices", "/about", "/contacts", "/journal"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert "CleaningAIOS" in response.text
+        assert "h2oclean" not in response.text.lower()
+    for slug in SERVICE_DETAILS:
+        assert client.get(f"/services/{slug}").status_code == 200
+    assert client.get("/services/unknown-service").status_code == 404
+
+    price_page = client.get("/prices").text
+    for name, general, regular, after in PRICE_ROWS:
+        assert name in price_page
+        for reference in (general, regular, after):
+            price = _price(reference)
+            assert reference * 0.95 <= price < reference
+            assert f"от {price} ₽" in price_page
+    sitemap = client.get("/sitemap.xml")
+    assert sitemap.status_code == 200
+    assert "/services/business-centers" in sitemap.text
+    assert "/prices" in sitemap.text
+
+
+def test_public_site_exposes_only_safe_social_profile_urls(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "social_telegram_url", "https://t.me/cleaningaios")
+    monkeypatch.setattr(settings, "social_vk_url", "javascript:alert(1)")
+    monkeypatch.setattr(settings, "social_odnoklassniki_url", "https://user:secret@ok.ru/group")
+    monkeypatch.setattr(settings, "social_instagram_url", "http://instagram.com/cleaningaios")
+    payload = client.get("/api/public/site").json()
+    assert payload["company"]["social"] == {
+        "telegram": "https://t.me/cleaningaios",
+        "vk": "",
+        "odnoklassniki": "",
+        "instagram": "",
+    }
+
+
 def test_unified_inbox_content_and_operations_views(client):
     lead = client.post("/api/records", json={"record_type": "lead", "title": "Лид из inbox"}).json()
     message = client.post("/api/inbox", json={"channel": "email", "external_id": "mail-001", "sender": "client@example.com", "subject": "Запрос цены", "record_id": lead["id"]})
@@ -1910,6 +1951,50 @@ def test_telegram_owner_notification_uses_existing_approval_buttons(monkeypatch)
     assert {item["callback_data"] for item in buttons} == {"approve:42", "reject:42"}
 
 
+def test_telegram_social_approval_sends_visual_album_before_buttons(monkeypatch):
+    from app import notifications
+    from app.config import settings
+    from app.models import OwnerNotification
+
+    captured = []
+
+    class Response:
+        def raise_for_status(self): return None
+
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, url, json):
+            captured.append((url, json))
+            return Response()
+
+    monkeypatch.setattr(notifications.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token-value")
+    row = OwnerNotification(
+        idempotency_key="telegram-social-preview-test",
+        channel="telegram",
+        recipient="999",
+        subject="Визуальное согласование",
+        body="Проверьте макеты",
+        data={
+            "approval_id": 43,
+            "preview_posts": [{
+                "channel": "vk",
+                "scheduled_at": "2031-06-18T07:00:00",
+                "body": "Точный текст публикации",
+                "image_url": "https://cleaning.example/static/post.png",
+            }],
+        },
+    )
+    notifications._send_telegram(row)
+    assert captured[0][0].endswith("/sendMediaGroup")
+    assert captured[0][1]["media"][0]["media"] == "https://cleaning.example/static/post.png"
+    assert "Точный текст публикации" in captured[0][1]["media"][0]["caption"]
+    assert captured[1][0].endswith("/sendMessage")
+    assert captured[1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "approve:43"
+
+
 def test_management_company_import_preserves_provenance_and_requires_consent(client):
     import base64
 
@@ -2063,11 +2148,47 @@ def test_marketing_agent_creates_two_posts_per_social_channel_for_approval(clien
     assert completed["status"] == "done"
     result = completed["result"]
     assert result["created"] == 8
-    items = [row for row in client.get("/api/marketing/content?status=approval").json() if row["id"] in result["content_item_ids"]]
+    assert result["approval_id"] is None
+    assert len(result["media_asset_ids"]) == 2
+    items = [row for row in client.get("/api/marketing/content?status=visual_pending").json() if row["id"] in result["content_item_ids"]]
     assert len(items) == 8
     assert {row["channel"] for row in items} == {"telegram", "vk", "odnoklassniki", "instagram"}
     assert all(sum(row["channel"] == channel for row in items) == 2 for channel in {"telegram", "vk", "odnoklassniki", "instagram"})
-    approved = client.post(f"/api/approvals/{result['approval_id']}/approve", json={"note": "Content reviewed"})
+    assets = [row for row in client.get("/api/marketing/media-assets?status=queued").json() if row["id"] in result["media_asset_ids"]]
+    assert len(assets) == 2
+    assert all(row["metadata"]["visual_review_required"] is True for row in assets)
+
+    first = client.patch(f"/api/marketing/media-assets/{assets[0]['id']}", json={
+        "provider": "imagegen",
+        "public_url": "/static/og.png",
+        "alt_text": "Проверенный визуал первого поста",
+        "status": "ready",
+        "metadata": {"visually_reviewed": True, "sha256": "a" * 64},
+    }).json()
+    assert first["social_preview"]["status"] == "visuals_pending"
+    assert first["social_preview"]["approval_id"] is None
+    second = client.patch(f"/api/marketing/media-assets/{assets[1]['id']}", json={
+        "provider": "imagegen",
+        "public_url": "/static/cleaning-hero.png",
+        "alt_text": "Проверенный визуал второго поста",
+        "status": "ready",
+        "metadata": {"visually_reviewed": True, "sha256": "b" * 64},
+    }).json()
+    approval_id = second["social_preview"]["approval_id"]
+    assert approval_id
+    preview = client.get(f"/api/marketing/social-batches/{result['batch_id']}/preview", headers={"X-Role": "manager"}).json()
+    assert preview["all_visuals_ready"] is True
+    assert len(preview["posts"]) == 8
+    assert all(post["image_url"] and post["body"] for post in preview["posts"])
+    assert len({post["visual_asset_id"] for post in preview["posts"]}) == 2
+
+    first_post = preview["posts"][0]
+    client.patch(f"/api/marketing/content/{first_post['content_item_id']}", json={"body": first_post["body"] + " изменено"})
+    stale = client.post(f"/api/approvals/{approval_id}/approve", json={"note": "Must not approve changed content"})
+    assert stale.status_code == 409
+    assert "changed after the preview" in stale.json()["detail"]
+    client.patch(f"/api/marketing/content/{first_post['content_item_id']}", json={"body": first_post["body"]})
+    approved = client.post(f"/api/approvals/{approval_id}/approve", json={"note": "Reviewed every image and caption"})
     assert approved.status_code == 200
     scheduled = client.get("/api/marketing/content?status=scheduled").json()
     scheduled_items = [row for row in scheduled if row["id"] in result["content_item_ids"]]

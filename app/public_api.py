@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import re
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
@@ -39,6 +40,11 @@ def _phone_digits(value: str) -> str:
     if len(digits) == 11 and digits.startswith("8"):
         digits = "7" + digits[1:]
     return digits
+
+
+def _safe_social_url(value: str) -> str:
+    parsed = urlparse(value)
+    return value if parsed.scheme == "https" and parsed.netloc and not parsed.username and not parsed.password else ""
 
 
 def _lead_score(payload: PublicLeadCreate) -> int:
@@ -80,6 +86,12 @@ def public_site(db: Session = Depends(get_db)):
             "phone": settings.company_phone,
             "email": settings.company_email,
             "service_area": settings.company_service_area,
+            "social": {
+                "telegram": _safe_social_url(settings.social_telegram_url),
+                "vk": _safe_social_url(settings.social_vk_url),
+                "odnoklassniki": _safe_social_url(settings.social_odnoklassniki_url),
+                "instagram": _safe_social_url(settings.social_instagram_url),
+            },
         },
         "lead_form": {
             "enabled": settings.public_leads_enabled,

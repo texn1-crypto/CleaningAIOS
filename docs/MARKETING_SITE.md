@@ -2,12 +2,13 @@
 
 ## What is operational
 
-- `/` is the public responsive website; `/mission-control` keeps the existing internal dashboard.
+- `/` is the public responsive website; `/services`, service detail pages, `/prices`, `/about`, `/contacts` and `/journal` form the public multi-page catalogue. `/mission-control` keeps the existing internal dashboard.
 - The same-origin lead form validates consent and contact details, uses a honeypot and a database-backed hourly rate limit, and never accepts bank credentials.
 - A valid submission creates or updates the shared CRM lead, records an inbound contact and inbox message, preserves UTM attribution and emits a domain event.
 - Deterministic scoring marks urgent/high-value requests as qualified. A hot lead creates a high-priority Sales Agent task and an owner email notification. The notification waits visibly for SMTP credentials instead of pretending delivery.
 - Published `website` content from the shared content plan appears in the News section. Content can be updated and published through `/api/marketing/content/{id}`.
 - Media assets have a durable queue and evidence fields. Image jobs can be fulfilled by the Codex ImageGen workflow; video jobs report missing credentials or adapters. Static assets shipped with the site were generated specifically for CleaningAI and visually checked.
+- Daily social plans remain `visual_pending` until both image assets are ready, carry a SHA-256, and have explicit visual-review evidence. The bot then sends an album containing every final image, exact caption, target channel and schedule. The approval payload is bound to a digest of that immutable preview; editing any caption, schedule, URL or image hash invalidates approval.
 - Marketing providers and experiments share the business-record model. Experiments have unique UTM keys and calculate attributed leads, qualified leads and cost metrics from CRM evidence.
 - Campaign activation is deliberately manual: after owner approval, an operator records the real external campaign ID. The system does not claim an external campaign exists before that happens.
 - Supplier invoices are bound to a marketing provider and a masked company-requisites profile. Every invoice creates a financial owner approval and a Telegram notification. Approval changes the invoice to `approved_for_manual_payment`; it never transfers funds.
@@ -28,6 +29,10 @@ COMPANY_SERVICE_AREA=
 PRIVACY_CONTACT_EMAIL=
 OWNER_NOTIFICATION_EMAIL=
 PUBLIC_BASE_URL=https://your-domain.ru
+SOCIAL_TELEGRAM_URL=
+SOCIAL_VK_URL=
+SOCIAL_ODNOKLASSNIKI_URL=
+SOCIAL_INSTAGRAM_URL=
 ```
 
 In production the public lead form stays disabled until `COMPANY_LEGAL_NAME` and either `PRIVACY_CONTACT_EMAIL` or `COMPANY_EMAIL` are present. The owner or a Russian privacy lawyer should verify the final privacy text and whether the company must take any regulator-specific steps before launch.
@@ -57,6 +62,7 @@ Credentials belong in the production secret store or `.env`, never in the databa
 6. `POST /api/marketing/invoices` — invoice plus Telegram owner approval.
 7. `POST /api/approvals/{id}/approve|reject` — decision only; payment remains manual.
 8. `POST/PATCH /api/marketing/media-assets` — durable image/video workflow.
+9. `GET /api/marketing/social-batches/{id}/preview` — exact owner-review payload for a social batch.
 
 ## Continuous improvement
 

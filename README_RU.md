@@ -5,7 +5,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 ## What works
 
 - FastAPI Mission Control with PostgreSQL/SQLite, health and readiness checks;
-- public minimalist cleaning-company website with responsive layout, SEO endpoints, original ImageGen visuals and a privacy-aware lead form;
+- public multi-page cleaning-company website with service catalogue, preliminary price table, responsive layout, SEO endpoints, original ImageGen visuals and a privacy-aware lead form;
 - shared records for tenders, leads/CRM, candidates, campaigns, finance and source data;
 - linked business graph: clients, sites, contracts, employees, shifts, vacancies and complaints;
 - persistent orchestrator queue and autonomous worker/scheduler loops;
@@ -153,12 +153,22 @@ Orchestrator. Оплата, договоры, подача заявки на т�
 
 Scheduler ежедневно создаёт задачу Marketing Agent. Агент готовит два варианта
 контента и адаптирует каждый для Telegram, VK, Одноклассников и Instagram — всего
-восемь `ContentItem` со статусом `approval`. Единое решение владельца переводит
-разрешённые каналы в `scheduled`; отсутствие официального токена или прав администратора остаётся
+восемь `ContentItem`. Сначала для двух сюжетов создаются оригинальные визуалы. Только
+после их технической и визуальной проверки бот отправляет владельцу Telegram-альбом:
+каждый кадр содержит финальное изображение, точный текст, площадку и время. Approval
+привязан к SHA-256 и неизменяемому digest всего набора; любая правка текста, времени
+или изображения после просмотра отклоняет решение и требует нового preview. Одобрение
+переводит разрешённые каналы в `scheduled`; отсутствие официального токена или прав администратора остаётся
 видимым `credentials_required/adapter_required`, а не фиктивной публикацией.
 Instagram-материалы остаются черновиками `legal_review_required`: автоматическая
 рекламная публикация заблокирована с учётом [72-ФЗ](https://publication.pravo.gov.ru/document/0001202504070018)
 и официального [перечня Минюста](https://minjust.gov.ru/ru/documents/7822/).
+
+Публичный сайт разделён на `/services`, страницы отдельных услуг, `/prices`,
+`/about`, `/contacts` и `/journal`. Карточки клиентов и заявления о выполненных
+проектах не публикуются без подтверждённых фактов. Ссылки на социальные сети
+задаются через `SOCIAL_TELEGRAM_URL`, `SOCIAL_VK_URL`,
+`SOCIAL_ODNOKLASSNIKI_URL` и `SOCIAL_INSTAGRAM_URL`; небезопасные URL скрываются.
 
 Growth Officer владеет целью `annual_revenue_run_rate_rub = 1_000_000_000` с
 горизонтом 24 месяца. Факт считается только по активным договорам как сумма

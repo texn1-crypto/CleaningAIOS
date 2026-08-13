@@ -26,6 +26,7 @@ from .marketing_api import router as marketing_router
 from .public_api import router as public_router
 from .mission_control import MISSION_CONTROL_HTML
 from .public_site import PUBLIC_SITE_HTML, privacy_html
+from .site_pages import about_html, contacts_html, journal_html, prices_html, service_html, services_html
 from .agents import AGENTS
 from .llm import llm_advisor
 from .readiness import integration_status
@@ -359,6 +360,15 @@ def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db
         raise HTTPException(404, "Approval not found")
     if row.status != "pending":
         raise HTTPException(409, "Approval already decided")
+    social_batch = None
+    social_items = None
+    if action == "approve" and row.resource_type == "social_content_batch":
+        from .social_marketing import validate_social_approval
+
+        try:
+            social_batch, social_items = validate_social_approval(db, row)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
     row.status = "approved" if action == "approve" else "rejected"
     row.decided_by = actor.subject; row.decision_note = payload.note; row.decided_at = datetime.now(timezone.utc).replace(tzinfo=None)
     if row.resource_type == "task":
@@ -393,10 +403,10 @@ def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db
             else:
                 resource.status = "approved" if row.status == "approved" else "rejected"
     elif row.resource_type == "social_content_batch":
-        batch = db.get(BusinessRecord, int(row.resource_id))
+        batch = social_batch or db.get(BusinessRecord, int(row.resource_id))
         if batch and batch.record_type == "social_content_batch":
             item_ids = [int(value) for value in (batch.data or {}).get("content_item_ids", [])]
-            items = db.scalars(select(ContentItem).where(ContentItem.id.in_(item_ids))).all() if item_ids else []
+            items = social_items or (db.scalars(select(ContentItem).where(ContentItem.id.in_(item_ids))).all() if item_ids else [])
             batch.status = "scheduled" if row.status == "approved" else "rejected"
             for item in items:
                 legal_review = item.channel == "instagram"
@@ -467,6 +477,39 @@ def mission_control():
     return MISSION_CONTROL_HTML
 
 
+@app.get("/services", response_class=HTMLResponse)
+def services_page():
+    return services_html()
+
+
+@app.get("/services/{slug}", response_class=HTMLResponse)
+def service_page(slug: str):
+    page = service_html(slug)
+    if page is None:
+        raise HTTPException(404, "Service page not found")
+    return page
+
+
+@app.get("/prices", response_class=HTMLResponse)
+def prices_page():
+    return prices_html()
+
+
+@app.get("/about", response_class=HTMLResponse)
+def about_page():
+    return about_html()
+
+
+@app.get("/contacts", response_class=HTMLResponse)
+def contacts_page():
+    return contacts_html()
+
+
+@app.get("/journal", response_class=HTMLResponse)
+def journal_page():
+    return journal_html()
+
+
 @app.get("/privacy", response_class=HTMLResponse)
 def privacy():
     return privacy_html()
@@ -480,5 +523,10 @@ def robots():
 @app.get("/sitemap.xml")
 def sitemap():
     base = settings.public_base_url.rstrip("/")
-    xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>{base}/</loc></url><url><loc>{base}/privacy</loc></url></urlset>'
+    from .site_pages import SERVICE_DETAILS
+
+    paths = ["/", "/services", "/prices", "/about", "/contacts", "/journal", "/privacy"]
+    paths.extend(f"/services/{slug}" for slug in SERVICE_DETAILS)
+    urls = "".join(f"<url><loc>{base}{path}</loc></url>" for path in paths)
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>'
     return Response(xml, media_type="application/xml")

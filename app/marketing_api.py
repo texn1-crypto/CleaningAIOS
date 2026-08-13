@@ -298,10 +298,18 @@ def update_media_asset(asset_id: int, payload: MediaAssetUpdate, db: Session = D
         if not row.public_url:
             raise HTTPException(422, "Published media requires public_url")
         row.published_at = row.published_at or now_utc()
+    social_preview = None
+    if row.kind == "image" and row.content_item_id:
+        content_item = db.get(ContentItem, row.content_item_id)
+        batch_id = int(((content_item.metrics if content_item else {}) or {}).get("batch_id") or 0)
+        if batch_id:
+            from .social_marketing import finalize_social_preview_batch
+
+            social_preview = finalize_social_preview_batch(db, batch_id)
     event_bus.publish(db, "marketing.media_updated", "media_asset", str(row.id), {"status": row.status, "provider": row.provider})
     audit(db, actor.subject, "marketing.media_updated", "media_asset", str(row.id), {"status": row.status})
     db.commit(); db.refresh(row)
-    return {"id": row.id, "status": row.status, "provider": row.provider, "public_url": row.public_url}
+    return {"id": row.id, "status": row.status, "provider": row.provider, "public_url": row.public_url, "social_preview": social_preview}
 
 
 @router.get("/marketing/media-assets")
@@ -311,6 +319,17 @@ def media_assets(status: Optional[str] = None, db: Session = Depends(get_db), _:
         query = query.where(MediaAsset.status == status)
     rows = db.scalars(query.limit(500)).all()
     return [{"id": row.id, "content_item_id": row.content_item_id, "kind": row.kind, "title": row.title, "provider": row.provider, "status": row.status, "public_url": row.public_url, "alt_text": row.alt_text, "metadata": row.metadata_json} for row in rows]
+
+
+@router.get("/marketing/social-batches/{batch_id}/preview")
+def social_batch_preview(batch_id: int, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    batch = db.get(BusinessRecord, batch_id)
+    if not batch or batch.record_type != "social_content_batch":
+        raise HTTPException(404, "Social content batch not found")
+    from .social_marketing import social_batch_preview as build_preview
+
+    return build_preview(db, batch)
 
 
 @router.patch("/marketing/content/{content_id}")

@@ -10,7 +10,7 @@ PUBLIC_SITE_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Профессиональный клининг для жилых комплексов, бизнес-центров и коммерческой недвижимости в Москве и Московской области.">
+  <meta name="description" content="Профессиональный клининг для жилых комплексов, бизнес-центров и коммерческой недвижимости в Санкт-Петербурге и Ленинградской области.">
   <meta name="theme-color" content="#f5f5f2">
   <meta property="og:type" content="website">
   <meta property="og:title" content="__COMPANY_NAME__ — чистота как управляемый сервис">
@@ -26,10 +26,10 @@ PUBLIC_SITE_HTML = r"""<!doctype html>
 </head>
 <body>
   <header class="site-header" data-header>
-    <a class="brand" href="#top" aria-label="__COMPANY_NAME__ — на главную"><span class="brand-dot"></span><span data-company-name>__COMPANY_NAME__</span></a>
+    <a class="brand" href="/" aria-label="__COMPANY_NAME__ — на главную"><span class="brand-dot"></span><span data-company-name>__COMPANY_NAME__</span></a>
     <button class="menu-toggle" type="button" aria-label="Открыть меню" aria-expanded="false" data-menu-toggle>Меню</button>
     <nav class="nav" aria-label="Основная навигация" data-nav>
-      <a href="#services">Услуги</a><a href="#approach">Подход</a><a href="#news">Новости</a><a href="#contact">Контакты</a>
+      <a href="/services">Услуги</a><a href="/prices">Цены</a><a href="/about">О компании</a><a href="/journal">Журнал</a><a href="/contacts">Контакты</a>
       <a class="nav-cta" href="#request">Рассчитать стоимость</a>
     </nav>
   </header>
@@ -54,9 +54,9 @@ PUBLIC_SITE_HTML = r"""<!doctype html>
     <section class="section" id="services">
       <div class="section-heading reveal"><p class="eyebrow"><span></span> Услуги</p><h2>Каждый объект — отдельная система.</h2><p>Подбираем состав работ, людей и контрольные точки под реальную нагрузку, а не под универсальный шаблон.</p></div>
       <div class="service-grid">
-        <article class="service-card reveal"><div class="service-number">01</div><h3>ЖК и МКД</h3><p>Подъезды, лифты, входные группы, паркинги и придомовая территория.</p><ul><li>Регламент по зонам</li><li>Контроль заявок</li><li>Отчётность для УК и ТСЖ</li></ul></article>
-        <article class="service-card reveal"><div class="service-number">02</div><h3>Бизнес-центры</h3><p>Ежедневная поддерживающая уборка без помех для сотрудников и посетителей.</p><ul><li>Дневные и ночные смены</li><li>Санитарные зоны</li><li>Резерв на замену</li></ul></article>
-        <article class="service-card dark reveal"><div class="service-number">03</div><h3>Коммерческие объекты</h3><p>Офисы, торговые помещения и общие зоны с понятной экономикой объекта.</p><ul><li>Аудит до запуска</li><li>Материалы и инвентарь</li><li>Контроль SLA</li></ul></article>
+        <a class="service-card reveal" href="/services/residential"><div class="service-number">01</div><h3>ЖК и МКД</h3><p>Подъезды, лифты, входные группы, паркинги и придомовая территория.</p><ul><li>Регламент по зонам</li><li>Контроль заявок</li><li>Отчётность для УК и ТСЖ</li></ul></a>
+        <a class="service-card reveal" href="/services/business-centers"><div class="service-number">02</div><h3>Бизнес-центры</h3><p>Ежедневная поддерживающая уборка без помех для сотрудников и посетителей.</p><ul><li>Дневные и ночные смены</li><li>Санитарные зоны</li><li>Резерв на замену</li></ul></a>
+        <a class="service-card dark reveal" href="/services/offices"><div class="service-number">03</div><h3>Коммерческие объекты</h3><p>Офисы, торговые помещения и общие зоны с понятной экономикой объекта.</p><ul><li>Аудит до запуска</li><li>Материалы и инвентарь</li><li>Контроль SLA</li></ul></a>
       </div>
     </section>
 
@@ -71,7 +71,7 @@ PUBLIC_SITE_HTML = r"""<!doctype html>
     </section>
 
     <section class="section proof">
-      <div class="proof-visual reveal"><img src="/static/cleaning-hero.png" alt="Деталь чистого современного пространства" loading="lazy" width="1536" height="1024"></div>
+      <div class="proof-visual reveal"><img src="/static/social/2026-08-13-checklist-quality.png" alt="Визуальная проверка качества уборки по чек-листу" loading="lazy" width="1254" height="1254"></div>
       <div class="proof-copy reveal"><p class="eyebrow light"><span></span> Управление качеством</p><h2>Не просто убираем. Держим процесс под контролем.</h2><div class="proof-list"><div><strong>Единое окно</strong><p>Все обращения и задачи по объекту собраны в одном контуре.</p></div><div><strong>Проверяемый результат</strong><p>Регламенты, ответственные и история действий не теряются в переписке.</p></div><div><strong>Без скрытых решений</strong><p>Изменения бюджета и обязательства проходят подтверждение владельца.</p></div></div></div>
     </section>
 
@@ -96,7 +96,7 @@ PUBLIC_SITE_HTML = r"""<!doctype html>
     </section>
   </main>
 
-  <footer id="contact"><div><a class="brand footer-brand" href="#top"><span class="brand-dot"></span><span data-company-name>__COMPANY_NAME__</span></a><p>Профессиональный клининг для объектов, где важны стабильность и контроль.</p></div><div><span>Навигация</span><a href="#services">Услуги</a><a href="#approach">Подход</a><a href="#news">Новости</a></div><div><span>Документы</span><a href="/privacy">Конфиденциальность</a><a href="/mission-control">Mission Control</a></div><div class="footer-bottom">© <span data-year></span> <span data-company-name>__COMPANY_NAME__</span></div></footer>
+  <footer id="contact"><div><a class="brand footer-brand" href="/"><span class="brand-dot"></span><span data-company-name>__COMPANY_NAME__</span></a><p>Профессиональный клининг для объектов, где важны стабильность и контроль.</p></div><div><span>Навигация</span><a href="/services">Услуги</a><a href="/prices">Цены</a><a href="/about">О компании</a><a href="/journal">Журнал</a><a href="/contacts">Контакты</a></div><div><span>Социальные сети</span><div class="social-links" data-social-links></div><a href="/privacy">Конфиденциальность</a></div><div class="footer-bottom">© <span data-year></span> <span data-company-name>__COMPANY_NAME__</span></div></footer>
 </body>
 </html>"""
 
