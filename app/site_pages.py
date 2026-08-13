@@ -6,23 +6,34 @@ from math import ceil
 from .config import settings
 
 
+SERVICE_IMAGE_SIZES = {
+    "/static/cleaning-hero.png": (1536, 1024),
+    "/static/social/2026-08-13-business-center.png": (1254, 1254),
+    "/static/social/2026-08-13-checklist-quality.png": (1254, 1254),
+    "/static/services/business-center-lobby-v1.jpg": (1600, 1066),
+    "/static/services/residential-lobby-v1.jpg": (1600, 876),
+    "/static/services/warehouse-machine-v1.jpg": (1600, 777),
+    "/static/services/facade-territory-v1.jpg": (1600, 1066),
+}
+
+
 SERVICE_DETAILS = {
     "offices": {
         "title": "Уборка офисов",
         "lead": "Поддерживаем рабочее пространство в порядке до, во время или после рабочего дня.",
-        "image": "/static/social/2026-08-13-business-center.png",
+        "image": "/static/services/business-center-lobby-v1.jpg",
         "zones": ("рабочие места и переговорные", "входные группы и коридоры", "кухни и санитарные зоны", "локальные заявки в течение смены"),
     },
     "business-centers": {
         "title": "Уборка бизнес-центров",
         "lead": "Сервис для объектов с постоянным потоком арендаторов, посетителей и подрядчиков.",
-        "image": "/static/social/2026-08-13-checklist-quality.png",
+        "image": "/static/services/business-center-lobby-v1.jpg",
         "zones": ("лобби, лифты и общие зоны", "дневная дежурная служба", "контроль расходных материалов", "чек-листы и история замечаний"),
     },
     "residential": {
         "title": "Уборка ЖК и МКД",
         "lead": "Регламентная уборка подъездов, паркинга и территории с понятной отчётностью для УК и ТСЖ.",
-        "image": "/static/cleaning-hero.png",
+        "image": "/static/services/residential-lobby-v1.jpg",
         "zones": ("подъезды и лестничные площадки", "лифтовые холлы", "паркинги и технические зоны", "придомовая территория"),
     },
     "retail": {
@@ -34,13 +45,13 @@ SERVICE_DETAILS = {
     "industrial": {
         "title": "Производственные помещения",
         "lead": "Состав работ и техника подбираются после обследования технологических и безопасностных требований объекта.",
-        "image": "/static/social/2026-08-13-checklist-quality.png",
+        "image": "/static/services/warehouse-machine-v1.jpg",
         "zones": ("производственные участки", "склады и проходы", "административно-бытовые зоны", "контроль допусков и инструктажей"),
     },
     "warehouses": {
         "title": "Уборка складов",
         "lead": "Плановая и разовая уборка складских комплексов с учётом движения техники и товарных потоков.",
-        "image": "/static/cleaning-hero.png",
+        "image": "/static/services/warehouse-machine-v1.jpg",
         "zones": ("погрузочные зоны", "проезды и стеллажные проходы", "служебные помещения", "машинная уборка пола"),
     },
     "restaurants": {
@@ -70,13 +81,13 @@ SERVICE_DETAILS = {
     "facades": {
         "title": "Мойка фасадов и витрин",
         "lead": "Метод, техника и условия безопасности определяются после осмотра высоты, материала и доступа.",
-        "image": "/static/social/2026-08-13-checklist-quality.png",
+        "image": "/static/services/facade-territory-v1.jpg",
         "zones": ("витрины и входное остекление", "фасадные панели", "вывески без вмешательства в электрику", "сезонное обслуживание"),
     },
     "territory": {
         "title": "Уборка территории и снега",
         "lead": "Сезонный график для дворов, пешеходных зон, парковок и входных групп.",
-        "image": "/static/cleaning-hero.png",
+        "image": "/static/services/facade-territory-v1.jpg",
         "zones": ("пешеходные дорожки", "урны и площадки", "снег и противогололёдная обработка", "оперативные выходы по погоде"),
     },
 }
@@ -141,7 +152,7 @@ def _layout(*, title: str, description: str, body: str, active: str = "") -> str
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="{escape(description, quote=True)}"><meta name="theme-color" content="#f4f4f0">
-<title>{escape(title)} · {company}</title><link rel="stylesheet" href="/static/site.css"><script defer src="/static/site.js"></script></head>
+<title>{escape(title)} · {company}</title><link rel="stylesheet" href="/static/site.css"><link rel="stylesheet" href="/static/service-imagery.css"><script defer src="/static/site.js"></script></head>
 <body class="subpage"><header class="site-header" data-header><a class="brand" href="/"><span class="brand-dot"></span>{company}</a>
 <button class="menu-toggle" type="button" aria-label="Открыть меню" aria-expanded="false" data-menu-toggle>Меню</button>
 <nav class="nav" data-nav aria-label="Основная навигация">{links}<a class="nav-cta" href="/#request">Рассчитать стоимость</a></nav></header>
@@ -154,7 +165,7 @@ def _layout(*, title: str, description: str, body: str, active: str = "") -> str
 
 def services_html() -> str:
     cards = "".join(
-        f"""<a class="catalog-card reveal" href="/services/{slug}"><span>{index:02d}</span><h2>{escape(row['title'])}</h2><p>{escape(row['lead'])}</p><b>Подробнее →</b></a>"""
+        f"""<a class="catalog-card reveal" href="/services/{slug}"><img src="{row['image']}" alt="" loading="lazy" decoding="async" width="{SERVICE_IMAGE_SIZES[row['image']][0]}" height="{SERVICE_IMAGE_SIZES[row['image']][1]}"><span>{index:02d}</span><h2>{escape(row['title'])}</h2><p>{escape(row['lead'])}</p><b>Подробнее →</b></a>"""
         for index, (slug, row) in enumerate(SERVICE_DETAILS.items(), 1)
     )
     body = f"""<section class="page-hero"><p class="eyebrow"><span></span> Каталог</p><h1>Клининг под задачу объекта.</h1><p>Выберите тип объекта. Точный состав работ и стоимость фиксируются после аудита.</p></section>
@@ -166,8 +177,9 @@ def service_html(slug: str) -> str | None:
     row = SERVICE_DETAILS.get(slug)
     if not row:
         return None
+    image_width, image_height = SERVICE_IMAGE_SIZES[row["image"]]
     zones = "".join(f"<li>{escape(value)}</li>" for value in row["zones"])
-    body = f"""<section class="service-detail-hero"><div><p class="eyebrow"><span></span> Услуга</p><h1>{escape(row['title'])}</h1><p>{escape(row['lead'])}</p><div class="hero-actions"><a class="button primary" href="/#request">Получить расчёт</a><a class="button ghost" href="/prices">Смотреть цены</a></div></div><img src="{row['image']}" alt="{escape(row['title'], quote=True)}" width="1254" height="1254"></section>
+    body = f"""<section class="service-detail-hero"><div><p class="eyebrow"><span></span> Услуга</p><h1>{escape(row['title'])}</h1><p>{escape(row['lead'])}</p><div class="hero-actions"><a class="button primary" href="/#request">Получить расчёт</a><a class="button ghost" href="/prices">Смотреть цены</a></div></div><img src="{row['image']}" alt="{escape(row['title'], quote=True)}" width="{image_width}" height="{image_height}" fetchpriority="high" decoding="async"></section>
 <section class="section detail-grid"><div><p class="eyebrow"><span></span> Состав работ</p><h2>Что учитываем в плане</h2></div><ul class="feature-list">{zones}</ul></section>
 <section class="section approach"><div class="approach-intro"><p class="eyebrow"><span></span> Процесс</p><h2>От обследования до стабильного сервиса.</h2></div><ol class="steps"><li><span>01</span><div><h3>Осмотр</h3><p>Фиксируем площади, трафик, покрытия и ограничения.</p></div></li><li><span>02</span><div><h3>Регламент</h3><p>Определяем операции, частоту, смены и точки контроля.</p></div></li><li><span>03</span><div><h3>Смета</h3><p>Согласовываем состав команды, материалы и границы ответственности.</p></div></li><li><span>04</span><div><h3>Контроль</h3><p>Ведём задачи и замечания в единой системе.</p></div></li></ol></section>"""
     return _layout(title=row["title"], description=row["lead"], body=body, active="services")

@@ -22,6 +22,7 @@ PUBLIC_SITE_HTML = r"""<!doctype html>
   <meta name="twitter:image" content="__OG_IMAGE_URL__">
   <title>__COMPANY_NAME__ — профессиональный клининг</title>
   <link rel="stylesheet" href="/static/site.css">
+  <link rel="stylesheet" href="/static/service-imagery.css">
   <script defer src="/static/site.js"></script>
 </head>
 <body>
@@ -44,7 +45,7 @@ PUBLIC_SITE_HTML = r"""<!doctype html>
         <div class="hero-trust" aria-label="Ключевые принципы"><span>Контроль качества</span><span>Прозрачная смета</span><span>Один ответственный</span></div>
       </div>
       <figure class="hero-visual reveal">
-        <img src="/static/cleaning-hero.png" alt="Светлый современный интерьер после профессиональной уборки" width="1536" height="1024">
+        <img src="/static/services/business-center-lobby-v1.jpg" alt="Команда CleaningAIOS выполняет механизированную уборку лобби бизнес-центра" width="1600" height="1066" fetchpriority="high" decoding="async">
         <figcaption><strong>Чистота без микроменеджмента</strong><span>Команда, график и контроль в одном процессе</span></figcaption>
       </figure>
     </section>

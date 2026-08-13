@@ -455,16 +455,30 @@ def test_mission_control_renders(client, monkeypatch):
 
 
 def test_public_site_has_real_multipage_catalog_prices_and_sitemap(client):
-    from app.site_pages import PRICE_ROWS, SERVICE_DETAILS, _price
+    from app.site_pages import PRICE_ROWS, SERVICE_DETAILS, SERVICE_IMAGE_SIZES, _price
 
     for path in ("/services", "/prices", "/about", "/contacts", "/journal"):
         response = client.get(path)
         assert response.status_code == 200
         assert "CleaningAIOS" in response.text
         assert "h2oclean" not in response.text.lower()
+    catalog = client.get("/services").text
+    assert catalog.count('class="catalog-card reveal"') == len(SERVICE_DETAILS)
+    assert catalog.count('loading="lazy"') == len(SERVICE_DETAILS)
+    assert "/static/service-imagery.css" in catalog
+    assert len({row["image"] for row in SERVICE_DETAILS.values()}) >= 7
+    for image, dimensions in SERVICE_IMAGE_SIZES.items():
+        assert dimensions[0] > 0 and dimensions[1] > 0
+        assert Path("app" + image).is_file()
     for slug in SERVICE_DETAILS:
-        assert client.get(f"/services/{slug}").status_code == 200
+        detail = client.get(f"/services/{slug}")
+        assert detail.status_code == 200
+        assert 'fetchpriority="high"' in detail.text
     assert client.get("/services/unknown-service").status_code == 404
+
+    homepage = client.get("/").text
+    assert "/static/services/business-center-lobby-v1.jpg" in homepage
+    assert 'fetchpriority="high"' in homepage
 
     price_page = client.get("/prices").text
     for name, general, regular, after in PRICE_ROWS:
