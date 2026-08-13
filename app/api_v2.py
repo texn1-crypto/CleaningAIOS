@@ -24,6 +24,7 @@ from .outreach import campaign_approval_payload, persist_campaign_attachments, q
 from .platform import approval_engine, event_bus
 from .schemas import CampaignLaunch, ContentItemCreate, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
 from .security import Principal, principal, require_role
+from .chat import redact_sensitive_text
 
 router = APIRouter(prefix="/api")
 
@@ -34,6 +35,24 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def _previous_request_text(db: Session, *, source_channel: str, source_user: str, current_message: str) -> str:
+    rows = db.scalars(
+        select(Task)
+        .where(Task.agent_type == "request_analyst")
+        .order_by(Task.id.desc())
+        .limit(100)
+    ).all()
+    normalized_current = " ".join(current_message.lower().split())
+    for row in rows:
+        stored = row.payload if isinstance(row.payload, dict) else {}
+        if stored.get("source_channel") != source_channel or str(stored.get("source_user")) != source_user:
+            continue
+        candidate = redact_sensitive_text(str(stored.get("message") or "")).strip()[:4000]
+        if candidate and " ".join(candidate.lower().split()) != normalized_current:
+            return candidate
+    return ""
 
 
 def improvement_view(row: ImprovementRequest) -> dict:
@@ -67,17 +86,39 @@ def improvement_view(row: ImprovementRequest) -> dict:
 @router.post("/request-analysis")
 def analyze_request(payload: RequestAnalysisCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "operator")
+    safe_message = redact_sensitive_text(payload.message.strip())[:4000]
+    resolved_intent = dict(payload.intent)
+    resolved_payload = dict(resolved_intent.get("payload") or {})
+    context_found = None
+    if resolved_payload.get("action") == "review_previous_text":
+        if not resolved_payload.get("referenced_text"):
+            resolved_payload["referenced_text"] = _previous_request_text(
+                db,
+                source_channel=payload.source_channel,
+                source_user=payload.source_user,
+                current_message=safe_message,
+            )
+        context_found = bool(resolved_payload.get("referenced_text"))
+        resolved_intent["payload"] = resolved_payload
+    task_payload = payload.model_dump()
+    task_payload["message"] = safe_message
+    task_payload["intent"] = resolved_intent
     task = Task(
         title=f"Analyze {payload.source_channel} request",
         agent_type="request_analyst",
         priority="high",
-        payload=payload.model_dump(),
+        payload=task_payload,
     )
     db.add(task); db.flush()
     result = dispatch(db, task)
     audit(db, actor.subject, "request.analyzed", "task", str(task.id), {"classification": result.get("classification"), "improvement_id": result.get("improvement_id")})
     db.commit()
-    return {"analysis_task_id": task.id, **result}
+    return {
+        "analysis_task_id": task.id,
+        **result,
+        "resolved_intent": resolved_intent,
+        "context_found": context_found,
+    }
 
 
 @router.get("/improvements")

@@ -369,6 +369,10 @@ class CopywriterAgent:
             from .text_studio import improve_referenced_text
 
             return improve_referenced_text(payload)
+        if payload.get("action") == "review_previous_text":
+            from .text_studio import review_referenced_text
+
+            return review_referenced_text(payload)
         from .proposal_studio import build_professional_copy
 
         return build_professional_copy(payload)

@@ -1464,6 +1464,138 @@ def test_telegram_improve_this_returns_real_draft(monkeypatch):
     assert task_payload["max_attempts"] == 1
 
 
+def test_russian_chat_routes_feedback_on_previous_letter():
+    from app.chat import understand_russian_message
+
+    intent = understand_russian_message("дай обратную связь по моему предыдущему письму")
+    assert intent["kind"] == "task"
+    assert intent["agent_type"] == "copywriter"
+    assert intent["payload"]["action"] == "review_previous_text"
+    assert intent["payload"]["referenced_text"] == ""
+    assert intent["payload"]["external_send"] is False
+
+
+def test_previous_request_is_reviewed_with_audited_result(client):
+    from app.chat import understand_russian_message
+
+    original = "Добрый день! Мы хотим предложить вам уборку качественно и быстро. пароль: temporary-secret"
+    first_intent = understand_russian_message("улучши это", referenced_text=original)
+    first = client.post("/api/request-analysis", json={
+        "message": original,
+        "intent": first_intent,
+        "source_channel": "telegram",
+        "source_user": "feedback-owner",
+    })
+    assert first.status_code == 200
+
+    feedback_intent = understand_russian_message("дай обратную связь по моему предыдущему письму")
+    analysis = client.post("/api/request-analysis", json={
+        "message": "дай обратную связь по моему предыдущему письму",
+        "intent": feedback_intent,
+        "source_channel": "telegram",
+        "source_user": "feedback-owner",
+    }).json()
+    assert analysis["classification"] == "supported"
+    assert analysis["context_found"] is True
+    resolved = analysis["resolved_intent"]
+    assert resolved["payload"]["action"] == "review_previous_text"
+    assert "temporary-secret" not in resolved["payload"]["referenced_text"]
+    assert "[REDACTED]" in resolved["payload"]["referenced_text"]
+
+    task = client.post("/api/tasks", json={
+        "title": resolved["title"],
+        "agent_type": resolved["agent_type"],
+        "payload": resolved["payload"],
+        "max_attempts": 1,
+    }).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    result = completed["result"]
+    assert completed["status"] == "done"
+    assert result["status"] == "ready"
+    assert "следующий шаг" in result["feedback_text"]
+    assert "Предлагаем" in result["revised_text"]
+    assert result["external_send"] is False
+    assert result["owner_review_required"] is True
+    assert result["evidence"][0]["type"] == "text_review"
+    audit = client.get("/api/audit").json()
+    assert any(row["action"] == "task.completed" and row["resource_id"] == str(task["id"]) for row in audit)
+
+    missing = client.post("/api/tasks", json={
+        "title": "Feedback without history",
+        "agent_type": "copywriter",
+        "payload": {"action": "review_previous_text"},
+        "max_attempts": 1,
+    }).json()
+    failed = client.post(f"/api/tasks/{missing['id']}/run").json()
+    assert failed["status"] == "failed"
+    assert "Referenced text is required" in failed["result"]["error"]
+
+
+def test_telegram_feedback_uses_resolved_previous_context(monkeypatch):
+    from app import bot
+
+    calls = []
+    resolved_intent = {
+        "kind": "task",
+        "title": "Подготовить обратную связь по предыдущему тексту",
+        "agent_type": "copywriter",
+        "priority": "normal",
+        "payload": {
+            "action": "review_previous_text",
+            "referenced_text": "Мы хотим предложить вам уборку качественно и быстро",
+            "external_send": False,
+        },
+        "protected": False,
+    }
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "resolved_intent": resolved_intent, "context_found": True}
+        if path == "/api/tasks":
+            return {"id": 841, "agent_type": "copywriter", "title": resolved_intent["title"]}
+        if path == "/api/tasks/841/run":
+            return {
+                "status": "done",
+                "result": {
+                    "status": "ready",
+                    "feedback_text": "• Не указан следующий шаг.",
+                    "revised_text": "Предлагаем уборку по согласованному регламенту.",
+                    "external_send": False,
+                },
+            }
+        raise AssertionError(path)
+
+    class Message:
+        text = "дай обратную связь по моему предыдущему письму"
+        reply_to_message = None
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+
+    reply = Update.effective_message.replies[-1]
+    assert "Обратная связь" in reply
+    assert "Предлагаемый вариант" in reply
+    assert "никуда не отправлен" in reply
+    task_payload = next(kwargs["json"] for _, path, kwargs in calls if path == "/api/tasks")
+    assert task_payload["payload"]["action"] == "review_previous_text"
+    assert task_payload["max_attempts"] == 1
+
+
 def test_russian_chat_recognizes_proposal_client_without_command():
     from app.chat import understand_russian_message
 

@@ -71,3 +71,44 @@ def improve_referenced_text(payload: dict[str, Any]) -> dict[str, Any]:
             }
         ],
     }
+
+
+def review_referenced_text(payload: dict[str, Any]) -> dict[str, Any]:
+    """Review a stored or replied text and return actionable feedback plus a safe draft."""
+    original = redact_sensitive_text(str(payload.get("referenced_text") or ""))[:4000].strip()
+    if not original:
+        raise ValueError("Referenced text is required")
+
+    revised = improve_referenced_text({"referenced_text": original})
+    observations: list[str] = []
+    if len(original) < 80:
+        observations.append("Текст короткий: полезно добавить предмет предложения и ожидаемый следующий шаг.")
+    if not re.search(r"(?i)\b(здравствуйте|добрый\s+(?:день|вечер)|уважаем)\b", original):
+        observations.append("Нет персонального делового приветствия.")
+    if re.search(r"(?i)\b(качественно|быстро|лучший|выгодн)\w*\b", original):
+        observations.append("Есть общие обещания без проверяемого критерия или регламента.")
+    if not re.search(r"(?i)\b(ответьте|уточните|напишите|позвоните|обсудим|подготовим|свяжитесь)\b", original):
+        observations.append("Не указан конкретный следующий шаг для получателя.")
+    if not observations:
+        observations.append("Структура понятна; редактура сделала формулировки короче и деловее.")
+
+    feedback = "\n".join(f"• {item}" for item in observations)
+    digest = hashlib.sha256((original + "\n" + feedback).encode()).hexdigest()
+    return {
+        "status": "ready",
+        "feedback_text": feedback,
+        "observations": observations,
+        "revised_text": revised["improved_text"],
+        "changes": revised["changes"],
+        "draft_only": True,
+        "external_send": False,
+        "owner_review_required": True,
+        "evidence": [
+            {
+                "type": "text_review",
+                "provider": "deterministic_copy_editor",
+                "input_characters": len(original),
+                "checksum_sha256": digest,
+            }
+        ],
+    }

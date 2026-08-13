@@ -135,6 +135,27 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
             "protected": False,
         }
     if (
+        "обратн" in text
+        and "связ" in text
+        and _contains(text, "предыдущ", "письм", "сообщен", "текст")
+    ):
+        safe_reference = redact_sensitive_text(" ".join(referenced_text.split()).strip())[:4000]
+        return {
+            "kind": "task",
+            "title": "Подготовить обратную связь по предыдущему тексту",
+            "agent_type": "copywriter",
+            "priority": "normal",
+            "payload": {
+                "action": "review_previous_text",
+                "source": "telegram_natural_language",
+                "original_message": safe_original[:4000],
+                "referenced_text": safe_reference,
+                "draft_only": True,
+                "external_send": False,
+            },
+            "protected": False,
+        }
+    if (
         "отчет" in text
         and _contains(text, "проделан", "сделано", "выполнен", "работ")
     ) or _contains(text, "что было сделано", "что уже сделано", "результаты работы системы"):

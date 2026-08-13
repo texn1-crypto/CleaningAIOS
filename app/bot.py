@@ -443,7 +443,6 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     replied = getattr(message, "reply_to_message", None)
     referenced_text = (getattr(replied, "text", None) or getattr(replied, "caption", None) or "") if replied else ""
     intent = understand_russian_message(message.text or "", referenced_text=referenced_text)
-    kind = intent["kind"]
     try:
         try:
             analysis = await api("POST", "/api/request-analysis", json={
@@ -454,6 +453,9 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
         except httpx.HTTPError:
             analysis = {"classification": "analysis_unavailable", "improvement_id": None}
+        if isinstance(analysis.get("resolved_intent"), dict):
+            intent = analysis["resolved_intent"]
+        kind = intent["kind"]
         if kind == "greeting":
             await update.effective_message.reply_text("Здравствуйте! Напишите обычным русским текстом, что нужно сделать или показать.")
         elif kind == "acknowledgement":
@@ -496,17 +498,37 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif kind == "task_eta":
             await task_timing(update, intent)
         else:
+            action = intent["payload"].get("action")
+            if action == "review_previous_text" and not intent["payload"].get("referenced_text"):
+                await update.effective_message.reply_text(
+                    "Не нашёл предыдущий текст в сохранённой истории. Перешлите письмо или ответьте на него фразой "
+                    "«дай обратную связь», и я сразу подготовлю разбор и новый черновик."
+                )
+                return
             data = await api("POST", "/api/tasks", json={
                 "title": intent["title"],
                 "agent_type": intent["agent_type"],
                 "priority": intent["priority"],
                 "payload": intent["payload"],
                 "max_attempts": 1
-                if intent["payload"].get("action") in {"generate_proposal", "improve_referenced_text", "prepare_social_account_setup"}
+                if action in {"generate_proposal", "improve_referenced_text", "review_previous_text", "prepare_social_account_setup"}
                 else 3,
             })
             protection = " Критическое действие будет остановлено до вашего подтверждения." if intent["protected"] else ""
-            if intent["payload"].get("action") == "improve_referenced_text":
+            if action == "review_previous_text":
+                completed = await api("POST", f"/api/tasks/{data['id']}/run")
+                result = completed.get("result") or {}
+                if completed.get("status") == "done" and result.get("status") == "ready":
+                    await update.effective_message.reply_text(
+                        f"Обратная связь:\n{result['feedback_text']}\n\nПредлагаемый вариант:\n\n{result['revised_text']}\n\n"
+                        "Это черновик: он сохранён в задаче и никуда не отправлен."
+                    )
+                else:
+                    await update.effective_message.reply_text(
+                        f"Не удалось разобрать текст: {result.get('error') or result.get('reason') or completed.get('status', 'неизвестная ошибка')}. "
+                        "Ошибка сохранена в задаче и audit log."
+                    )
+            elif action == "improve_referenced_text":
                 completed = await api("POST", f"/api/tasks/{data['id']}/run")
                 result = completed.get("result") or {}
                 if completed.get("status") == "done" and result.get("status") == "ready":

@@ -21,6 +21,12 @@ requests reuse the same deduplication key. Optional Workspace Agent handoff uses
 idempotency key; local Codex automation can consume the same queue without sharing
 application secrets.
 
+Contextual text requests use the same durable request history. “Улучши это” can use
+an explicit Telegram reply, while a request for feedback on the previous letter
+resolves the latest saved request for the same channel and user. The copywriter
+returns feedback and a revised draft through Task/Agent Runtime; it never sends the
+text externally. Stored request text is credential-redacted before later retrieval.
+
 For owner Telegram tasks, Orchestrator applies a post-run evidence gate. Requests
 for files cannot become `done` without an artifact; credentials and adapter gaps are
 also incomplete. The gate creates one deduplicated improvement and a linked AI CEO

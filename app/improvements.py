@@ -75,6 +75,7 @@ def deterministic_assessment(message: str, intent: dict[str, Any]) -> dict[str, 
     if intent.get("payload", {}).get("action") in {
         "generate_proposal",
         "improve_referenced_text",
+        "review_previous_text",
         "revise_proposal",
         "prepare_social_account_setup",
     }:
