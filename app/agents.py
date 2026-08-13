@@ -11,6 +11,7 @@ from .llm import llm_advisor
 from .models import AgentState, BusinessGoal, BusinessRecord, Decision, DecisionOutcome, MediaAsset, OperatingEntity, Task
 from .ai_router import provider_catalog
 from .operations import create_ceo_actions, goal_progress, score_tender, site_economics
+from .task_state import record_task_created
 
 
 class Agent(Protocol):
@@ -97,7 +98,7 @@ class OrchestratorAgent:
             if agent_type not in AGENTS or agent_type == self.name:
                 continue
             task = Task(title=item.get("title", f"Delegated task for {agent_type}"), agent_type=agent_type, priority=item.get("priority", "normal"), payload=item.get("payload", {}))
-            db.add(task); db.flush(); created.append({"id": task.id, "agent_type": agent_type})
+            db.add(task); db.flush(); record_task_created(db, task, actor="orchestrator", reason="agent_delegation"); created.append({"id": task.id, "agent_type": agent_type})
         return {"coordinated": True, "delegated_tasks": created, "message": payload.get("message", "Task accepted by orchestrator"), "evidence": [{"delegations_requested": len(payload.get("delegations", []))}]}
 
 
@@ -213,6 +214,8 @@ class CEOAgent:
                 db.add(task)
                 llm_tasks.append(task)
             db.flush()
+            for task in llm_tasks:
+                record_task_created(db, task, actor="ceo", reason="llm_advisory_task")
         tasks_created = [
             {"id": x.id, "title": x.title, "agent_type": x.agent_type, "source": "deterministic_policy"}
             for x in created

@@ -10,7 +10,7 @@ Audit date: 2026-08-13. Repository: `texn1-crypto/CleaningAIOS`. Branch at audit
 - Entry points: `app.main:app`, `python -m app.worker`, `python -m app.scheduler`,
   and `python -m app.bot`.
 - Persistence: shared relational models in `app/models.py`; migrations `0001` through
-  `0009`; SQLite is restricted to development/test.
+  `0010`; SQLite is restricted to development/test.
 - Core execution: `app/platform.py` (Event Bus, Company Brain, approvals and Agent
   Runtime) and `app/orchestrator.py` (policy, dispatch, retry and evidence gate).
 - Interfaces: legacy `/api/*`, versioned `/api/v2/*`, public site/API, Mission Control,
@@ -42,7 +42,7 @@ a loop when absent and has a regression test. No production deployment was perfo
 | Audit trail | PARTIAL | Durable audit rows exist for material API/runtime actions; database-level immutability/retention policy is not enforced. |
 | Event Bus/outbox | PARTIAL | Persisted versioned envelopes, event/correlation/causation IDs, actor, retry/backoff, dead-letter state and durable idempotent consumer receipts are connected to the worker. Business-specific payload schemas and latency metrics are still missing. |
 | Agent Runtime | PARTIAL | Registry, run history, evidence, cost, retries and policy gate are connected. Capability/tool allowlists, cancellation, enforced timeout, confidence schema and replay API are missing. |
-| Task/workflow engine | PARTIAL | Persistent tasks, priorities, retry/backoff, schedule and owner manual steps work. Dependencies, explicit transition history, compensation, cancellation and recurring workflow definitions are missing. |
+| Task/workflow engine | PARTIAL | Persistent tasks, guarded state transitions, immutable transition history, priorities, retry/backoff, schedule and owner manual steps work. Dependencies, compensation, cancellation and recurring workflow definitions are missing. |
 | Approval Engine | PARTIAL | Bound approvals and Telegram decisions protect listed critical actions. Expiry, request-changes, risk/amount policy and database-level single-execution command keys are missing. |
 | Decision Engine | PARTIAL | Structured decisions, approval link and measured outcomes exist. Provenance/freshness and a complete enforced recommendation schema are incomplete. |
 | Company Brain | PARTIAL | Versioned key/value knowledge with provenance/confidence/expiry exists. Document ingestion, ACL-aware chunks, embeddings/hybrid retrieval, citations and retrieval evals are missing; this is not RAG yet. |
@@ -71,7 +71,9 @@ entry point. External provider readiness states are not treated as integrations.
 Completed in migration `0008`: versioned event envelope, correlation/causation/actor
 and durable idempotent consumer receipts.
 
-1. Add explicit task state transitions/dependencies and an immutable transition log.
+Completed in migration `0010`: guarded task states and immutable transition history.
+
+1. Add workflow dependencies, cancellation and compensation semantics.
 2. Enforce agent capabilities, timeout/cancellation and replay diagnostics.
 3. Replace financial floats with integer minor units or Decimal under a safe migration.
 4. Add lint, type checking and dependency/container scanning to CI.

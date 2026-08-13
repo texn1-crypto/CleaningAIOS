@@ -19,6 +19,42 @@ def test_task_and_agent_flow(client):
     assert result.json()["status"] == "done"
     assert result.json()["result"]["submission_requires_owner_approval"] is True
 
+    transitions = client.get(f"/api/tasks/{task_id}/transitions").json()
+    assert [(row["from_status"], row["to_status"], row["reason"]) for row in transitions] == [
+        ("", "open", "task_created"),
+        ("open", "running", "agent_execution_started"),
+        ("running", "done", "execution_evidence_verified"),
+    ]
+    assert client.post(f"/api/tasks/{task_id}/run").status_code == 409
+
+
+def test_failed_task_retry_has_explicit_transition_history(client, monkeypatch):
+    from app.agents import AGENTS
+
+    class FailingAgent:
+        name = "transition_test"
+
+        def execute(self, db, payload):
+            raise RuntimeError("controlled retry failure")
+
+    monkeypatch.setitem(AGENTS, "transition_test", FailingAgent())
+    task = client.post("/api/tasks", json={
+        "title": "Transition retry test",
+        "agent_type": "transition_test",
+        "max_attempts": 2,
+    }).json()
+    first = client.post(f"/api/tasks/{task['id']}/run")
+    assert first.status_code == 200
+    assert first.json()["status"] == "queued"
+    transitions = client.get(f"/api/tasks/{task['id']}/transitions").json()
+    assert [(row["from_status"], row["to_status"]) for row in transitions] == [
+        ("", "open"),
+        ("open", "running"),
+        ("running", "failed"),
+        ("failed", "queued"),
+    ]
+    assert transitions[-1]["reason"] == "retry_scheduled"
+
 
 def test_default_orchestrator_task_runs(client):
     task = client.post("/api/tasks", json={"title": "Общая операционная задача", "payload": {"message": "Проверить объект"}}).json()
@@ -35,6 +71,9 @@ def test_owner_approval_gate(client):
     approval_id = blocked["result"]["approval_id"]
     approved = client.post(f"/api/approvals/{approval_id}/approve", json={"note": "Проверено владельцем"})
     assert approved.status_code == 200
+    approval_history = client.get(f"/api/tasks/{task['id']}/transitions").json()
+    assert approval_history[-1]["to_status"] == "queued"
+    assert approval_history[-1]["reason"] == "owner_approval_granted"
     completed = client.post(f"/api/tasks/{task['id']}/run").json()
     assert completed["status"] == "done"
 

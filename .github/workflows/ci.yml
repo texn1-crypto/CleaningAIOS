@@ -26,7 +26,7 @@ jobs:
           curl --fail http://127.0.0.1:8000/health
           curl --fail http://127.0.0.1:8000/
           curl --fail http://127.0.0.1:8000/static/og-cleaningaios.png
-          test "$(docker compose exec -T db psql -U cleaningai -d cleaningai -Atc 'select version_num from alembic_version')" = "0009"
+          test "$(docker compose exec -T db psql -U cleaningai -d cleaningai -Atc 'select version_num from alembic_version')" = "0010"
           docker compose run --rm migrate alembic check
       - name: Compose logs
         if: always()

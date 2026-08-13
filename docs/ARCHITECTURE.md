@@ -36,6 +36,11 @@ receipt prevents the same consumer from executing the event again after a retry 
 restart. Agent Runtime records input, output, evidence, cost and errors. Failed work is retried with backoff
 up to `max_attempts`; exhausted work remains visible as failed.
 
+Task status changes go through the shared state machine. Every initial state and
+transition stores actor, reason, correlation, details and an idempotency key in
+`task_transitions`. The production database protects this ledger with an immutable
+trigger; APIs expose history but no mutation endpoint.
+
 Decision Engine is deterministic. Financial, legal, contractual, final HR, tender
 submission and bulk outreach actions create a separate owner approval. An approval
 is bound to its exact action and resource, so it cannot authorize another task or

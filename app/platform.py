@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from .agents import AGENTS, heartbeat
 from .models import AgentRun, ApprovalRequest, CompanyKnowledge, DomainEvent, EventConsumerReceipt, Task
+from .task_state import record_task_created, transition_task
 
 
 def now_utc() -> datetime:
@@ -229,8 +230,20 @@ class DecisionEngine:
 
 
 class AgentRuntime:
-    def execute(self, db: Session, task: Task) -> dict[str, Any]:
-        task.status = "running"
+    def execute(self, db: Session, task: Task, *, finalize_task: bool = True) -> dict[str, Any]:
+        correlation_id = str((task.payload or {}).get("correlation_id", ""))
+        record_task_created(db, task, actor="agent_runtime", reason="runtime_discovered", correlation_id=correlation_id)
+        attempt = task.attempts + 1
+        transition_task(
+            db,
+            task,
+            "running",
+            actor=task.agent_type,
+            reason="agent_execution_started",
+            correlation_id=correlation_id,
+            details={"attempt": attempt},
+            transition_key=f"task:{task.id}:attempt:{attempt}:running",
+        )
         task.attempts += 1
         agent = AGENTS.get(task.agent_type)
         if not agent:
@@ -246,13 +259,31 @@ class AgentRuntime:
             run.cost = float(result.get("cost", 0) or 0)
             run.status = "succeeded"
             task.result = result
-            task.status = "done"
+            if finalize_task:
+                transition_task(
+                    db,
+                    task,
+                    "done",
+                    actor=task.agent_type,
+                    reason="agent_execution_succeeded",
+                    correlation_id=correlation_id,
+                    transition_key=f"task:{task.id}:attempt:{attempt}:done",
+                )
             heartbeat(db, task.agent_type, "idle", metrics=result)
             return result
         except Exception as exc:
             run.status = "failed"
             run.error = str(exc)
-            task.status = "failed"
+            transition_task(
+                db,
+                task,
+                "failed",
+                actor=task.agent_type,
+                reason="agent_execution_failed",
+                correlation_id=correlation_id,
+                details={"error": str(exc)[:4000]},
+                transition_key=f"task:{task.id}:attempt:{attempt}:failed",
+            )
             task.result = {"error": str(exc)}
             heartbeat(db, task.agent_type, "error", str(exc))
             raise
@@ -290,6 +321,13 @@ def route_event(db: Session, event: DomainEvent) -> Task | None:
     )
     db.add(task)
     db.flush()
+    record_task_created(
+        db,
+        task,
+        actor="event_bus",
+        reason="domain_event_routed",
+        correlation_id=event.correlation_id,
+    )
     return task
 
 

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .domains import module_summary, validate_record
-from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, Decision, DomainEvent, EventConsumerReceipt, MessageTemplate, OutboundMessage, SenderMailbox, Suppression, Task
+from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, Decision, DomainEvent, EventConsumerReceipt, MessageTemplate, OutboundMessage, SenderMailbox, Suppression, Task, TaskTransition
 from .orchestrator import audit, dispatch
 from .platform import company_brain, event_bus
 from .schemas import ApprovalDecision, ContactEventCreate, DecisionCreate, KnowledgeCreate, OutreachCreate, RecordCreate, RecordUpdate, SuppressionCreate, TaskCreate
@@ -29,6 +29,7 @@ from .public_site import PUBLIC_SITE_HTML, privacy_html
 from .agents import AGENTS
 from .llm import llm_advisor
 from .readiness import integration_status
+from .task_state import InvalidTaskTransition, record_task_created, transition_task
 
 
 @asynccontextmanager
@@ -98,7 +99,7 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db), actor: Princ
     require_role(actor, "operator")
     if payload.agent_type not in AGENTS: raise HTTPException(422, f"Unknown agent: {payload.agent_type}")
     row = Task(**payload.model_dump(exclude_none=True))
-    db.add(row); db.flush(); audit(db, actor.subject, "task.created", "task", str(row.id), {"agent_type": row.agent_type}); db.commit(); db.refresh(row)
+    db.add(row); db.flush(); record_task_created(db, row, actor=actor.subject); audit(db, actor.subject, "task.created", "task", str(row.id), {"agent_type": row.agent_type}); db.commit(); db.refresh(row)
     return as_task(row)
 
 
@@ -107,6 +108,8 @@ def run_task(task_id: int, db: Session = Depends(get_db), actor: Principal = Dep
     require_role(actor, "operator")
     row = db.get(Task, task_id)
     if not row: raise HTTPException(404, "Task not found")
+    if row.status not in {"open", "queued"}:
+        raise HTTPException(409, f"Task in status {row.status} cannot be run")
     dispatch(db, row); db.commit(); db.refresh(row)
     return as_task(row)
 
@@ -116,8 +119,30 @@ def complete_task(task_id: int, db: Session = Depends(get_db), actor: Principal 
     require_role(actor, "operator")
     row = db.get(Task, task_id)
     if not row: raise HTTPException(404, "Task not found")
-    row.status = "done"; audit(db, actor.subject, "task.completed_manually", "task", str(row.id)); db.commit()
+    try:
+        transition_task(db, row, "done", actor=actor.subject, reason="manual_completion")
+    except InvalidTaskTransition as exc:
+        raise HTTPException(409, str(exc)) from exc
+    audit(db, actor.subject, "task.completed_manually", "task", str(row.id)); db.commit()
     return {"ok": True}
+
+
+@app.get("/api/tasks/{task_id}/transitions")
+def task_transitions(task_id: int, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    if not db.get(Task, task_id):
+        raise HTTPException(404, "Task not found")
+    rows = db.scalars(select(TaskTransition).where(TaskTransition.task_id == task_id).order_by(TaskTransition.id)).all()
+    return [{
+        "id": row.id,
+        "from_status": row.from_status,
+        "to_status": row.to_status,
+        "actor": row.actor,
+        "reason": row.reason,
+        "correlation_id": row.correlation_id,
+        "details": row.details,
+        "created_at": row.created_at,
+    } for row in rows]
 
 
 @app.get("/api/decisions")
@@ -339,7 +364,16 @@ def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db
     if row.resource_type == "task":
         task = db.get(Task, int(row.resource_id))
         if task and task.status == "blocked" and row.status == "approved":
-            task.payload = {**task.payload, "approval_id": row.id}; task.status = "queued"; task.run_after = datetime.now(timezone.utc).replace(tzinfo=None)
+            task.payload = {**task.payload, "approval_id": row.id}
+            transition_task(
+                db,
+                task,
+                "queued",
+                actor=actor.subject,
+                reason="owner_approval_granted",
+                transition_key=f"task:{task.id}:approval:{row.id}:queued",
+            )
+            task.run_after = datetime.now(timezone.utc).replace(tzinfo=None)
     elif row.resource_type == "decision":
         decision = db.get(Decision, int(row.resource_id))
         if decision: decision.status = row.status; decision.decided_by = actor.subject; decision.decided_at = row.decided_at

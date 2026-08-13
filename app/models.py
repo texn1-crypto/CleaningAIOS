@@ -42,6 +42,31 @@ class Task(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class TaskTransition(Base):
+    __tablename__ = "task_transitions"
+    __table_args__ = (
+        UniqueConstraint("transition_key", name="uq_task_transition_key"),
+        CheckConstraint(
+            "to_status IN ('open', 'queued', 'running', 'blocked', 'done', 'failed')",
+            name="ck_task_transition_to_status",
+        ),
+        CheckConstraint(
+            "from_status IN ('', 'open', 'queued', 'running', 'blocked', 'done', 'failed')",
+            name="ck_task_transition_from_status",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), index=True)
+    from_status: Mapped[str] = mapped_column(String(32), default="")
+    to_status: Mapped[str] = mapped_column(String(32), index=True)
+    actor: Mapped[str] = mapped_column(String(128), index=True)
+    reason: Mapped[str] = mapped_column(String(255), default="")
+    correlation_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    transition_key: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class Decision(Base):
     __tablename__ = "decisions"
     id: Mapped[int] = mapped_column(primary_key=True)

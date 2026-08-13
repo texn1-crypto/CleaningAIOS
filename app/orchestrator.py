@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from .models import AgentRun, AuditLog, Task
 from .platform import agent_runtime, decision_engine, event_bus
+from .task_state import record_task_created, transition_task
 
 
 def audit(db: Session, actor: str, action: str, resource_type: str, resource_id: str = "", details: dict | None = None) -> None:
@@ -81,6 +82,7 @@ def _escalate_execution_gap(db: Session, task: Task, reason: str, *, credentials
     )
     db.add(incident)
     db.flush()
+    record_task_created(db, incident, actor="orchestrator", reason="agent_incident_created", correlation_id=_event_trace(task, "ceo")["correlation_id"])
     incident_result = agent_runtime.execute(db, incident)
     audit(db, "ceo", "agent.incident_reported", "task", str(task.id), incident_result)
     event_bus.publish(
@@ -104,21 +106,45 @@ def _mark_latest_run_incomplete(db: Session, task: Task, reason: str) -> None:
 
 
 def dispatch(db: Session, task: Task) -> dict:
+    record_task_created(
+        db,
+        task,
+        actor="orchestrator",
+        reason="dispatch_discovered",
+        correlation_id=str((task.payload or {}).get("correlation_id", "")),
+    )
     policy = decision_engine.evaluate(db, task)
     if not policy["allowed"]:
-        task.status = "blocked"
+        transition_task(
+            db,
+            task,
+            "blocked",
+            actor="decision_engine",
+            reason="owner_approval_required",
+            correlation_id=_event_trace(task, "decision_engine")["correlation_id"],
+            transition_key=f"task:{task.id}:approval:{policy['approval_id']}:blocked",
+        )
         result = {"blocked": True, **policy}
         task.result = result
         audit(db, "decision_engine", "task.blocked", "task", str(task.id), result)
         event_bus.publish(db, "approval.requested", "task", str(task.id), result, idempotency_key=f"task:{task.id}:approval:{policy['approval_id']}", **_event_trace(task, "decision_engine"))
         return result
     try:
-        result = agent_runtime.execute(db, task)
+        result = agent_runtime.execute(db, task, finalize_task=False)
         gap = _execution_gap(task, result)
         if gap:
             reason, credentials_required = gap
             escalation = _escalate_execution_gap(db, task, reason, credentials_required=credentials_required)
-            task.status = "blocked"
+            transition_task(
+                db,
+                task,
+                "blocked",
+                actor="orchestrator_quality_gate",
+                reason="execution_evidence_missing",
+                correlation_id=_event_trace(task, "orchestrator_quality_gate")["correlation_id"],
+                details={"execution_gap": reason},
+                transition_key=f"task:{task.id}:attempt:{task.attempts}:incomplete",
+            )
             task.result = {**result, "execution_gap": reason, **escalation}
             _mark_latest_run_incomplete(db, task, reason)
             audit(db, "orchestrator_quality_gate", "task.incomplete", "task", str(task.id), task.result)
@@ -133,6 +159,15 @@ def dispatch(db: Session, task: Task) -> dict:
             )
             return task.result
         audit(db, task.agent_type, "task.completed", "task", str(task.id), result)
+        transition_task(
+            db,
+            task,
+            "done",
+            actor="orchestrator",
+            reason="execution_evidence_verified",
+            correlation_id=_event_trace(task, "orchestrator")["correlation_id"],
+            transition_key=f"task:{task.id}:attempt:{task.attempts}:done",
+        )
         event_bus.publish(db, "task.completed", "task", str(task.id), result, idempotency_key=f"task:{task.id}:completed:{task.attempts}", **_event_trace(task, task.agent_type))
         return result
     except Exception as exc:
@@ -142,7 +177,16 @@ def dispatch(db: Session, task: Task) -> dict:
             task.result = {**(task.result or {}), **escalation}
         audit(db, task.agent_type, "task.failed", "task", str(task.id), task.result)
         if task.attempts < task.max_attempts:
-            task.status = "queued"
+            transition_task(
+                db,
+                task,
+                "queued",
+                actor="orchestrator",
+                reason="retry_scheduled",
+                correlation_id=_event_trace(task, "orchestrator")["correlation_id"],
+                details={"attempt": task.attempts, "max_attempts": task.max_attempts},
+                transition_key=f"task:{task.id}:attempt:{task.attempts}:retry",
+            )
             task.next_retry_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=min(300, 2 ** task.attempts))
             task.run_after = task.next_retry_at
             event_bus.publish(db, "task.retry_scheduled", "task", str(task.id), {"attempt": task.attempts, "max_attempts": task.max_attempts, "next_retry_at": task.next_retry_at.isoformat()}, idempotency_key=f"task:{task.id}:retry:{task.attempts}", **_event_trace(task, "orchestrator"))

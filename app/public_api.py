@@ -16,6 +16,7 @@ from .notifications import queue_owner_notification
 from .orchestrator import audit
 from .platform import event_bus
 from .schemas import PublicLeadCreate
+from .task_state import record_task_created
 
 
 router = APIRouter(prefix="/api/public", tags=["public website"])
@@ -205,7 +206,10 @@ def create_public_lead(payload: PublicLeadCreate, request: Request, db: Session 
     if lead.score >= settings.hot_lead_score:
         title = f"Hot website lead #{lead.id}"
         if not db.scalar(select(Task.id).where(Task.title == title, Task.status.in_(["open", "queued", "running"]))):
-            db.add(Task(title=title, agent_type="sales", priority="high", payload={"record_id": lead.id, "reason": "hot_website_lead"}))
+            task = Task(title=title, agent_type="sales", priority="high", payload={"record_id": lead.id, "reason": "hot_website_lead"})
+            db.add(task)
+            db.flush()
+            record_task_created(db, task, actor="public_lead_intake", reason="hot_lead_detected")
         notification = queue_owner_notification(
             db,
             idempotency_key=f"hot-lead-email:{lead.id}",

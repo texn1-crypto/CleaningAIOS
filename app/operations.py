@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import BusinessGoal, BusinessRecord, OperatingEntity, Task
+from .task_state import record_task_created
 
 
 def validate_entity(db: Session, entity_type: str, parent_id: int | None, data: dict[str, Any]) -> None:
@@ -127,6 +128,8 @@ def create_ceo_actions(db: Session) -> list[Task]:
         if not exists:
             db.add(task); unique.append(task)
     db.flush()
+    for task in unique:
+        record_task_created(db, task, actor="ceo", reason="deterministic_ceo_action")
     return unique
 
 
