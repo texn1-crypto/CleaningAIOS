@@ -56,6 +56,13 @@ the report from PostgreSQL and the worker delivers it through the persisted owne
 notification queue. Set a value from 5 to 1440 minutes; delivery requires
 `TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID`.
 
+Selected task-failure, agent-incident, overdue-payment, near-tender-deadline,
+outreach-complaint and task-approval events become deduplicated high/critical
+Telegram alerts. Transport failures retry with backoff and become `dead_letter`
+after five attempts. The acknowledgement button records receipt only; it does not
+approve or execute the underlying action. Monitor
+`GET /api/owner-notifications/metrics` and investigate any dead-letter count.
+
 `CEO_DEVELOPMENT_CADENCE_HOURS=24` keeps a finite, deduplicated backlog for
 website growth, sales, marketing channels and system quality. These recurring
 tasks only analyse data and prepare recommendations. Publication, outreach,

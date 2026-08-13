@@ -40,9 +40,15 @@ from .telegram_control import (
     audit_subject,
     authorize_identity,
     bind_identity,
+    parse_alert_ack_token,
     parse_callback_token,
 )
-from .schemas import TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest
+from .notifications import (
+    NotificationNotDelivered,
+    NotificationNotFound,
+    acknowledge_owner_notification,
+)
+from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest
 
 router = APIRouter(prefix="/api")
 
@@ -104,7 +110,7 @@ def bind_telegram_control_identity(
 
 def _require_telegram_owner(
     db: Session,
-    payload: TelegramIdentityRequest | TelegramApprovalCallback,
+    payload: TelegramIdentityRequest | TelegramApprovalCallback | TelegramAlertCallback,
 ):
     identity, reason = authorize_identity(
         db,
@@ -202,6 +208,52 @@ def telegram_approval_decision(
         raise HTTPException(409, str(exc)) from exc
     except ApprovalError as exc:
         raise HTTPException(400, str(exc)) from exc
+    db.commit()
+    return result
+
+
+@router.post("/telegram/control/alert-acknowledgement")
+def telegram_alert_acknowledgement(
+    payload: TelegramAlertCallback,
+    db: Session = Depends(get_db),
+    channel: Principal = Depends(principal),
+):
+    require_role(channel, "owner")
+    identity = _require_telegram_owner(db, payload)
+    try:
+        parsed = parse_alert_ack_token(payload.callback_token)
+    except CallbackTokenExpired as exc:
+        audit(
+            db,
+            identity.subject,
+            "telegram.alert_callback_rejected",
+            "owner_notification",
+            "",
+            {"reason": "expired"},
+        )
+        db.commit()
+        raise HTTPException(409, str(exc)) from exc
+    except CallbackTokenError as exc:
+        audit(
+            db,
+            identity.subject,
+            "telegram.alert_callback_rejected",
+            "owner_notification",
+            "",
+            {"reason": "invalid_signature_or_format"},
+        )
+        db.commit()
+        raise HTTPException(403, str(exc)) from exc
+    try:
+        result = acknowledge_owner_notification(
+            db,
+            notification_id=int(parsed["notification_id"]),
+            actor=identity.subject,
+        )
+    except NotificationNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except NotificationNotDelivered as exc:
+        raise HTTPException(409, str(exc)) from exc
     db.commit()
     return result
 

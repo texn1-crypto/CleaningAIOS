@@ -13,7 +13,12 @@ from .ai_router import marketing_channel_status, media_provider, provider_catalo
 from .config import settings
 from .db import SessionLocal
 from .models import BusinessRecord, CompanyRequisite, ContentItem, MediaAsset, OwnerNotification
-from .notifications import queue_owner_notification
+from .notifications import (
+    NotificationNotDelivered,
+    NotificationNotFound,
+    acknowledge_owner_notification,
+    queue_owner_notification,
+)
 from .orchestrator import audit
 from .platform import approval_engine, event_bus
 from .schemas import CompanyRequisiteCreate, ContentItemUpdate, MarketingExperimentCreate, MarketingExperimentLaunch, MarketingInvoiceCreate, MarketingProviderCreate, MediaAssetCreate, MediaAssetUpdate
@@ -357,4 +362,57 @@ def update_content(content_id: int, payload: ContentItemUpdate, db: Session = De
 def owner_notifications(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "manager")
     rows = db.scalars(select(OwnerNotification).order_by(OwnerNotification.id.desc()).limit(200)).all()
-    return [{"id": row.id, "channel": row.channel, "resource_type": row.resource_type, "resource_id": row.resource_id, "subject": row.subject, "status": row.status, "attempts": row.attempts, "last_error": row.last_error, "sent_at": row.sent_at} for row in rows]
+    return [{"id": row.id, "channel": row.channel, "resource_type": row.resource_type, "resource_id": row.resource_id, "subject": row.subject, "severity": row.severity, "correlation_id": row.correlation_id, "status": row.status, "attempts": row.attempts, "last_error": row.last_error, "sent_at": row.sent_at, "acknowledged_at": row.acknowledged_at, "acknowledged_by": row.acknowledged_by, "dead_lettered_at": row.dead_lettered_at} for row in rows]
+
+
+@router.get("/owner-notifications/metrics")
+def owner_notification_metrics(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    rows = db.scalars(select(OwnerNotification)).all()
+    statuses: dict[str, int] = {}
+    severities: dict[str, int] = {}
+    delivery_seconds: list[float] = []
+    acknowledgement_required = 0
+    acknowledged = 0
+    for row in rows:
+        statuses[row.status] = statuses.get(row.status, 0) + 1
+        severities[row.severity] = severities.get(row.severity, 0) + 1
+        if row.sent_at and row.created_at:
+            delivery_seconds.append(max(0.0, (row.sent_at - row.created_at).total_seconds()))
+        if row.severity in {"high", "critical"}:
+            acknowledgement_required += 1
+            acknowledged += int(row.acknowledged_at is not None)
+    return {
+        "total": len(rows),
+        "statuses": statuses,
+        "severities": severities,
+        "acknowledgement_required": acknowledgement_required,
+        "acknowledged": acknowledged,
+        "acknowledgement_rate": round(
+            acknowledged / acknowledgement_required, 4
+        ) if acknowledgement_required else 1.0,
+        "average_delivery_seconds": round(
+            sum(delivery_seconds) / len(delivery_seconds), 3
+        ) if delivery_seconds else None,
+    }
+
+
+@router.post("/owner-notifications/{notification_id}/acknowledge")
+def acknowledge_notification(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "owner")
+    try:
+        result = acknowledge_owner_notification(
+            db,
+            notification_id=notification_id,
+            actor=actor.subject,
+        )
+    except NotificationNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except NotificationNotDelivered as exc:
+        raise HTTPException(409, str(exc)) from exc
+    db.commit()
+    return result

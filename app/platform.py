@@ -346,19 +346,33 @@ def process_next_event(db: Session) -> DomainEvent | None:
     event = event_bus.next(db)
     if not event:
         return None
-    consumer = "domain_router"
+    consumers = ["domain_router"]
     try:
-        receipt, should_process = event_bus.claim_consumer(db, event, consumer)
+        receipt, should_process = event_bus.claim_consumer(db, event, "domain_router")
         routed = route_event(db, event) if should_process else None
         if should_process:
             event_bus.complete_consumer(receipt, f"task:{routed.id}" if routed else "no_route")
+        from .notifications import ALERT_SEVERITY, queue_critical_alert_for_event
+
+        if event.event_type in ALERT_SEVERITY:
+            consumers.append("critical_alerts")
+            alert_receipt, should_alert = event_bus.claim_consumer(
+                db, event, "critical_alerts"
+            )
+            alert = queue_critical_alert_for_event(db, event) if should_alert else None
+            if should_alert:
+                event_bus.complete_consumer(
+                    alert_receipt,
+                    f"owner_notification:{alert.id}" if alert else "no_alert",
+                )
         event_bus.complete(event)
         db.commit()
     except Exception as exc:
         db.rollback()
         event = db.get(DomainEvent, event.id)
         if event:
-            event_bus.fail_consumer(db, event, consumer, str(exc))
+            for consumer in consumers:
+                event_bus.fail_consumer(db, event, consumer, str(exc))
             event_bus.fail(event, str(exc))
             db.commit()
         raise

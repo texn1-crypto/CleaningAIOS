@@ -10,12 +10,15 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import ApprovalRequest, AuditLog, RoleBinding
+from .models import ApprovalRequest, AuditLog, OwnerNotification, RoleBinding
 from .security import ROLE_ORDER
 
 
 CALLBACK_RE = re.compile(
     r"^tc1\.([0-9a-z]+)\.([0-9a-z]+)\.([arc])\.([0-9a-z]+)\.([A-Za-z0-9_-]{16})$"
+)
+ALERT_CALLBACK_RE = re.compile(
+    r"^ta1\.([0-9a-z]+)\.([0-9a-z]+)\.([A-Za-z0-9_-]{16})$"
 )
 ACTION_CODE = {"approve": "a", "reject": "r", "request_changes": "c"}
 CODE_ACTION = {value: key for key, value in ACTION_CODE.items()}
@@ -218,6 +221,48 @@ def parse_callback_token(
         "approval_id": int(approval_raw, 36),
         "decision_version": int(version_raw, 36),
         "action": CODE_ACTION[action_code],
+        "expires_epoch": expires_epoch,
+    }
+
+
+def issue_alert_ack_token(
+    notification: OwnerNotification,
+    *,
+    now: datetime | None = None,
+) -> str:
+    if not notification.id:
+        raise ValueError("Persist the notification before creating a callback")
+    current = now or now_utc()
+    expires_epoch = int(
+        (current + timedelta(days=30)).replace(tzinfo=timezone.utc).timestamp()
+    )
+    body = ".".join(
+        ("ta1", _base36(notification.id), _base36(expires_epoch))
+    )
+    token = f"{body}.{_signature(body)}"
+    if len(token.encode()) > 64:
+        raise RuntimeError("Telegram alert callback token exceeds 64 bytes")
+    return token
+
+
+def parse_alert_ack_token(
+    token: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    match = ALERT_CALLBACK_RE.fullmatch(token or "")
+    if not match:
+        raise CallbackTokenError("Malformed alert callback")
+    notification_raw, expiry_raw, signature = match.groups()
+    body = ".".join(("ta1", notification_raw, expiry_raw))
+    if not hmac.compare_digest(signature, _signature(body)):
+        raise CallbackTokenError("Invalid alert callback signature")
+    expires_epoch = int(expiry_raw, 36)
+    current_epoch = int((now or now_utc()).replace(tzinfo=timezone.utc).timestamp())
+    if expires_epoch < current_epoch:
+        raise CallbackTokenExpired("Alert callback expired")
+    return {
+        "notification_id": int(notification_raw, 36),
         "expires_epoch": expires_epoch,
     }
 

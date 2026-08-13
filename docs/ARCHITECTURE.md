@@ -67,6 +67,15 @@ approval, action, version and expiry; the bot sends the opaque envelope back to 
 server and never trusts or interprets an approval ID from the button. Legacy numeric
 approval callbacks are rejected.
 
+Selected high/critical domain events are projected from the transactional outbox by
+the separate `critical_alerts` consumer. Each alert carries severity, recipient and
+event/correlation identifiers behind one idempotency key. The owner-notification
+worker retries transport failures with exponential backoff and moves exhausted
+delivery to `dead_letter`. High/critical Telegram alerts include a separate signed
+acknowledgement callback. Acknowledgement is an idempotent server-side record with an
+audit entry and domain event; it never performs the underlying business action.
+The notification API exposes delivery and acknowledgement metrics without secrets.
+
 Marketing invoices and paid experiments use the same financial approval class.
 Approval only records the owner's decision. Invoice state becomes
 `approved_for_manual_payment`, and experiment state becomes `approved`; neither path
@@ -116,6 +125,7 @@ decisions whose outcomes have been recorded.
 - The provider router exposes task-specific, least-privilege scopes. Public content
   may reach image/video providers; CRM personal data, banking credentials and secrets
   are forbidden. Image/video adapter gaps are reported rather than simulated.
-- Owner notifications use a durable queue with retries. Hot leads use transactional
-  SMTP without unsubscribe markup; marketing invoices use Telegram inline approval
-  buttons handled by the backward-compatible bot.
+- Owner notifications use a durable queue with retries, dead-letter state,
+  severity/correlation metadata, signed acknowledgement and delivery metrics. Hot
+  leads use transactional SMTP without unsubscribe markup; approvals use signed
+  Telegram actions handled by the backward-compatible polling bot.

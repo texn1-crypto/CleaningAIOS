@@ -64,3 +64,6 @@ is intentionally not created.
   stale/expired/forged rejection and idempotent duplicate handling.
 - Polling remains the only Telegram update transport; no unverified webhook endpoint
   was introduced.
+- Event-driven alerts: a dedicated outbox consumer creates deduplicated correlated
+  high/critical notifications; delivery has retry/backoff/dead-letter handling,
+  signed acknowledgement, audit and metrics.

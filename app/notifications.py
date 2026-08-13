@@ -13,13 +13,45 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import ApprovalRequest, InboxMessage, OwnerNotification, SenderMailbox
-from .telegram_control import approval_card
+from .models import (
+    ApprovalRequest,
+    AuditLog,
+    DomainEvent,
+    InboxMessage,
+    OwnerNotification,
+    SenderMailbox,
+)
+from .telegram_control import approval_card, issue_alert_ack_token
 
 
 log = logging.getLogger("cleaningai.notifications")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+ALERT_SEVERITY = {
+    "approval.requested": "high",
+    "task.failed": "critical",
+    "agent.incident_reported": "critical",
+    "payment.overdue": "critical",
+    "deadline.within.3.days": "high",
+    "outreach.complaint": "critical",
+}
+ALERT_SUBJECT = {
+    "approval.requested": "Требуется решение владельца",
+    "task.failed": "Критический сбой задачи",
+    "agent.incident_reported": "Инцидент агента",
+    "payment.overdue": "Просрочен платёж",
+    "deadline.within.3.days": "Приближается срок тендера",
+    "outreach.complaint": "Жалоба на рассылку",
+}
+
+
+class NotificationNotFound(LookupError):
+    pass
+
+
+class NotificationNotDelivered(RuntimeError):
+    pass
 
 
 def now_utc() -> datetime:
@@ -76,6 +108,8 @@ def queue_owner_notification(
     subject: str,
     body: str,
     data: dict[str, Any] | None = None,
+    severity: str = "normal",
+    correlation_id: str = "",
 ) -> OwnerNotification:
     existing = db.scalar(select(OwnerNotification).where(OwnerNotification.idempotency_key == idempotency_key))
     if existing:
@@ -99,11 +133,120 @@ def queue_owner_notification(
         subject=subject,
         body=body,
         data=data or {},
+        severity=severity if severity in {"normal", "high", "critical"} else "normal",
+        correlation_id=correlation_id,
         status="queued" if configured else "waiting_configuration",
     )
     db.add(row)
     db.flush()
     return row
+
+
+def queue_critical_alert_for_event(
+    db: Session,
+    event: DomainEvent,
+) -> OwnerNotification | None:
+    """Project selected outbox events into one durable Telegram alert."""
+    severity = ALERT_SEVERITY.get(event.event_type)
+    if severity is None:
+        return None
+    approval_id = None
+    if event.event_type == "approval.requested":
+        candidate = (event.payload or {}).get("approval_id")
+        if isinstance(candidate, int):
+            approval = db.get(ApprovalRequest, candidate)
+            if approval is None or approval.resource_type != "task":
+                return None
+            approval_id = approval.id
+            severity = (
+                "critical"
+                if approval.action_kind in {"financial", "legal", "contract", "hr_final", "tender_submission"}
+                else "high"
+            )
+    body = (
+        f"Событие: {event.event_type}\n"
+        f"Объект: {event.aggregate_type} #{event.aggregate_id}\n"
+        f"Correlation ID: {event.correlation_id}\n"
+        "Подтвердите получение; критическое бизнес-действие этим не выполняется."
+    )
+    data: dict[str, Any] = {
+        "event_id": event.event_id,
+        "event_type": event.event_type,
+        "severity": severity,
+        "correlation_id": event.correlation_id,
+        "acknowledgement_required": True,
+    }
+    if approval_id is not None:
+        data["approval_id"] = approval_id
+    return queue_owner_notification(
+        db,
+        idempotency_key=f"critical-event:{event.event_id}:telegram",
+        channel="telegram",
+        resource_type=event.aggregate_type,
+        resource_id=event.aggregate_id,
+        subject=f"[{severity.upper()}] {ALERT_SUBJECT[event.event_type]}",
+        body=body,
+        data=data,
+        severity=severity,
+        correlation_id=event.correlation_id,
+    )
+
+
+def acknowledge_owner_notification(
+    db: Session,
+    *,
+    notification_id: int,
+    actor: str,
+) -> dict[str, Any]:
+    row = db.scalar(
+        select(OwnerNotification)
+        .where(OwnerNotification.id == notification_id)
+        .with_for_update()
+    )
+    if row is None:
+        raise NotificationNotFound("Owner notification not found")
+    if row.acknowledged_at is not None:
+        return {
+            "id": row.id,
+            "status": row.status,
+            "acknowledged_at": row.acknowledged_at,
+            "idempotent_replay": True,
+        }
+    if row.status != "sent":
+        raise NotificationNotDelivered("Only a delivered notification can be acknowledged")
+    row.acknowledged_at = now_utc()
+    row.acknowledged_by = actor
+    db.add(
+        AuditLog(
+            actor=actor,
+            action="owner_notification.acknowledged",
+            resource_type="owner_notification",
+            resource_id=str(row.id),
+            details={
+                "severity": row.severity,
+                "correlation_id": row.correlation_id,
+            },
+        )
+    )
+    from .platform import event_bus
+
+    event_bus.publish(
+        db,
+        "owner_notification.acknowledged",
+        "owner_notification",
+        str(row.id),
+        {"severity": row.severity},
+        idempotency_key=f"owner-notification:{row.id}:acknowledged",
+        correlation_id=row.correlation_id or None,
+        actor=actor,
+    )
+    db.flush()
+    return {
+        "id": row.id,
+        "status": row.status,
+        "acknowledged_at": row.acknowledged_at,
+        "idempotent_replay": False,
+    }
 
 
 def _send_email(db: Session, row: OwnerNotification) -> None:
@@ -153,6 +296,18 @@ def _send_telegram(db: Session, row: OwnerNotification) -> None:
                 ],
             ]
         }
+    if (row.severity or "normal") in {"high", "critical"}:
+        keyboard = payload.setdefault("reply_markup", {"inline_keyboard": []})[
+            "inline_keyboard"
+        ]
+        keyboard.append(
+            [
+                {
+                    "text": "✅ Принять оповещение",
+                    "callback_data": issue_alert_ack_token(row),
+                }
+            ]
+        )
     preview_posts = row.data.get("preview_posts") if isinstance(row.data, dict) else None
     with httpx.Client(timeout=30) as client:
         if isinstance(preview_posts, list) and preview_posts:
@@ -219,7 +374,8 @@ def send_next_owner_notification(db: Session) -> bool:
     except Exception as exc:
         row.attempts += 1
         row.last_error = str(exc)
-        row.status = "failed" if row.attempts >= 5 else "retry"
+        row.status = "dead_letter" if row.attempts >= 5 else "retry"
+        row.dead_lettered_at = now if row.status == "dead_letter" else None
         row.available_at = now + timedelta(seconds=min(300, 2 ** row.attempts))
         log.warning("owner notification %s failed: %s", row.id, type(exc).__name__)
     db.commit()

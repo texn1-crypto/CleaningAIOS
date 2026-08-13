@@ -104,6 +104,12 @@ class TelegramApprovalCallback(BaseModel):
     note: str = Field(default="Решение принято в Telegram", max_length=2000)
 
 
+class TelegramAlertCallback(BaseModel):
+    user_id: int
+    chat_id: int
+    callback_token: str = Field(min_length=20, max_length=64)
+
+
 class OperatingEntityCreate(BaseModel):
     entity_type: str = Field(pattern="^(client|site|contract|employee|shift|complaint|vacancy)$")
     name: str = Field(min_length=2, max_length=255)

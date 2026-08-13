@@ -515,11 +515,16 @@ class OwnerNotification(Base):
     subject: Mapped[str] = mapped_column(String(255), default="")
     body: Mapped[str] = mapped_column(Text, default="")
     data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    severity: Mapped[str] = mapped_column(String(16), default="normal", index=True)
+    correlation_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str] = mapped_column(Text, default="")
     available_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    acknowledged_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    dead_lettered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

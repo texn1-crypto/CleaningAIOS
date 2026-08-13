@@ -1094,6 +1094,28 @@ async def confirmed_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    if q.data.startswith("ta1."):
+        try:
+            result = await api(
+                "POST",
+                "/api/telegram/control/alert-acknowledgement",
+                json={
+                    **_identity_payload(update),
+                    "callback_token": q.data,
+                },
+            )
+        except (httpx.HTTPError, RuntimeError):
+            await update.effective_message.reply_text(
+                "Оповещение не подтверждено: кнопка недействительна, устарела или доступ запрещён."
+            )
+            return
+        message = (
+            f"Оповещение #{result['id']} уже было принято ранее."
+            if result.get("idempotent_replay")
+            else f"✅ Получение оповещения #{result['id']} подтверждено."
+        )
+        await update.effective_message.reply_text(message)
+        return
     if q.data.startswith("tc1."):
         try:
             result = await api(
