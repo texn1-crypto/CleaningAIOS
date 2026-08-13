@@ -365,6 +365,10 @@ class CopywriterAgent:
     name = "copywriter"
 
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "improve_referenced_text":
+            from .text_studio import improve_referenced_text
+
+            return improve_referenced_text(payload)
         from .proposal_studio import build_professional_copy
 
         return build_professional_copy(payload)

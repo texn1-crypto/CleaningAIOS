@@ -1350,6 +1350,120 @@ def test_russian_chat_routes_business_requests_to_agents():
     assert sales["payload"]["source"] == "telegram_natural_language"
 
 
+def test_russian_chat_resolves_improve_this_from_replied_text():
+    from app.chat import understand_russian_message
+
+    missing = understand_russian_message("улучши это")
+    assert missing["kind"] == "clarification"
+    assert "Ответьте" in missing["message"]
+
+    intent = understand_russian_message(
+        "улучши это",
+        referenced_text="мы хотим предложить вам качественно и быстро убрать ваш офис",
+    )
+    assert intent["kind"] == "task"
+    assert intent["agent_type"] == "copywriter"
+    assert intent["payload"]["action"] == "improve_referenced_text"
+    assert intent["payload"]["external_send"] is False
+
+
+def test_copywriter_improves_replied_text_with_audited_draft(client):
+    from app.chat import understand_russian_message
+
+    intent = understand_russian_message(
+        "улучши это",
+        referenced_text="мы хотим предложить вам качественно и быстро убрать ваш офис",
+    )
+    analysis = client.post(
+        "/api/request-analysis",
+        json={"message": "улучши это", "intent": intent, "source_channel": "telegram"},
+    ).json()
+    assert analysis["classification"] == "supported"
+    assert analysis["improvement_id"] is None
+
+    task = client.post("/api/tasks", json={
+        "title": intent["title"],
+        "agent_type": intent["agent_type"],
+        "payload": intent["payload"],
+        "max_attempts": 1,
+    }).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    assert completed["status"] == "done"
+    assert completed["result"]["status"] == "ready"
+    assert "Предлагаем" in completed["result"]["improved_text"]
+    assert "подготовим расчёт" in completed["result"]["improved_text"]
+    assert completed["result"]["external_send"] is False
+    assert completed["result"]["owner_review_required"] is True
+    assert completed["result"]["evidence"][0]["type"] == "text_revision"
+    audit = client.get("/api/audit").json()
+    assert any(row["action"] == "task.completed" and row["resource_id"] == str(task["id"]) for row in audit)
+
+    failed = client.post("/api/tasks", json={
+        "title": "Missing reply context",
+        "agent_type": "copywriter",
+        "payload": {"action": "improve_referenced_text", "source": "api_test"},
+        "max_attempts": 1,
+    }).json()
+    failed_result = client.post(f"/api/tasks/{failed['id']}/run").json()
+    assert failed_result["status"] == "failed"
+    assert "Referenced text is required" in failed_result["result"]["error"]
+
+
+def test_telegram_improve_this_returns_real_draft(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 731, "agent_type": "copywriter", "title": "Улучшить текст"}
+        if path == "/api/tasks/731/run":
+            return {
+                "status": "done",
+                "result": {
+                    "status": "ready",
+                    "improved_text": "Предлагаем уборку по согласованному регламенту.",
+                    "changes": ["Убраны разговорные формулировки."],
+                    "external_send": False,
+                },
+            }
+        raise AssertionError(path)
+
+    class RepliedMessage:
+        text = "мы хотим предложить вам качественно и быстро убрать ваш офис"
+        caption = None
+
+    class Message:
+        text = "улучши это"
+        reply_to_message = RepliedMessage()
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+
+    assert "Обновлённый черновик" in Update.effective_message.replies[-1]
+    assert "никуда не отправлен" in Update.effective_message.replies[-1]
+    task_payload = next(kwargs["json"] for _, path, kwargs in calls if path == "/api/tasks")
+    assert task_payload["payload"]["action"] == "improve_referenced_text"
+    assert task_payload["max_attempts"] == 1
+
+
 def test_russian_chat_recognizes_proposal_client_without_command():
     from app.chat import understand_russian_message
 

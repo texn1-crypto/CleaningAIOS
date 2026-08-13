@@ -91,7 +91,7 @@ def _referenced_task_id(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def understand_russian_message(message: str) -> dict[str, Any]:
+def understand_russian_message(message: str, *, referenced_text: str = "") -> dict[str, Any]:
     """Map a Russian free-form Telegram message to a safe application intent.
 
     The parser handles common read requests locally and turns other business
@@ -109,6 +109,31 @@ def understand_russian_message(message: str) -> dict[str, Any]:
         return {"kind": "help"}
     if text in {"спасибо", "благодарю", "понял", "понятно", "хорошо", "ок", "готово"}:
         return {"kind": "acknowledgement"}
+    if re.fullmatch(r"(?:улучши|доработай|перепиши|отредактируй)(?:\s+(?:это|текст|сообщение))?", text):
+        safe_reference = redact_sensitive_text(" ".join(referenced_text.split()).strip())[:4000]
+        if not safe_reference:
+            return {
+                "kind": "clarification",
+                "message": (
+                    "Ответьте фразой «улучши это» именно на сообщение с исходным текстом. "
+                    "Тогда текстовый агент обработает его и вернёт новый черновик."
+                ),
+            }
+        return {
+            "kind": "task",
+            "title": f"Улучшить текст: {safe_reference[:220]}",
+            "agent_type": "copywriter",
+            "priority": "normal",
+            "payload": {
+                "action": "improve_referenced_text",
+                "source": "telegram_natural_language",
+                "original_message": safe_original[:4000],
+                "referenced_text": safe_reference,
+                "draft_only": True,
+                "external_send": False,
+            },
+            "protected": False,
+        }
     if (
         "отчет" in text
         and _contains(text, "проделан", "сделано", "выполнен", "работ")

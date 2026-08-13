@@ -17,7 +17,7 @@ from .llm import llm_advisor
 from .models import ImprovementRequest, Task
 
 
-READ_INTENTS = {"greeting", "acknowledgement", "help", "dashboard", "tasks", "decisions", "approvals", "records", "summary", "inbox", "improvements", "activity_report", "system_self_check", "task_eta"}
+READ_INTENTS = {"greeting", "acknowledgement", "clarification", "help", "dashboard", "tasks", "decisions", "approvals", "records", "summary", "inbox", "improvements", "activity_report", "system_self_check", "task_eta"}
 
 
 def _normalize(text: str) -> str:
@@ -74,6 +74,7 @@ def deterministic_assessment(message: str, intent: dict[str, Any]) -> dict[str, 
 
     if intent.get("payload", {}).get("action") in {
         "generate_proposal",
+        "improve_referenced_text",
         "revise_proposal",
         "prepare_social_account_setup",
     }:

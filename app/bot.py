@@ -439,7 +439,10 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён.")
         return
-    intent = understand_russian_message(update.effective_message.text or "")
+    message = update.effective_message
+    replied = getattr(message, "reply_to_message", None)
+    referenced_text = (getattr(replied, "text", None) or getattr(replied, "caption", None) or "") if replied else ""
+    intent = understand_russian_message(message.text or "", referenced_text=referenced_text)
     kind = intent["kind"]
     try:
         try:
@@ -455,6 +458,8 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text("Здравствуйте! Напишите обычным русским текстом, что нужно сделать или показать.")
         elif kind == "acknowledgement":
             await update.effective_message.reply_text("Хорошо. Я готов к следующему запросу.")
+        elif kind == "clarification":
+            await update.effective_message.reply_text(intent["message"])
         elif kind == "help":
             await update.effective_message.reply_text(
                 "Пишите без команд, например:\n"
@@ -497,11 +502,25 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "priority": intent["priority"],
                 "payload": intent["payload"],
                 "max_attempts": 1
-                if intent["payload"].get("action") in {"generate_proposal", "prepare_social_account_setup"}
+                if intent["payload"].get("action") in {"generate_proposal", "improve_referenced_text", "prepare_social_account_setup"}
                 else 3,
             })
             protection = " Критическое действие будет остановлено до вашего подтверждения." if intent["protected"] else ""
-            if intent["payload"].get("action") == "generate_proposal":
+            if intent["payload"].get("action") == "improve_referenced_text":
+                completed = await api("POST", f"/api/tasks/{data['id']}/run")
+                result = completed.get("result") or {}
+                if completed.get("status") == "done" and result.get("status") == "ready":
+                    changes = "\n".join(f"• {item}" for item in result.get("changes", []))
+                    await update.effective_message.reply_text(
+                        f"Обновлённый черновик:\n\n{result['improved_text']}\n\nЧто изменено:\n{changes}\n\n"
+                        "Текст никуда не отправлен — проверьте его перед использованием."
+                    )
+                else:
+                    await update.effective_message.reply_text(
+                        f"Не удалось улучшить текст: {result.get('error') or result.get('reason') or completed.get('status', 'неизвестная ошибка')}. "
+                        "Ошибка сохранена в задаче и audit log."
+                    )
+            elif intent["payload"].get("action") == "generate_proposal":
                 completed = await api("POST", f"/api/tasks/{data['id']}/run")
                 result = completed.get("result") or {}
                 if completed.get("status") == "done" and result.get("download_url"):
