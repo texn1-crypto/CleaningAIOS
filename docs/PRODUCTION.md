@@ -97,6 +97,14 @@ Set `UNSUBSCRIBE_SECRET` to a separate random value to sign unsubscribe links. I
 is omitted, `API_KEY` is used as the signing secret. Changing the effective secret
 invalidates links that have already been sent.
 
+`OUTREACH_PER_DAY` limits messages in one local delivery window rather than a
+rolling 24-hour period. `OUTREACH_TIMEZONE=Europe/Moscow` and
+`OUTREACH_DAILY_START_HOUR=9` open a fresh window at 09:00 Moscow time; before that
+hour delivery remains paused. After every accepted SMTP message the worker queues a
+deduplicated Telegram progress update such as `1/50`, plus the cumulative progress
+for the approved recipient file. Suppression, unsubscribe, consent and exact owner
+approval checks remain mandatory.
+
 Set `LLM_API_KEY` for OpenAI and/or `ANTHROPIC_API_KEY` for Claude. The default
 `LLM_PROVIDER=auto` assigns aggregate CEO/business synthesis to Claude, request and
 product capability analysis to OpenAI, and falls back to the other configured

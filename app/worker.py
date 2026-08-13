@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 import base64
@@ -8,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import case, func, select
 
@@ -16,7 +19,7 @@ from .db import SessionLocal
 from .orchestrator import run_next
 from .models import OutboundMessage, SenderMailbox, Suppression
 from .platform import process_next_event
-from .notifications import send_next_owner_notification
+from .notifications import queue_owner_notification, send_next_owner_notification
 from .inbound_mail import collect_inbound_replies
 from .security import unsubscribe_token
 
@@ -24,10 +27,106 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("cleaningai.worker")
 
 
-def send_next_email(db) -> bool:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    sent_minute = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.sent_at >= now - timedelta(minutes=1))) or 0
-    sent_day = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.sent_at >= now - timedelta(days=1))) or 0
+def outreach_delivery_window(now: datetime) -> tuple[datetime | None, datetime]:
+    """Return the current 09:00-local delivery window and its next start.
+
+    Email delivery is closed before the configured local start hour.  After the
+    hour it stays open until local midnight; the next window always begins at
+    the configured hour on the following local calendar day.
+    """
+    if not 0 <= settings.outreach_daily_start_hour <= 23:
+        raise ValueError("OUTREACH_DAILY_START_HOUR must be between 0 and 23")
+    local_zone = ZoneInfo(settings.outreach_timezone)
+    aware_utc = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+    local_now = aware_utc.astimezone(local_zone)
+    today_start = local_now.replace(
+        hour=settings.outreach_daily_start_hour,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    if local_now < today_start:
+        return None, today_start.astimezone(timezone.utc).replace(tzinfo=None)
+    tomorrow_start = today_start + timedelta(days=1)
+    return (
+        today_start.astimezone(timezone.utc).replace(tzinfo=None),
+        tomorrow_start.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
+def _queue_outreach_progress(
+    db,
+    row: OutboundMessage,
+    *,
+    window_start: datetime,
+    next_window_start: datetime,
+) -> None:
+    daily_sent = int(
+        db.scalar(
+            select(func.count(OutboundMessage.id)).where(
+                OutboundMessage.sent_at >= window_start,
+                OutboundMessage.sent_at <= row.sent_at,
+            )
+        )
+        or 0
+    )
+    campaign_sent = int(
+        db.scalar(
+            select(func.count(OutboundMessage.id)).where(
+                OutboundMessage.campaign_key == row.campaign_key,
+                OutboundMessage.status == "sent",
+            )
+        )
+        or 0
+    )
+    campaign_total = int(
+        db.scalar(
+            select(func.count(OutboundMessage.id)).where(
+                OutboundMessage.campaign_key == row.campaign_key,
+            )
+        )
+        or 0
+    )
+    local_zone = ZoneInfo(settings.outreach_timezone)
+    next_local = next_window_start.replace(tzinfo=timezone.utc).astimezone(local_zone)
+    lines = [
+        f"Сегодня: {daily_sent}/{settings.outreach_per_day}",
+        f"Всего по файлу: {campaign_sent}/{campaign_total}",
+    ]
+    if campaign_sent >= campaign_total:
+        lines.append("Рассылка по файлу завершена.")
+    elif daily_sent >= settings.outreach_per_day:
+        lines.append(f"Следующая партия: {next_local:%d.%m.%Y %H:%M} ({settings.outreach_timezone}).")
+    else:
+        lines.append("Следующее допустимое письмо будет отправлено автоматически.")
+    queue_owner_notification(
+        db,
+        idempotency_key=f"outreach-progress:{row.id}:telegram",
+        channel="telegram",
+        resource_type="outreach_campaign",
+        resource_id=row.campaign_key,
+        subject=f"📨 Рассылка: {daily_sent}/{settings.outreach_per_day}",
+        body="\n".join(lines),
+        data={
+            "campaign_key": row.campaign_key,
+            "outbound_message_id": row.id,
+            "daily_sent": daily_sent,
+            "daily_limit": settings.outreach_per_day,
+            "campaign_sent": campaign_sent,
+            "campaign_total": campaign_total,
+            "next_window_start": next_window_start.isoformat(),
+        },
+        correlation_id=f"campaign:{row.campaign_key}",
+    )
+
+
+def send_next_email(db, *, now: datetime | None = None) -> bool:
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    window_start, next_window_start = outreach_delivery_window(now)
+    if window_start is None:
+        return False
+    sent_minute = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.sent_at >= now - timedelta(minutes=1), OutboundMessage.sent_at <= now)) or 0
+    sent_day = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.sent_at >= window_start, OutboundMessage.sent_at <= now)) or 0
     if sent_minute >= settings.outreach_per_minute or sent_day >= settings.outreach_per_day:
         return False
     candidates = db.scalars(
@@ -54,8 +153,8 @@ def send_next_email(db) -> bool:
             candidate.error = "SMTP credentials are not configured"
             continue
         if candidate_mailbox and candidate_mailbox.active:
-            mailbox_minute = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.mailbox_id == candidate_mailbox.id, OutboundMessage.sent_at >= now - timedelta(minutes=1))) or 0
-            mailbox_day = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.mailbox_id == candidate_mailbox.id, OutboundMessage.sent_at >= now - timedelta(days=1))) or 0
+            mailbox_minute = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.mailbox_id == candidate_mailbox.id, OutboundMessage.sent_at >= now - timedelta(minutes=1), OutboundMessage.sent_at <= now)) or 0
+            mailbox_day = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.mailbox_id == candidate_mailbox.id, OutboundMessage.sent_at >= window_start, OutboundMessage.sent_at <= now)) or 0
             if mailbox_minute >= candidate_mailbox.per_minute or mailbox_day >= candidate_mailbox.per_day:
                 continue
         row = candidate
@@ -107,6 +206,13 @@ def send_next_email(db) -> bool:
             smtp.login(smtp_username, smtp_password); smtp.send_message(message)
         row.status = "sent"; row.sent_at = now
         if mailbox: mailbox.sent_today += 1; mailbox.last_sent_at = now
+        db.flush()
+        _queue_outreach_progress(
+            db,
+            row,
+            window_start=window_start,
+            next_window_start=next_window_start,
+        )
     except Exception as exc:
         row.status = "failed"; row.error = str(exc)
         log.exception("email delivery failed for message %s", row.id)

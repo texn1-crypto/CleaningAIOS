@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     unsubscribe_secret: str = ""
     outreach_per_minute: int = 10
     outreach_per_day: int = 100
+    outreach_timezone: str = "Europe/Moscow"
+    outreach_daily_start_hour: int = 9
     inbound_mail_poll_seconds: int = 60
     llm_api_key: str = ""
     llm_base_url: str = "https://api.openai.com/v1"

@@ -753,6 +753,138 @@ def test_worker_supports_smtp_implicit_tls_on_port_465(client, monkeypatch):
     assert len(sent) == 1
 
 
+def test_outreach_delivery_window_opens_at_nine_moscow(monkeypatch):
+    from datetime import datetime
+
+    from app import worker
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "outreach_timezone", "Europe/Moscow")
+    monkeypatch.setattr(settings, "outreach_daily_start_hour", 9)
+
+    before_start, next_start = worker.outreach_delivery_window(datetime(2026, 8, 13, 5, 59))
+    assert before_start is None
+    assert next_start == datetime(2026, 8, 13, 6, 0)
+
+    window_start, next_start = worker.outreach_delivery_window(datetime(2026, 8, 13, 6, 0))
+    assert window_start == datetime(2026, 8, 13, 6, 0)
+    assert next_start == datetime(2026, 8, 14, 6, 0)
+
+    overnight_start, next_start = worker.outreach_delivery_window(datetime(2026, 8, 13, 22, 0))
+    assert overnight_start is None
+    assert next_start == datetime(2026, 8, 14, 6, 0)
+
+
+def test_worker_reports_each_daily_delivery_and_stops_at_limit(client, monkeypatch):
+    from datetime import datetime
+
+    from sqlalchemy import select, update
+
+    from app import notifications, worker
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import OutboundMessage, OwnerNotification
+
+    sent = []
+    telegram = []
+
+    class SMTP:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def starttls(self): return None
+        def login(self, username, password): return None
+        def send_message(self, message): sent.append(message["To"])
+
+    class TelegramResponse:
+        def raise_for_status(self): return None
+
+    class TelegramClient:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, url, json):
+            telegram.append(json["text"])
+            return TelegramResponse()
+
+    monkeypatch.setattr(worker.smtplib, "SMTP", SMTP)
+    monkeypatch.setattr(notifications.httpx, "Client", TelegramClient)
+    for field, value in {
+        "smtp_host": "smtp.example",
+        "smtp_port": 587,
+        "smtp_username": "sender@example.com",
+        "smtp_password": "secret",
+        "smtp_from_email": "sender@example.com",
+        "owner_telegram_id": "999",
+        "telegram_bot_token": "123456:test-token",
+        "outreach_timezone": "Europe/Moscow",
+        "outreach_daily_start_hour": 9,
+        "outreach_per_minute": 10,
+        "outreach_per_day": 2,
+    }.items():
+        monkeypatch.setattr(settings, field, value)
+
+    now = datetime(2026, 8, 13, 6, 0)
+    campaign_key = "daily-progress-test"
+    with SessionLocal() as db:
+        db.execute(update(OutboundMessage).values(status="sent", sent_at=None))
+        db.add_all([
+            OutboundMessage(
+                campaign_key=campaign_key,
+                recipient=f"daily-{index}@example.com",
+                subject="Daily progress",
+                body="Body",
+                status="queued",
+                scheduled_at=now,
+            )
+            for index in range(1, 4)
+        ])
+        db.commit()
+
+        assert worker.send_next_email(db, now=now) is True
+        assert worker.send_next_email(db, now=now) is True
+        assert worker.send_next_email(db, now=now) is False
+
+        progress = db.scalars(
+            select(OwnerNotification)
+            .where(OwnerNotification.resource_id == campaign_key)
+            .order_by(OwnerNotification.id)
+        ).all()
+        assert [row.subject for row in progress] == [
+            "📨 Рассылка: 1/2",
+            "📨 Рассылка: 2/2",
+        ]
+        assert "Всего по файлу: 1/3" in progress[0].body
+        assert "Всего по файлу: 2/3" in progress[1].body
+        assert "14.08.2026 09:00" in progress[1].body
+        assert len({row.idempotency_key for row in progress}) == 2
+        db.execute(
+            update(OwnerNotification)
+            .where(OwnerNotification.resource_id != campaign_key)
+            .values(status="sent")
+        )
+        db.commit()
+        assert notifications.send_next_owner_notification(db) is True
+        assert notifications.send_next_owner_notification(db) is True
+        assert telegram[0].startswith("📨 Рассылка: 1/2")
+        assert telegram[1].startswith("📨 Рассылка: 2/2")
+        remaining = db.scalar(
+            select(OutboundMessage.status).where(
+                OutboundMessage.campaign_key == campaign_key,
+                OutboundMessage.recipient == "daily-3@example.com",
+            )
+        )
+        assert remaining == "queued"
+        db.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.campaign_key == campaign_key)
+            .values(status="sent", sent_at=None)
+        )
+        db.commit()
+
+    assert sent == ["daily-1@example.com", "daily-2@example.com"]
+
+
 def test_outreach_suppression_and_deduplication(client):
     assert client.post("/api/outreach/suppress", json={"address": "stop@example.com"}).status_code == 201
     blocked = client.post("/api/outreach/messages", json={"campaign_key": "c1", "recipient": "stop@example.com", "subject": "Hi", "body": "Body"})
@@ -3840,7 +3972,7 @@ def test_worker_skips_rate_limited_mailbox_without_starving_pool(monkeypatch):
     from app import worker
     from app.db import SessionLocal
     from app.models import OutboundMessage, SenderMailbox
-    from sqlalchemy import select
+    from sqlalchemy import select, update
 
     sent = []
 
@@ -3857,6 +3989,11 @@ def test_worker_skips_rate_limited_mailbox_without_starving_pool(monkeypatch):
     monkeypatch.setenv("SMTP_AVAILABLE_TEST", "secret-b")
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with SessionLocal() as db:
+        db.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.status.in_(["queued", "waiting_configuration", "retry"]))
+            .values(status="sent", sent_at=None)
+        )
         limited = SenderMailbox(name="Limited", address="limited@example.com", smtp_host="smtp.example.com", username="limited@example.com", secret_ref="SMTP_LIMITED_TEST", per_minute=100, per_day=1)
         available = SenderMailbox(name="Available", address="available@example.com", smtp_host="smtp.example.com", username="available@example.com", secret_ref="SMTP_AVAILABLE_TEST", per_minute=100, per_day=10)
         db.add_all([limited, available]); db.flush()
