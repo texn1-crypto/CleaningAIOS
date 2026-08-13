@@ -10,6 +10,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .chat import redact_sensitive_text
 from .config import settings
 from .models import ApprovalRequest, ContentItem, MediaAsset
 from .orchestrator import audit
@@ -220,6 +221,23 @@ def _verified_asset_bytes(asset: MediaAsset) -> bytes:
     return raw
 
 
+def _safe_provider_failure(exc: Exception) -> dict:
+    details = {"error_type": type(exc).__name__}
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code is not None:
+        details["provider_status_code"] = int(status_code)
+    if response is not None:
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            payload = {}
+        description = payload.get("description") if isinstance(payload, dict) else None
+        if isinstance(description, str) and description:
+            details["provider_error"] = redact_sensitive_text(description)[:300]
+    return details
+
+
 def _vk_call(client: httpx.Client, method: str, data: dict) -> dict:
     response = client.post(
         f"https://api.vk.com/method/{method}",
@@ -311,18 +329,20 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
         db.commit()
         return True
 
-    image_url = urljoin(settings.public_base_url.rstrip("/") + "/", asset.public_url.lstrip("/"))
     try:
         if item.channel == "telegram":
             endpoint = _https_endpoint("https://api.telegram.org", f"/bot{settings.telegram_bot_token}/sendPhoto")
+            raw = _verified_asset_bytes(asset)
+            extension = _image_extension(raw)
+            content_type = "image/png" if extension == "png" else "image/jpeg"
             with httpx.Client(timeout=30) as client:
                 response = client.post(
                     endpoint,
-                    json={
+                    data={
                         "chat_id": settings.telegram_social_chat_id,
-                        "photo": image_url,
                         "caption": _telegram_caption(item),
                     },
+                    files={"photo": (f"social.{extension}", raw, content_type)},
                 )
                 response.raise_for_status()
             payload = response.json()
@@ -357,6 +377,10 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
     except (httpx.HTTPError, KeyError, OSError, TypeError, ValueError) as exc:
         status_code = getattr(getattr(exc, "response", None), "status_code", None)
         item.status = "credentials_required" if status_code in {401, 403} else "publication_failed"
-        item.metrics = {**(item.metrics or {}), "publication_status": item.status, "error_type": type(exc).__name__}
+        item.metrics = {
+            **(item.metrics or {}),
+            "publication_status": item.status,
+            **_safe_provider_failure(exc),
+        }
     db.commit()
     return True

@@ -5,6 +5,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from sqlalchemy import update
 
 from app.config import settings
@@ -12,7 +13,7 @@ from app.db import SessionLocal
 from app.models import ApprovalRequest, BusinessRecord, ContentItem, MediaAsset, OwnerNotification
 from app.social_marketing import prepare_daily_cleaning_news_plan
 from app.social_news import CleaningNewsItem, parse_cleaning_news_feed
-from app.social_runtime import generate_next_social_visual, publish_next_social_post
+from app.social_runtime import _safe_provider_failure, generate_next_social_visual, publish_next_social_post
 
 
 def test_cleaning_news_feed_keeps_only_fresh_relevant_https_items(monkeypatch):
@@ -133,8 +134,12 @@ def test_image_agent_consumes_legacy_imagegen_job(client, monkeypatch, tmp_path)
         assert client.get(asset.public_url).status_code == 200
 
 
-def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeypatch):
+def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeypatch, tmp_path):
     calls = []
+    raw = b"\x89PNG\r\n\x1a\n" + b"telegram-publisher-image"
+    digest = hashlib.sha256(raw).hexdigest()
+    image_path = tmp_path / "telegram.png"
+    image_path.write_bytes(raw)
 
     class Response:
         def raise_for_status(self): return None
@@ -150,12 +155,21 @@ def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeyp
     monkeypatch.setattr(settings, "telegram_bot_token", "test-token")
     monkeypatch.setattr(settings, "telegram_social_chat_id", "@cleaning_channel")
     monkeypatch.setattr(settings, "public_base_url", "https://cleaning.example")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
     with SessionLocal() as db:
         batch = BusinessRecord(record_type="social_content_batch", external_id="publisher-test-2042", title="Publisher", status="scheduled", data={})
         db.add(batch); db.flush()
         approval = ApprovalRequest(action_kind="social_publication", resource_type="social_content_batch", resource_id=str(batch.id), status="approved")
         db.add(approval); db.flush()
-        asset = MediaAsset(kind="image", title="Approved image", provider="openai_images", public_url="/api/public/social-media/fake.png", status="ready", metadata_json={"sha256": "a" * 64})
+        asset = MediaAsset(
+            kind="image",
+            title="Approved image",
+            provider="openai_images",
+            public_url="/api/public/social-media/fake.png",
+            storage_path=str(image_path),
+            status="ready",
+            metadata_json={"sha256": digest},
+        )
         db.add(asset); db.flush()
         item = ContentItem(
             channel="telegram", title="News", body="Verified news text\n\nhttps://source.example/item", status="scheduled",
@@ -167,9 +181,25 @@ def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeyp
         assert item.status == "published"
         assert item.metrics["external_post_id"] == "812"
         assert len(calls) == 1
-        assert calls[0][1]["json"]["caption"] == item.body
-        assert calls[0][1]["json"]["photo"] == "https://cleaning.example/api/public/social-media/fake.png"
+        assert calls[0][1]["data"]["caption"] == item.body
+        assert calls[0][1]["files"]["photo"] == ("social.png", raw, "image/png")
+        assert "json" not in calls[0][1]
         db.refresh(db.get(ContentItem, item_id))
+
+
+def test_social_publisher_records_safe_provider_failure_details():
+    secret = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd"
+    response = httpx.Response(
+        400,
+        request=httpx.Request("POST", "https://api.telegram.org/redacted/sendPhoto"),
+        json={"description": f"Bad Request: token={secret}"},
+    )
+    exc = httpx.HTTPStatusError("provider rejected request", request=response.request, response=response)
+    details = _safe_provider_failure(exc)
+    assert details["provider_status_code"] == 400
+    assert details["error_type"] == "HTTPStatusError"
+    assert secret not in details["provider_error"]
+    assert "[REDACTED]" in details["provider_error"]
 
 
 def test_vk_publisher_uses_official_upload_and_wall_apis_after_approval(client, monkeypatch, tmp_path):
