@@ -1744,7 +1744,7 @@ def test_russian_chat_protected_task_is_blocked_by_runtime(client):
 
 
 def test_telegram_application_registers_natural_language_handler(monkeypatch):
-    from telegram.ext import MessageHandler
+    from telegram.ext import CommandHandler, MessageHandler
     from app.config import settings
     from app.bot import build_application
 
@@ -1753,6 +1753,91 @@ def test_telegram_application_registers_natural_language_handler(monkeypatch):
     application = build_application()
     handlers = [handler for group in application.handlers.values() for handler in group]
     assert any(isinstance(handler, MessageHandler) for handler in handlers)
+    assert any(isinstance(handler, CommandHandler) and "outreach" in handler.commands for handler in handlers)
+
+
+def test_outreach_summary_is_owner_safe_and_manager_guarded(client):
+    address = "bot-outreach-summary@example.com"
+    assert client.put("/api/outreach/consents", json={
+        "address": address,
+        "source_url": "https://consent.example.test/bot-panel",
+        "evidence": "Documented opt-in for the Telegram outreach panel",
+    }).status_code == 200
+    assert client.post("/api/outreach/messages", json={
+        "campaign_key": "bot-outreach-panel-test",
+        "recipient": address,
+        "subject": "Панель рассылок",
+        "body": "Тестовый черновик",
+    }).status_code == 201
+
+    response = client.get("/api/outreach/summary", headers={"X-Role": "manager"})
+    assert response.status_code == 200
+    summary = response.json()
+    assert summary["consents"]["verified"] >= 1
+    assert summary["messages"]["statuses"]["queued"] >= 1
+    assert summary["safety"] == {
+        "verified_consent_required": True,
+        "owner_approval_required": True,
+        "suppression_enforced": True,
+    }
+    campaign = next(row for row in summary["campaigns"]["recent"] if row["campaign_key"] == "bot-outreach-panel-test")
+    assert campaign["message_count"] == 1
+    assert "recipient" not in campaign
+    assert client.get("/api/outreach/summary", headers={"X-Role": "viewer"}).status_code == 403
+
+
+def test_telegram_outreach_panel_is_read_only_and_actionable(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {
+            "delivery_ready": True,
+            "mailboxes": {"total": 2, "active": 2, "ready": 2},
+            "consents": {"verified": 12, "revoked": 1},
+            "suppressed": 3,
+            "pending_approvals": 1,
+            "messages": {"total": 9, "statuses": {"queued": 4, "sent": 5}},
+            "campaigns": {"total": 1, "recent": []},
+            "limits": {"per_minute": 10, "per_day": 100},
+        }
+
+    class Message:
+        replies = []
+        async def reply_text(self, value, **kwargs): self.replies.append((value, kwargs))
+
+    class Update:
+        effective_message = Message()
+
+    monkeypatch.setattr(bot, "api", fake_api)
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    asyncio.run(bot.outreach_dashboard(Update(), None))
+    assert calls == [("GET", "/api/outreach/summary", {})]
+    text, kwargs = Update.effective_message.replies[0]
+    assert "Подтверждённые согласия: 12" in text
+    assert "Ожидают approval: 1" in text
+    callbacks = {
+        button.callback_data
+        for row in kwargs["reply_markup"].inline_keyboard
+        for button in row
+    }
+    assert callbacks == {"outreach", "outreach:campaigns", "outreach:help"}
+
+    monkeypatch.setattr(bot, "allowed", lambda update: False)
+    Update.effective_message.replies.clear()
+    calls.clear()
+    asyncio.run(bot.outreach_dashboard(Update(), None))
+    assert calls == []
+    assert Update.effective_message.replies[0][0] == "Доступ не разрешён."
+
+
+def test_russian_chat_opens_outreach_panel_without_creating_a_task():
+    from app.chat import understand_russian_message
+
+    assert understand_russian_message("Покажи рассылки") == {"kind": "outreach"}
+    assert understand_russian_message("Рассылки") == {"kind": "outreach"}
 
 
 def test_compose_telegram_route_is_configurable_without_a_secret():

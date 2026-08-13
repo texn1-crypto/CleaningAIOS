@@ -209,6 +209,10 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
         return {"kind": "dashboard"}
     if not action_words and read_words and _contains(text, "входящ", "inbox", "сообщени"):
         return {"kind": "inbox"}
+    if not action_words and _contains(text, "рассыл", "email-кампан", "email кампан") and (
+        read_words or text in {"рассылки", "рассылка", "email-кампании", "email кампании"}
+    ):
+        return {"kind": "outreach"}
     if not action_words and (read_words or _contains(text, "что бот не умеет", "чего не хватает")) and _contains(text, "улучш", "не уме", "не хватает", "доработ"):
         return {"kind": "improvements"}
 

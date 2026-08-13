@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, SenderMailbox, Suppression, Task, TenderDocument
+from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, SenderMailbox, Suppression, Task, TenderDocument
 from .integrations import collect_tenders, download_tender_document
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -420,6 +420,107 @@ def delivery_log(status: Optional[str] = None, db: Session = Depends(get_db), ac
     if status: query = query.where(OutboundMessage.status == status)
     rows = db.scalars(query.limit(1000)).all()
     return [{"id": x.id, "campaign_key": x.campaign_key, "recipient": x.recipient, "mailbox_id": x.mailbox_id, "status": x.status, "scheduled_at": x.scheduled_at, "sent_at": x.sent_at, "error": x.error, "attachment_count": len(x.attachments or [])} for x in rows]
+
+
+@router.get("/outreach/summary")
+def outreach_summary(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    """Return an owner-safe operational view without exposing recipient addresses."""
+    require_role(actor, "manager")
+    mailboxes = db.scalars(select(SenderMailbox).order_by(SenderMailbox.id)).all()
+    ready_mailboxes = sum(
+        1
+        for row in mailboxes
+        if row.active
+        and row.smtp_host
+        and (row.username or row.address)
+        and row.secret_ref
+        and bool(os.environ.get(row.secret_ref))
+    )
+    default_sender_ready = bool(
+        settings.smtp_host
+        and settings.smtp_username
+        and settings.smtp_password
+        and settings.smtp_from_email
+    )
+    status_counts = {
+        str(status): int(count)
+        for status, count in db.execute(
+            select(OutboundMessage.status, func.count(OutboundMessage.id)).group_by(OutboundMessage.status)
+        ).all()
+    }
+    recent_campaign_keys = db.scalars(
+        select(OutboundMessage.campaign_key)
+        .group_by(OutboundMessage.campaign_key)
+        .order_by(func.max(OutboundMessage.id).desc())
+        .limit(5)
+    ).all()
+    campaigns: list[dict] = []
+    for campaign_key in recent_campaign_keys:
+        latest = db.scalar(
+            select(OutboundMessage)
+            .where(OutboundMessage.campaign_key == campaign_key)
+            .order_by(OutboundMessage.id.desc())
+            .limit(1)
+        )
+        campaign_statuses = {
+            str(status): int(count)
+            for status, count in db.execute(
+                select(OutboundMessage.status, func.count(OutboundMessage.id))
+                .where(OutboundMessage.campaign_key == campaign_key)
+                .group_by(OutboundMessage.status)
+            ).all()
+        }
+        campaigns.append({
+            "campaign_key": campaign_key,
+            "subject": latest.subject if latest else "",
+            "message_count": sum(campaign_statuses.values()),
+            "statuses": campaign_statuses,
+            "last_scheduled_at": latest.scheduled_at if latest else None,
+        })
+    verified_consents = db.scalar(
+        select(func.count(OutreachConsent.address)).where(
+            OutreachConsent.status == "verified",
+            OutreachConsent.purpose == "commercial_outreach",
+        )
+    ) or 0
+    revoked_consents = db.scalar(
+        select(func.count(OutreachConsent.address)).where(OutreachConsent.status == "revoked")
+    ) or 0
+    pending_approvals = db.scalar(
+        select(func.count(ApprovalRequest.id)).where(
+            ApprovalRequest.action_kind == "bulk_outreach",
+            ApprovalRequest.status == "pending",
+        )
+    ) or 0
+    return {
+        "delivery_ready": bool(default_sender_ready or ready_mailboxes),
+        "mailboxes": {
+            "total": len(mailboxes),
+            "active": sum(1 for row in mailboxes if row.active),
+            "ready": ready_mailboxes,
+            "default_sender_ready": default_sender_ready,
+        },
+        "consents": {"verified": int(verified_consents), "revoked": int(revoked_consents)},
+        "suppressed": int(db.scalar(select(func.count(Suppression.address))) or 0),
+        "messages": {
+            "total": int(sum(status_counts.values())),
+            "statuses": status_counts,
+        },
+        "campaigns": {
+            "total": int(db.scalar(select(func.count(func.distinct(OutboundMessage.campaign_key)))) or 0),
+            "recent": campaigns,
+        },
+        "pending_approvals": int(pending_approvals),
+        "limits": {
+            "per_minute": settings.outreach_per_minute,
+            "per_day": settings.outreach_per_day,
+        },
+        "safety": {
+            "verified_consent_required": True,
+            "owner_approval_required": True,
+            "suppression_enforced": True,
+        },
+    }
 
 
 @router.post("/outreach/delivery-events", status_code=201)

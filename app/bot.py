@@ -256,6 +256,89 @@ async def approvals(update: Update, _: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(f"🔐 #{row['id']} · {row['action_kind']}\n{row['resource_type']} #{row['resource_id']}\n{row['rationale']}", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
+def format_outreach_summary(data: dict) -> str:
+    messages = data.get("messages") or {}
+    statuses = messages.get("statuses") or {}
+    mailboxes = data.get("mailboxes") or {}
+    consents = data.get("consents") or {}
+    limits = data.get("limits") or {}
+    ready = "готова к отправке" if data.get("delivery_ready") else "нужна настройка SMTP"
+    return (
+        "📣 Сервис рассылок\n"
+        f"Система: {ready}\n"
+        f"Почтовые ящики: {mailboxes.get('ready', 0)} готовы из {mailboxes.get('active', 0)} активных\n"
+        f"Подтверждённые согласия: {consents.get('verified', 0)}\n"
+        f"Suppression / отписки: {data.get('suppressed', 0)}\n"
+        f"Ожидают approval: {data.get('pending_approvals', 0)}\n"
+        f"Очередь: {statuses.get('queued', 0)} · ждут настройки: {statuses.get('waiting_configuration', 0)}\n"
+        f"Отправлено: {statuses.get('sent', 0)} · ошибки: {statuses.get('failed', 0)}\n"
+        f"Лимиты: {limits.get('per_minute', 0)}/мин, {limits.get('per_day', 0)}/день\n\n"
+        "Рассылка запускается только по адресам с зафиксированным согласием и после отдельного подтверждения владельца."
+    )
+
+
+def format_outreach_campaigns(data: dict) -> str:
+    recent = ((data.get("campaigns") or {}).get("recent") or [])
+    if not recent:
+        return "📣 Кампаний пока нет. Ни одно письмо не отправлялось."
+    status_labels = {
+        "queued": "в очереди",
+        "waiting_configuration": "ждут настройки",
+        "sent": "отправлено",
+        "delivered": "доставлено",
+        "bounced": "отклонено",
+        "complained": "жалобы",
+        "unsubscribed": "отписки",
+        "failed": "ошибки",
+        "retry": "повтор",
+    }
+    lines = ["📨 Последние кампании"]
+    for campaign in recent:
+        counts = ", ".join(
+            f"{status_labels.get(status, status)}: {count}"
+            for status, count in (campaign.get("statuses") or {}).items()
+        )
+        lines.append(
+            f"• {campaign.get('subject') or campaign.get('campaign_key')}\n"
+            f"  {campaign.get('message_count', 0)} писем · {counts or 'нет сообщений'}"
+        )
+    return "\n".join(lines)
+
+
+async def outreach_dashboard(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        await update.effective_message.reply_text("Доступ не разрешён.")
+        return
+    data = await api("GET", "/api/outreach/summary")
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 Обновить", callback_data="outreach"),
+            InlineKeyboardButton("📨 Кампании", callback_data="outreach:campaigns"),
+        ],
+        [InlineKeyboardButton("➕ Как создать рассылку", callback_data="outreach:help")],
+    ])
+    await update.effective_message.reply_text(format_outreach_summary(data), reply_markup=keyboard)
+
+
+async def outreach_campaigns(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    data = await api("GET", "/api/outreach/summary")
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("← К панели", callback_data="outreach")]])
+    await update.effective_message.reply_text(format_outreach_campaigns(data), reply_markup=keyboard)
+
+
+async def outreach_help(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("← К панели", callback_data="outreach")]])
+    await update.effective_message.reply_text(
+        "➕ Новая рассылка\n\n"
+        "1. Пришлите боту PDF, DOC/DOCX, XLS/XLSX или ODT.\n"
+        "2. Подпишите файл: «Разошли по базе УК».\n"
+        "3. Бот покажет тему, текст и точное число адресов с подтверждённым согласием.\n"
+        "4. Проверьте черновик и нажмите «Одобрить рассылку».\n\n"
+        "До подтверждения письма не ставятся в очередь. Отписки, suppression, дедупликация и лимиты применяются автоматически.",
+        reply_markup=keyboard,
+    )
+
+
 async def improvement_queue(update: Update, _: ContextTypes.DEFAULT_TYPE):
     rows = await api("GET", "/api/improvements?status=queued")
     if not rows:
@@ -489,6 +572,8 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rows = await api("GET", "/api/inbox")
             text = "📥 Входящие:\n" + "\n".join(f"#{x['id']} [{x['channel']}] {x['subject'] or x['sender']} — {x['status']}" for x in rows[:20]) if rows else "Входящих сообщений пока нет."
             await update.effective_message.reply_text(text)
+        elif kind == "outreach":
+            await outreach_dashboard(update, context)
         elif kind == "improvements":
             await improvement_queue(update, context)
         elif kind == "activity_report":
@@ -614,7 +699,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(f"Задача #{data['id']} поставлена агенту {q.data}.")
     elif q.data == "agents": await dashboard(update, context)
     elif q.data == "improvements": await improvement_queue(update, context)
-    elif q.data == "outreach": await update.effective_message.reply_text("📣 Рассылки управляются через /docs. Отправка требует настроенного SMTP и owner approval для bulk-кампаний.")
+    elif q.data == "outreach": await outreach_dashboard(update, context)
+    elif q.data == "outreach:campaigns": await outreach_campaigns(update, context)
+    elif q.data == "outreach:help": await outreach_help(update, context)
 
 
 def build_application() -> Application:
@@ -629,7 +716,7 @@ def build_application() -> Application:
         local_base = settings.telegram_bot_api_base_url.rstrip("/")
         builder = builder.base_url(f"{local_base}/bot").base_file_url(f"{local_base}/file/bot").local_mode(True)
     application = builder.build()
-    for command, handler in [("start", start), ("dashboard", dashboard), ("tasks", tasks), ("decisions", decisions), ("addtask", addtask)]: application.add_handler(CommandHandler(command, handler))
+    for command, handler in [("start", start), ("dashboard", dashboard), ("tasks", tasks), ("decisions", decisions), ("outreach", outreach_dashboard), ("addtask", addtask)]: application.add_handler(CommandHandler(command, handler))
     application.add_handler(CallbackQueryHandler(callback))
     application.add_handler(MessageHandler(filters.Document.ALL, proposal_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, natural_language))
