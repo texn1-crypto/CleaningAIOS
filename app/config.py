@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     operator_api_key: str = ""
     viewer_api_key: str = ""
     owner_telegram_id: str = ""
+    owner_telegram_chat_id: str = ""
     telegram_bot_token: str = ""
     telegram_bot_api_base_url: str = ""
     telegram_cloud_download_limit_bytes: int = 20_000_000

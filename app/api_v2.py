@@ -25,6 +25,24 @@ from .platform import approval_engine, event_bus
 from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
 from .security import Principal, principal, require_role
 from .chat import redact_sensitive_text
+from .approval_service import (
+    ApprovalConflict,
+    ApprovalError,
+    ApprovalExpired,
+    ApprovalNotFound,
+    ApprovalStale,
+    decide_approval,
+)
+from .telegram_control import (
+    CallbackTokenError,
+    CallbackTokenExpired,
+    approval_card,
+    audit_subject,
+    authorize_identity,
+    bind_identity,
+    parse_callback_token,
+)
+from .schemas import TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest
 
 router = APIRouter(prefix="/api")
 
@@ -35,6 +53,157 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+@router.post("/telegram/control/authorize")
+def authorize_telegram_control(
+    payload: TelegramIdentityRequest,
+    db: Session = Depends(get_db),
+    channel: Principal = Depends(principal),
+):
+    require_role(channel, "owner")
+    identity, reason = authorize_identity(
+        db,
+        user_id=payload.user_id,
+        chat_id=payload.chat_id,
+        minimum_role=payload.minimum_role,
+    )
+    db.commit()
+    return {
+        "authorized": identity is not None,
+        "role": identity.role if identity else None,
+        "subject": identity.subject if identity else None,
+        "reason": reason,
+    }
+
+
+@router.put("/telegram/control/identities")
+def bind_telegram_control_identity(
+    payload: TelegramIdentityBind,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "owner")
+    binding = bind_identity(
+        db,
+        user_id=payload.user_id,
+        chat_id=payload.chat_id,
+        role=payload.role,
+    )
+    audit(
+        db,
+        actor.subject,
+        "telegram.identity_bound",
+        "role_binding",
+        audit_subject(payload.user_id, payload.chat_id),
+        {"role": binding.role},
+    )
+    db.commit()
+    return {"subject": binding.subject, "role": binding.role, "active": binding.active}
+
+
+def _require_telegram_owner(
+    db: Session,
+    payload: TelegramIdentityRequest | TelegramApprovalCallback,
+):
+    identity, reason = authorize_identity(
+        db,
+        user_id=payload.user_id,
+        chat_id=payload.chat_id,
+        minimum_role="owner",
+    )
+    if identity is None:
+        db.commit()
+        raise HTTPException(403, f"Telegram owner authorization failed: {reason}")
+    return identity
+
+
+@router.post("/telegram/control/approvals")
+def telegram_approval_cards(
+    payload: TelegramIdentityRequest,
+    db: Session = Depends(get_db),
+    channel: Principal = Depends(principal),
+):
+    require_role(channel, "owner")
+    identity = _require_telegram_owner(db, payload)
+    rows = db.scalars(
+        select(ApprovalRequest)
+        .where(ApprovalRequest.status == "pending")
+        .order_by(ApprovalRequest.id.desc())
+        .limit(20)
+    ).all()
+    return {"role": identity.role, "items": [approval_card(row) for row in rows]}
+
+
+@router.post("/telegram/control/approvals/{approval_id}/card")
+def telegram_approval_card(
+    approval_id: int,
+    payload: TelegramIdentityRequest,
+    db: Session = Depends(get_db),
+    channel: Principal = Depends(principal),
+):
+    require_role(channel, "owner")
+    _require_telegram_owner(db, payload)
+    row = db.get(ApprovalRequest, approval_id)
+    if row is None:
+        raise HTTPException(404, "Approval not found")
+    return approval_card(row)
+
+
+@router.post("/telegram/control/approval-decision")
+def telegram_approval_decision(
+    payload: TelegramApprovalCallback,
+    db: Session = Depends(get_db),
+    channel: Principal = Depends(principal),
+):
+    require_role(channel, "owner")
+    identity = _require_telegram_owner(db, payload)
+    try:
+        parsed = parse_callback_token(payload.callback_token)
+    except CallbackTokenExpired as exc:
+        audit(
+            db,
+            identity.subject,
+            "telegram.callback_rejected",
+            "approval",
+            "",
+            {"reason": "expired"},
+        )
+        db.commit()
+        raise HTTPException(409, str(exc)) from exc
+    except CallbackTokenError as exc:
+        audit(
+            db,
+            identity.subject,
+            "telegram.callback_rejected",
+            "approval",
+            "",
+            {"reason": "invalid_signature_or_format"},
+        )
+        db.commit()
+        raise HTTPException(403, str(exc)) from exc
+    try:
+        result = decide_approval(
+            db,
+            approval_id=int(parsed["approval_id"]),
+            action=str(parsed["action"]),
+            note=payload.note,
+            actor=Principal(subject=identity.subject, role=identity.role),
+            channel="telegram",
+            expected_version=int(parsed["decision_version"]),
+            idempotent=True,
+        )
+    except ApprovalNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ApprovalExpired as exc:
+        db.commit()
+        raise HTTPException(409, str(exc)) from exc
+    except (ApprovalConflict, ApprovalStale) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ApprovalError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db.commit()
+    return result
 
 
 def _previous_request_text(db: Session, *, source_channel: str, source_user: str, current_message: str) -> str:

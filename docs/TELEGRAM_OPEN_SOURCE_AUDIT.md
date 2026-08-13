@@ -52,3 +52,15 @@ capabilities and enlarge the trusted/dependency surface. The compatible path is:
 
 No third-party code or dependency is added, so `docs/open-source-attribution.md`
 is intentionally not created.
+
+## Implemented compatibility slices
+
+- Durable approval core: expiring/versioned requests, one append-only decision,
+  atomic terminal claim and exactly-once workflow resume.
+- Telegram identity/RBAC: exact user/chat bindings, five roles, deny-by-default,
+  pseudonymous denial audit and role-aware handler middleware.
+- Protected callbacks: HMAC-bound approval/action/version/expiry payloads within
+  Telegram's 64-byte limit, server-side approver validation, three decision actions,
+  stale/expired/forged rejection and idempotent duplicate handling.
+- Polling remains the only Telegram update transport; no unverified webhook endpoint
+  was introduced.

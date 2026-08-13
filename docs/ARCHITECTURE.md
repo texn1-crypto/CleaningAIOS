@@ -57,6 +57,16 @@ blocked task to the queue through an idempotent transition key, so concurrent or
 duplicate decisions cannot resume the workflow twice. “Request changes” records a
 terminal review outcome without resuming execution.
 
+Telegram is a channel adapter over this same service, not a second approval
+implementation. Every update is authorized server-side against an exact
+`user_id`/`chat_id` binding with the roles owner/admin/manager/operator/viewer and
+deny-by-default behavior. Audit entries use stable pseudonyms rather than raw
+Telegram identifiers. Approval cards carry risk, amount when present, rationale,
+requester and expiry. Their callbacks are short HMAC-signed envelopes bound to the
+approval, action, version and expiry; the bot sends the opaque envelope back to the
+server and never trusts or interprets an approval ID from the button. Legacy numeric
+approval callbacks are rejected.
+
 Marketing invoices and paid experiments use the same financial approval class.
 Approval only records the owner's decision. Invoice state becomes
 `approved_for_manual_payment`, and experiment state becomes `approved`; neither path
@@ -81,7 +91,9 @@ decisions whose outcomes have been recorded.
 
 ## External integrations
 
-- Telegram polling starts only when bot token and owner ID are provided.
+- Telegram polling starts only when bot token and owner ID are provided. The bot
+  does not expose a webhook endpoint, so there is no unauthenticated webhook path.
+  Commands and callbacks pass through server-side Telegram RBAC middleware.
 - Telegram DOCX/PDF proposal attachments use protected shared storage and run through
   Orchestrator, Copywriter and Creative. Files over the cloud 20 MB download limit
   require a separately operated local Bot API endpoint.

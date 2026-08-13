@@ -9,6 +9,8 @@ import logging
 import re
 import secrets
 import tempfile
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -30,10 +32,23 @@ BASE = (settings.internal_api_url or settings.public_base_url or "http://web:800
 HEADERS = {"X-API-Key": settings.api_key, "X-Actor": "telegram-owner", "X-Role": "owner"}
 MAILING_MAX_RECIPIENTS = 1000
 MAILING_BATCH_SIZE = 100
+_telegram_identity: ContextVar[dict | None] = ContextVar(
+    "telegram_identity", default=None
+)
 
 
 def allowed(update: Update) -> bool:
-    return bool(settings.owner_telegram_id) and str(update.effective_user.id if update.effective_user else 0) == str(settings.owner_telegram_id)
+    if _telegram_identity.get() is not None:
+        return True
+    user_id = update.effective_user.id if update.effective_user else 0
+    chat = getattr(update, "effective_chat", None)
+    chat_id = getattr(chat, "id", user_id)
+    owner_chat_id = settings.owner_telegram_chat_id or settings.owner_telegram_id
+    return (
+        bool(settings.owner_telegram_id)
+        and str(user_id) == str(settings.owner_telegram_id)
+        and str(chat_id) == str(owner_chat_id)
+    )
 
 
 async def api(method: str, path: str, **kwargs):
@@ -41,6 +56,70 @@ async def api(method: str, path: str, **kwargs):
         response = await client.request(method, f"{BASE}{path}", **kwargs)
         response.raise_for_status()
         return response.json()
+
+
+def _identity_payload(update: Update) -> dict[str, int]:
+    user = update.effective_user
+    chat = getattr(update, "effective_chat", None)
+    if user is None or chat is None:
+        raise RuntimeError("Telegram update has no user/chat identity")
+    return {"user_id": int(user.id), "chat_id": int(chat.id)}
+
+
+async def _authorize_update(update: Update, minimum_role: str) -> dict | None:
+    try:
+        result = await api(
+            "POST",
+            "/api/telegram/control/authorize",
+            json={**_identity_payload(update), "minimum_role": minimum_role},
+        )
+    except (httpx.HTTPError, RuntimeError):
+        await update.effective_message.reply_text(
+            "Не удалось проверить права доступа. Действие не выполнено."
+        )
+        return None
+    if not result.get("authorized"):
+        await update.effective_message.reply_text("Доступ не разрешён.")
+        return None
+    return result
+
+
+def _secured(handler, minimum_role: str):
+    @wraps(handler)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        identity = await _authorize_update(update, minimum_role)
+        if identity is None:
+            return None
+        token = _telegram_identity.set(identity)
+        try:
+            return await handler(update, context)
+        finally:
+            _telegram_identity.reset(token)
+
+    return wrapped
+
+
+async def _approval_markup(update: Update, approval_id: int) -> InlineKeyboardMarkup:
+    card = await api(
+        "POST",
+        f"/api/telegram/control/approvals/{approval_id}/card",
+        json={**_identity_payload(update), "minimum_role": "owner"},
+    )
+    callbacks = card.get("callbacks") or {}
+    if set(callbacks) != {"approve", "reject", "request_changes"}:
+        raise RuntimeError("Approval callback tokens are unavailable")
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Одобрить", callback_data=callbacks["approve"]),
+            InlineKeyboardButton("❌ Отклонить", callback_data=callbacks["reject"]),
+        ],
+        [
+            InlineKeyboardButton(
+                "✏️ Запросить изменения",
+                callback_data=callbacks["request_changes"],
+            )
+        ],
+    ])
 
 
 async def api_file(path: str) -> tuple[bytes, str]:
@@ -135,10 +214,7 @@ async def proposal_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             approval_id = draft.get("approval_id")
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Одобрить рассылку", callback_data=f"approve:{approval_id}"),
-                InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{approval_id}"),
-            ]])
+            keyboard = await _approval_markup(update, int(approval_id))
             await message.reply_text(
                 f"Черновик рассылки создан как задача #{draft['task_id']}.\n"
                 f"Получателей с подтверждённым согласием: {draft['recipient_count']}.\n"
@@ -207,10 +283,7 @@ async def proposal_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         urls = result.get("download_urls") or {}
         approval_id = result.get("approval_id")
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Утвердить", callback_data=f"approve:{approval_id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{approval_id}"),
-        ]]) if approval_id else None
+        keyboard = await _approval_markup(update, int(approval_id)) if approval_id else None
         for kind in ("docx", "pdf"):
             if not urls.get(kind):
                 continue
@@ -257,13 +330,37 @@ async def decisions(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def approvals(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    rows = await api("GET", "/api/approvals")
-    pending = [x for x in rows if x["status"] == "pending"]
+    data = await api(
+        "POST",
+        "/api/telegram/control/approvals",
+        json={**_identity_payload(update), "minimum_role": "owner"},
+    )
+    pending = data.get("items") or []
     if not pending:
         await update.effective_message.reply_text("Подтверждений, ожидающих владельца, нет."); return
     for row in pending[:10]:
-        keyboard = [[InlineKeyboardButton("✅ Одобрить", callback_data=f"approve:{row['id']}"), InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{row['id']}")]]
-        await update.effective_message.reply_text(f"🔐 #{row['id']} · {row['action_kind']}\n{row['resource_type']} #{row['resource_id']}\n{row['rationale']}", reply_markup=InlineKeyboardMarkup(keyboard))
+        callbacks = row["callbacks"]
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Одобрить", callback_data=callbacks["approve"]),
+                InlineKeyboardButton("❌ Отклонить", callback_data=callbacks["reject"]),
+            ],
+            [
+                InlineKeyboardButton(
+                    "✏️ Запросить изменения",
+                    callback_data=callbacks["request_changes"],
+                )
+            ],
+        ]
+        amount = f"\nСумма: {row['amount']}" if row.get("amount") is not None else ""
+        await update.effective_message.reply_text(
+            f"🔐 #{row['id']} · {row['action_kind']}\n"
+            f"Объект: {row['resource_type']} #{row['resource_id']}\n"
+            f"Риск: {row['risk']}{amount}\n"
+            f"Причина: {row['rationale']}\n"
+            f"Действует до: {row.get('expires_at') or 'не указано'}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
 
 
 def format_outreach_summary(data: dict) -> str:
@@ -592,10 +689,7 @@ async def mailing_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
     context.user_data.pop("mailing_draft", None)
     approval_id = result.get("approval_id")
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Одобрить рассылку", callback_data=f"approve:{approval_id}"),
-        InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{approval_id}"),
-    ]]) if approval_id else None
+    keyboard = await _approval_markup(update, int(approval_id)) if approval_id else None
     replay = " Ранее созданный черновик найден повторно; новая копия не создавалась." if result.get("idempotent_replay") else ""
     await update.effective_message.reply_text(
         f"Защищённый черновик создан как задача #{result['task_id']} для {result['recipient_count']} получателей "
@@ -998,45 +1092,87 @@ async def confirmed_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    if not allowed(update): return
-    if q.data.startswith("intent:"): await confirmed_action(update, context)
-    elif q.data == "dashboard": await dashboard(update, context)
-    elif q.data == "tasks": await tasks(update, context)
-    elif q.data == "decisions": await decisions(update, context)
-    elif q.data == "approvals": await approvals(update, context)
-    elif q.data == "crm": await records(update, "lead", "👥 CRM и продажи")
-    elif q.data == "tenders": await records(update, "tender", "🏗 Тендеры")
-    elif q.data == "hr": await records(update, "candidate", "🧹 Кандидаты и HR")
-    elif q.data == "finance": await module_summary(update, "finance", "💰 Финансы")
-    elif q.data == "marketing": await module_summary(update, "marketing", "📊 Маркетинг")
-    elif q.data == "marketing_invoices": await records(update, "marketing_invoice", "🧾 Счета рекламы · одобрение не выполняет оплату")
-    elif q.data == "simulator":
-        data = await api("POST", "/api/simulations", json={"payroll_change_percent": 10})
-        await update.effective_message.reply_text(f"🧪 Сценарий +10% к фонду оплаты\nТекущая прибыль: {data['current']['profit']} ₽\nБазовый прогноз: {data['base']['profit']} ₽\nОптимистичный: {data['optimistic']['profit']} ₽")
-    elif q.data.startswith("approve:") or q.data.startswith("reject:"):
-        action, approval_id = q.data.split(":", 1)
-        result = await api("POST", f"/api/approvals/{approval_id}/{action}", json={"note": "Решение принято владельцем в Telegram"})
-        if result.get("action_kind") == "bulk_outreach" and result.get("execution") == "queued":
+    q = update.callback_query
+    await q.answer()
+    if q.data.startswith("tc1."):
+        try:
+            result = await api(
+                "POST",
+                "/api/telegram/control/approval-decision",
+                json={
+                    **_identity_payload(update),
+                    "callback_token": q.data,
+                    "note": "Решение принято владельцем в Telegram",
+                },
+            )
+        except (httpx.HTTPError, RuntimeError):
+            await update.effective_message.reply_text(
+                "Кнопка недействительна, устарела или у вас нет права на это решение. Действие не выполнено."
+            )
+            return
+        approval_id = result["id"]
+        if result.get("idempotent_replay"):
+            message = f"Подтверждение #{approval_id} уже было обработано; повторное действие не выполнялось."
+        elif result.get("action_kind") == "bulk_outreach" and result.get("execution") == "queued":
             message = (
                 f"Подтверждение #{approval_id}: approved. Защищённая задача поставлена в очередь; "
-                "worker отправит только допустимые письма с учётом SMTP-настроек, suppression, дедупликации и лимитов."
+                "worker применит SMTP-настройки, suppression, дедупликацию и лимиты."
             )
         elif result.get("action_kind") == "bulk_outreach":
             message = f"Подтверждение #{approval_id}: {result['status']}. Рассылка не поставлена в очередь."
         else:
-            message = f"Подтверждение #{approval_id}: {result['status']}. Решение записано; автоматическое подписание или списание денег не выполнялось."
+            message = (
+                f"Подтверждение #{approval_id}: {result['status']}. Решение записано; "
+                "автоматическое подписание или списание денег не выполнялось."
+            )
         await update.effective_message.reply_text(message)
-    elif q.data == "mailing:create": await mailing_create(update, context)
-    elif q.data == "mailing:cancel": await mailing_cancel(update, context)
-    elif q.data in {"ceo", "meta_brain"}:
-        data = await api("POST", "/api/tasks", json={"title": f"{q.data} on-demand review", "agent_type": q.data})
-        await update.effective_message.reply_text(f"Задача #{data['id']} поставлена агенту {q.data}.")
-    elif q.data == "agents": await dashboard(update, context)
-    elif q.data == "improvements": await improvement_queue(update, context)
-    elif q.data == "outreach": await outreach_dashboard(update, context)
-    elif q.data == "outreach:campaigns": await outreach_campaigns(update, context)
-    elif q.data == "outreach:help": await outreach_help(update, context)
+        return
+    if q.data.startswith("approve:") or q.data.startswith("reject:"):
+        await update.effective_message.reply_text(
+            "Эта кнопка относится к старой версии и больше не действует. Откройте approvals заново."
+        )
+        return
+
+    minimum_role = (
+        "owner"
+        if q.data == "approvals"
+        else "manager"
+        if q.data in {"ceo", "meta_brain", "simulator", "marketing_invoices", "improvements"}
+        else "operator"
+        if q.data.startswith("intent:") or q.data.startswith("mailing:")
+        else "viewer"
+    )
+    identity = await _authorize_update(update, minimum_role)
+    if identity is None:
+        return
+    token = _telegram_identity.set(identity)
+    try:
+        if q.data.startswith("intent:"): await confirmed_action(update, context)
+        elif q.data == "dashboard": await dashboard(update, context)
+        elif q.data == "tasks": await tasks(update, context)
+        elif q.data == "decisions": await decisions(update, context)
+        elif q.data == "approvals": await approvals(update, context)
+        elif q.data == "crm": await records(update, "lead", "👥 CRM и продажи")
+        elif q.data == "tenders": await records(update, "tender", "🏗 Тендеры")
+        elif q.data == "hr": await records(update, "candidate", "🧹 Кандидаты и HR")
+        elif q.data == "finance": await module_summary(update, "finance", "💰 Финансы")
+        elif q.data == "marketing": await module_summary(update, "marketing", "📊 Маркетинг")
+        elif q.data == "marketing_invoices": await records(update, "marketing_invoice", "🧾 Счета рекламы · одобрение не выполняет оплату")
+        elif q.data == "simulator":
+            data = await api("POST", "/api/simulations", json={"payroll_change_percent": 10})
+            await update.effective_message.reply_text(f"🧪 Сценарий +10% к фонду оплаты\nТекущая прибыль: {data['current']['profit']} ₽\nБазовый прогноз: {data['base']['profit']} ₽\nОптимистичный: {data['optimistic']['profit']} ₽")
+        elif q.data == "mailing:create": await mailing_create(update, context)
+        elif q.data == "mailing:cancel": await mailing_cancel(update, context)
+        elif q.data in {"ceo", "meta_brain"}:
+            data = await api("POST", "/api/tasks", json={"title": f"{q.data} on-demand review", "agent_type": q.data})
+            await update.effective_message.reply_text(f"Задача #{data['id']} поставлена агенту {q.data}.")
+        elif q.data == "agents": await dashboard(update, context)
+        elif q.data == "improvements": await improvement_queue(update, context)
+        elif q.data == "outreach": await outreach_dashboard(update, context)
+        elif q.data == "outreach:campaigns": await outreach_campaigns(update, context)
+        elif q.data == "outreach:help": await outreach_help(update, context)
+    finally:
+        _telegram_identity.reset(token)
 
 
 def build_application() -> Application:
@@ -1051,10 +1187,28 @@ def build_application() -> Application:
         local_base = settings.telegram_bot_api_base_url.rstrip("/")
         builder = builder.base_url(f"{local_base}/bot").base_file_url(f"{local_base}/file/bot").local_mode(True)
     application = builder.build()
-    for command, handler in [("start", start), ("dashboard", dashboard), ("tasks", tasks), ("decisions", decisions), ("outreach", outreach_dashboard), ("mailing", mailing_start), ("cancel", mailing_cancel), ("addtask", addtask)]: application.add_handler(CommandHandler(command, handler))
+    commands = [
+        ("start", start, "viewer"),
+        ("dashboard", dashboard, "viewer"),
+        ("tasks", tasks, "viewer"),
+        ("decisions", decisions, "viewer"),
+        ("outreach", outreach_dashboard, "viewer"),
+        ("mailing", mailing_start, "operator"),
+        ("cancel", mailing_cancel, "operator"),
+        ("addtask", addtask, "operator"),
+    ]
+    for command, handler, minimum_role in commands:
+        application.add_handler(CommandHandler(command, _secured(handler, minimum_role)))
     application.add_handler(CallbackQueryHandler(callback))
-    application.add_handler(MessageHandler(filters.Document.ALL, proposal_document))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, natural_language))
+    application.add_handler(
+        MessageHandler(filters.Document.ALL, _secured(proposal_document, "operator"))
+    )
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            _secured(natural_language, "operator"),
+        )
+    )
     return application
 
 

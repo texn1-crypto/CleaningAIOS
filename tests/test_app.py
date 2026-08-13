@@ -777,6 +777,7 @@ def test_production_rbac_derives_role_from_api_key(monkeypatch):
     monkeypatch.setattr(settings, "manager_api_key", "manager-secret")
     monkeypatch.setattr(settings, "operator_api_key", "operator-secret")
     monkeypatch.setattr(settings, "viewer_api_key", "viewer-secret")
+    monkeypatch.setattr(settings, "telegram_callback_secret", "callback-secret")
     validate_production_security()
     authenticated = principal(x_api_key="manager-secret", x_actor="spoofed-owner", x_role="owner")
     assert authenticated.role == "manager"
@@ -2000,6 +2001,14 @@ def test_telegram_mailing_wizard_keeps_customer_data_out_of_request_analysis(mon
 
     async def fake_api(method, path, **kwargs):
         calls.append((method, path, kwargs))
+        if path == "/api/telegram/control/approvals/701/card":
+            return {
+                "callbacks": {
+                    "approve": "tc1.approve-test",
+                    "reject": "tc1.reject-test",
+                    "request_changes": "tc1.changes-test",
+                }
+            }
         return {"status": "blocked", "task_id": 700, "approval_id": 701, "recipient_count": 2, "idempotent_replay": False}
 
     class Message:
@@ -2010,9 +2019,13 @@ def test_telegram_mailing_wizard_keeps_customer_data_out_of_request_analysis(mon
     class User:
         id = 123
 
+    class Chat:
+        id = 123
+
     class Update:
         effective_message = Message()
         effective_user = User()
+        effective_chat = Chat()
 
     class Context:
         args = ["one@example.com,", "two@example.com"]
@@ -2035,14 +2048,23 @@ def test_telegram_mailing_wizard_keeps_customer_data_out_of_request_analysis(mon
     assert calls == []
 
     asyncio.run(bot.mailing_create(update, context))
-    assert len(calls) == 1
+    assert len(calls) == 2
     method, path, kwargs = calls[0]
     assert (method, path) == ("POST", "/api/outreach/campaigns/customer-requested/draft")
     assert kwargs["json"]["recipients"] == ["one@example.com", "two@example.com"]
     assert context.user_data.get("mailing_draft") is None
     assert "задача #700" in update.effective_message.replies[-1][0]
     markup = update.effective_message.replies[-1][1]["reply_markup"]
-    assert {button.callback_data for button in markup.inline_keyboard[0]} == {"approve:701", "reject:701"}
+    assert [button.text for row in markup.inline_keyboard for button in row] == [
+        "✅ Одобрить",
+        "❌ Отклонить",
+        "✏️ Запросить изменения",
+    ]
+    assert all(
+        button.callback_data.startswith("tc1.")
+        for row in markup.inline_keyboard
+        for button in row
+    )
 
 
 def test_recipient_document_import_extracts_xlsx_docx_and_pdf():
@@ -2200,6 +2222,9 @@ def test_telegram_ambiguous_mailing_confirmation_executes_wizard(monkeypatch):
 
     monkeypatch.setattr(bot, "allowed", lambda update: True)
     monkeypatch.setattr(bot, "api", fake_api)
+    async def fake_authorize(update, minimum_role):
+        return {"authorized": True, "role": "operator"}
+    monkeypatch.setattr(bot, "_authorize_update", fake_authorize)
     update, context = Update(), Context()
 
     asyncio.run(bot.natural_language(update, context))
@@ -2267,6 +2292,9 @@ def test_telegram_ambiguous_action_waits_for_yes_then_creates_task(monkeypatch):
 
     monkeypatch.setattr(bot, "allowed", lambda update: True)
     monkeypatch.setattr(bot, "api", fake_api)
+    async def fake_authorize(update, minimum_role):
+        return {"authorized": True, "role": "operator"}
+    monkeypatch.setattr(bot, "_authorize_update", fake_authorize)
     update, context = Update(), Context()
 
     asyncio.run(bot.natural_language(update, context))
@@ -2308,6 +2336,9 @@ def test_telegram_ambiguous_action_no_cancels_without_execution(monkeypatch):
         def __init__(self): self.user_data = {}
 
     monkeypatch.setattr(bot, "allowed", lambda update: True)
+    async def fake_authorize(update, minimum_role):
+        return {"authorized": True, "role": "operator"}
+    monkeypatch.setattr(bot, "_authorize_update", fake_authorize)
     update, context = Update(), Context()
     asyncio.run(bot.natural_language(update, context))
     no = update.effective_message.replies[-1][1]["reply_markup"].inline_keyboard[0][1]
@@ -2826,6 +2857,14 @@ def test_telegram_small_proposal_returns_docx_and_pdf_for_owner_review(monkeypat
                     "download_urls": {"docx": "/revision.docx", "pdf": "/revision.pdf"},
                 },
             }
+        if path == "/api/telegram/control/approvals/91/card":
+            return {
+                "callbacks": {
+                    "approve": "tc1.approve-test",
+                    "reject": "tc1.reject-test",
+                    "request_changes": "tc1.changes-test",
+                }
+            }
         raise AssertionError(path)
 
     async def fake_file(path):
@@ -2865,9 +2904,13 @@ def test_telegram_small_proposal_returns_docx_and_pdf_for_owner_review(monkeypat
     class User:
         id = 123
 
+    class Chat:
+        id = 123
+
     class Update:
         effective_message = Message()
         effective_user = User()
+        effective_chat = Chat()
 
     monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
     monkeypatch.setattr(settings, "telegram_bot_api_base_url", "")
@@ -3001,7 +3044,8 @@ def test_ai_provider_router_has_least_privilege_policy(client):
 def test_telegram_owner_notification_uses_existing_approval_buttons(monkeypatch):
     from app import notifications
     from app.config import settings
-    from app.models import OwnerNotification
+    from app.models import ApprovalRequest, OwnerNotification
+    from app.telegram_control import parse_callback_token
 
     captured = {}
 
@@ -3017,25 +3061,55 @@ def test_telegram_owner_notification_uses_existing_approval_buttons(monkeypatch)
     monkeypatch.setattr(notifications.httpx, "Client", Client)
     monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token-value")
     monkeypatch.setattr(settings, "owner_telegram_id", "999")
+    monkeypatch.setattr(settings, "telegram_callback_secret", "test-callback-secret")
+    approval = ApprovalRequest(
+        id=42,
+        action_kind="financial",
+        resource_type="marketing_invoice",
+        resource_id="42",
+        rationale="Проверить счёт",
+        status="pending",
+        decision_version=1,
+        payload={},
+    )
+    class FakeDb:
+        def get(self, model, identity):
+            assert (model, identity) == (ApprovalRequest, 42)
+            return approval
     row = OwnerNotification(
         idempotency_key="telegram-contract-test",
         channel="telegram",
         recipient="999",
         subject="Счёт на рекламу",
         body="Одобрение не выполняет оплату",
-        data={"approval_id": 42},
+        data={"approval_id": approval.id},
     )
-    notifications._send_telegram(row)
+    notifications._send_telegram(FakeDb(), row)
     assert captured["url"].endswith("/sendMessage")
     assert captured["payload"]["chat_id"] == "999"
-    buttons = captured["payload"]["reply_markup"]["inline_keyboard"][0]
-    assert {item["callback_data"] for item in buttons} == {"approve:42", "reject:42"}
+    buttons = [
+        item
+        for group in captured["payload"]["reply_markup"]["inline_keyboard"]
+        for item in group
+    ]
+    assert [item["text"] for item in buttons] == [
+        "✅ Одобрить",
+        "❌ Отклонить",
+        "✏️ Запросить изменения",
+    ]
+    assert {parse_callback_token(item["callback_data"])["action"] for item in buttons} == {
+        "approve",
+        "reject",
+        "request_changes",
+    }
+    assert all(len(item["callback_data"].encode()) <= 64 for item in buttons)
 
 
 def test_telegram_social_approval_sends_visual_album_before_buttons(monkeypatch):
     from app import notifications
     from app.config import settings
-    from app.models import OwnerNotification
+    from app.models import ApprovalRequest, OwnerNotification
+    from app.telegram_control import parse_callback_token
 
     captured = []
 
@@ -3052,6 +3126,21 @@ def test_telegram_social_approval_sends_visual_album_before_buttons(monkeypatch)
 
     monkeypatch.setattr(notifications.httpx, "Client", Client)
     monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token-value")
+    monkeypatch.setattr(settings, "telegram_callback_secret", "test-callback-secret")
+    approval = ApprovalRequest(
+        id=43,
+        action_kind="social_publication",
+        resource_type="social_content_batch",
+        resource_id="43",
+        rationale="Проверить публикации",
+        status="pending",
+        decision_version=1,
+        payload={},
+    )
+    class FakeDb:
+        def get(self, model, identity):
+            assert (model, identity) == (ApprovalRequest, 43)
+            return approval
     row = OwnerNotification(
         idempotency_key="telegram-social-preview-test",
         channel="telegram",
@@ -3059,7 +3148,7 @@ def test_telegram_social_approval_sends_visual_album_before_buttons(monkeypatch)
         subject="Визуальное согласование",
         body="Проверьте макеты",
         data={
-            "approval_id": 43,
+            "approval_id": approval.id,
             "preview_posts": [{
                 "channel": "vk",
                 "scheduled_at": "2031-06-18T07:00:00",
@@ -3068,12 +3157,13 @@ def test_telegram_social_approval_sends_visual_album_before_buttons(monkeypatch)
             }],
         },
     )
-    notifications._send_telegram(row)
+    notifications._send_telegram(FakeDb(), row)
     assert captured[0][0].endswith("/sendMediaGroup")
     assert captured[0][1]["media"][0]["media"] == "https://cleaning.example/static/post.png"
     assert "Точный текст публикации" in captured[0][1]["media"][0]["caption"]
     assert captured[1][0].endswith("/sendMessage")
-    assert captured[1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "approve:43"
+    callback_data = captured[1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    assert parse_callback_token(callback_data)["action"] == "approve"
 
 
 def test_management_company_import_preserves_provenance_and_requires_consent(client):
@@ -3491,6 +3581,14 @@ def test_telegram_document_creates_guarded_outreach_draft(monkeypatch, tmp_path)
 
     async def fake_api(method, path, **kwargs):
         calls.append((method, path, kwargs))
+        if path == "/api/telegram/control/approvals/77/card":
+            return {
+                "callbacks": {
+                    "approve": "tc1.approve-test",
+                    "reject": "tc1.reject-test",
+                    "request_changes": "tc1.changes-test",
+                }
+            }
         assert path == "/api/outreach/campaigns/management-companies/draft"
         return {
             "status": "blocked",
@@ -3523,9 +3621,13 @@ def test_telegram_document_creates_guarded_outreach_draft(monkeypatch, tmp_path)
     class User:
         id = 123
 
+    class Chat:
+        id = 123
+
     class Update:
         effective_message = Message()
         effective_user = User()
+        effective_chat = Chat()
 
     class Context:
         bot = Bot()
@@ -3534,10 +3636,14 @@ def test_telegram_document_creates_guarded_outreach_draft(monkeypatch, tmp_path)
     monkeypatch.setattr(bot, "allowed", lambda update: True)
     monkeypatch.setattr(bot, "api", fake_api)
     asyncio.run(bot.proposal_document(Update(), Context()))
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert "12" in Update.effective_message.replies[0][0]
     markup = Update.effective_message.replies[0][1]["reply_markup"]
-    assert {button.callback_data for button in markup.inline_keyboard[0]} == {"approve:77", "reject:77"}
+    assert [button.text for row in markup.inline_keyboard for button in row] == [
+        "✅ Одобрить",
+        "❌ Отклонить",
+        "✏️ Запросить изменения",
+    ]
 
 
 def test_growth_officer_owns_billion_ruble_goal_and_delegates_from_real_contracts(client):

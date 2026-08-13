@@ -82,6 +82,28 @@ class ApprovalDecision(BaseModel):
     note: str = ""
 
 
+class TelegramIdentityRequest(BaseModel):
+    user_id: int
+    chat_id: int
+    minimum_role: str = Field(
+        default="viewer",
+        pattern="^(viewer|operator|manager|admin|owner)$",
+    )
+
+
+class TelegramIdentityBind(BaseModel):
+    user_id: int
+    chat_id: int
+    role: str = Field(pattern="^(viewer|operator|manager|admin|owner)$")
+
+
+class TelegramApprovalCallback(BaseModel):
+    user_id: int
+    chat_id: int
+    callback_token: str = Field(min_length=20, max_length=64)
+    note: str = Field(default="Решение принято в Telegram", max_length=2000)
+
+
 class OperatingEntityCreate(BaseModel):
     entity_type: str = Field(pattern="^(client|site|contract|employee|shift|complaint|vacancy)$")
     name: str = Field(min_length=2, max_length=255)

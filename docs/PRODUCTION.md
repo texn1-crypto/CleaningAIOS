@@ -77,6 +77,15 @@ the server derives the role from the matching key and ignores `X-Role`; this pre
 clients from raising their own privileges. Give each secret only to its intended
 operator and rotate it if it is exposed.
 
+Set `OWNER_TELEGRAM_CHAT_ID` to the exact private chat authorized for the configured
+`OWNER_TELEGRAM_ID` (normally both values are equal). Set
+`TELEGRAM_CALLBACK_SECRET` to an independent random secret of at least 32 bytes; the
+server refuses production startup when it is missing. It signs short-lived approval
+callbacks and must be mounted into both `web`, `worker`, and `bot` without being
+printed in logs. Additional Telegram identities are bound by an owner through
+`PUT /api/telegram/control/identities`; do not grant `owner` merely to make a command
+work. The current runtime uses polling only and exposes no Telegram webhook route.
+
 Set `UNSUBSCRIBE_SECRET` to a separate random value to sign unsubscribe links. If it
 is omitted, `API_KEY` is used as the signing secret. Changing the effective secret
 invalidates links that have already been sent.

@@ -17,7 +17,7 @@ class Principal:
     role: str
 
 
-ROLE_ORDER = {"viewer": 0, "operator": 1, "manager": 2, "owner": 3}
+ROLE_ORDER = {"viewer": 0, "operator": 1, "manager": 2, "admin": 3, "owner": 4}
 
 
 def configured_api_keys() -> list[tuple[str, str, str]]:
@@ -37,6 +37,8 @@ def validate_production_security() -> None:
     keys = [key for key, _, _ in configured_api_keys() if key]
     if len(keys) != len(set(keys)):
         raise RuntimeError("Production API keys must be unique")
+    if not settings.telegram_callback_secret:
+        raise RuntimeError("TELEGRAM_CALLBACK_SECRET is required in production")
 
 
 def unsubscribe_token(address: str) -> str:

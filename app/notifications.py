@@ -13,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import InboxMessage, OwnerNotification, SenderMailbox
+from .models import ApprovalRequest, InboxMessage, OwnerNotification, SenderMailbox
+from .telegram_control import approval_card
 
 
 log = logging.getLogger("cleaningai.notifications")
@@ -128,17 +129,29 @@ def _send_email(db: Session, row: OwnerNotification) -> None:
         smtp.send_message(message)
 
 
-def _send_telegram(row: OwnerNotification) -> None:
+def _send_telegram(db: Session, row: OwnerNotification) -> None:
     if not all([row.recipient, settings.telegram_bot_token]):
         raise RuntimeError("Telegram owner credentials are not configured")
     payload: dict[str, Any] = {"chat_id": row.recipient, "text": f"{row.subject}\n\n{row.body}"}
     approval_id = row.data.get("approval_id")
     if approval_id:
+        approval = db.get(ApprovalRequest, int(approval_id))
+        callbacks = approval_card(approval).get("callbacks") if approval else None
+        if not callbacks:
+            raise RuntimeError("Approval callback tokens are unavailable")
         payload["reply_markup"] = {
-            "inline_keyboard": [[
-                {"text": "✅ Одобрить", "callback_data": f"approve:{approval_id}"},
-                {"text": "❌ Отклонить", "callback_data": f"reject:{approval_id}"},
-            ]]
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Одобрить", "callback_data": callbacks["approve"]},
+                    {"text": "❌ Отклонить", "callback_data": callbacks["reject"]},
+                ],
+                [
+                    {
+                        "text": "✏️ Запросить изменения",
+                        "callback_data": callbacks["request_changes"],
+                    }
+                ],
+            ]
         }
     preview_posts = row.data.get("preview_posts") if isinstance(row.data, dict) else None
     with httpx.Client(timeout=30) as client:
@@ -184,7 +197,7 @@ def send_next_owner_notification(db: Session) -> bool:
         if row.channel == "email":
             _send_email(db, row)
         elif row.channel == "telegram":
-            _send_telegram(row)
+            _send_telegram(db, row)
         else:
             raise RuntimeError(f"Unsupported owner notification channel: {row.channel}")
         row.status = "sent"
