@@ -74,7 +74,7 @@ def collect_mailbox_replies(db: Session, mailbox: SenderMailbox, *, limit: int =
                 recipient=mailbox.address,
                 subject=subject,
                 body=body,
-                data={"mailbox_id": mailbox.id, "imap_uid": uid, "forwarded_to_owner": True},
+                data={"mailbox_id": mailbox.id, "imap_uid": uid, "forwarded_to_owner": False},
             )
             db.add(row)
             db.flush()
@@ -86,7 +86,12 @@ def collect_mailbox_replies(db: Session, mailbox: SenderMailbox, *, limit: int =
                 resource_id=str(row.id),
                 subject=f"Ответ на рассылку: {subject or '(без темы)'}",
                 body=f"От: {sender}\nНа ящик: {mailbox.address}\n\n{body}",
-                data={"inbox_message_id": row.id, "mailbox_id": mailbox.id, "imap_uid": uid},
+                data={
+                    "inbox_message_id": row.id,
+                    "mailbox_id": mailbox.id,
+                    "imap_uid": uid,
+                    "reply_to": sender,
+                },
             )
             mailbox.last_imap_uid = max(mailbox.last_imap_uid, uid)
             received += 1

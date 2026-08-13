@@ -113,6 +113,13 @@ recording their external ID after owner approval. See `docs/MARKETING_SITE.md`.
 For every additional sender mailbox, set `secret_ref` to the name of an environment
 variable mounted into `web` and `worker` (for example `SMTP_SALES_PASSWORD`). Do not
 store SMTP passwords in API payloads or the database.
+For reply collection, also set `imap_host`, `imap_username`, `imap_secret_ref` and
+`inbound_enabled=true`, then mount the referenced IMAP secret into `web` and `worker`.
+Set `OWNER_NOTIFICATION_EMAIL` to the primary inbox. Inbound replies are forwarded
+through the originating mailbox when its SMTP secret is ready, so a separate default
+SMTP account is optional; the default SMTP remains the fallback transport. SMTP port
+465 uses implicit TLS and other configured ports use STARTTLS. The Telegram outreach
+panel reports receiving and forwarding readiness without returning any secret values.
 
 ## Backup
 

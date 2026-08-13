@@ -442,6 +442,34 @@ def outreach_summary(db: Session = Depends(get_db), actor: Principal = Depends(p
         and settings.smtp_password
         and settings.smtp_from_email
     )
+    inbound_enabled = [row for row in mailboxes if row.active and row.inbound_enabled]
+    inbound_receiving_ready = sum(
+        1
+        for row in inbound_enabled
+        if row.imap_host
+        and (row.imap_username or row.username or row.address)
+        and row.imap_secret_ref
+        and bool(os.environ.get(row.imap_secret_ref))
+    )
+    inbound_forwarding_ready = sum(
+        1
+        for row in inbound_enabled
+        if row.imap_host
+        and (row.imap_username or row.username or row.address)
+        and row.imap_secret_ref
+        and bool(os.environ.get(row.imap_secret_ref))
+        and (
+            default_sender_ready
+            or (
+                row.smtp_host
+                and (row.username or row.address)
+                and row.secret_ref
+                and bool(os.environ.get(row.secret_ref))
+            )
+        )
+        and settings.owner_notification_email
+        and settings.owner_notification_email.strip().lower() != row.address.lower()
+    )
     status_counts = {
         str(status): int(count)
         for status, count in db.execute(
@@ -499,6 +527,12 @@ def outreach_summary(db: Session = Depends(get_db), actor: Principal = Depends(p
             "active": sum(1 for row in mailboxes if row.active),
             "ready": ready_mailboxes,
             "default_sender_ready": default_sender_ready,
+        },
+        "inbound": {
+            "enabled": len(inbound_enabled),
+            "receiving_ready": inbound_receiving_ready,
+            "forwarding_ready": inbound_forwarding_ready,
+            "owner_destination_ready": bool(settings.owner_notification_email),
         },
         "consents": {"verified": int(verified_consents), "revoked": int(revoked_consents)},
         "suppressed": int(db.scalar(select(func.count(Suppression.address))) or 0),

@@ -272,11 +272,19 @@ def format_outreach_summary(data: dict) -> str:
     mailboxes = data.get("mailboxes") or {}
     consents = data.get("consents") or {}
     limits = data.get("limits") or {}
+    inbound = data.get("inbound") or {}
     ready = "готова к отправке" if data.get("delivery_ready") else "нужна настройка SMTP"
+    inbound_ready = (
+        "готовы"
+        if inbound.get("enabled", 0) > 0
+        and inbound.get("forwarding_ready", 0) == inbound.get("enabled", 0)
+        else "нужна настройка IMAP/основной почты"
+    )
     return (
         "📣 Сервис рассылок\n"
         f"Система: {ready}\n"
         f"Почтовые ящики: {mailboxes.get('ready', 0)} готовы из {mailboxes.get('active', 0)} активных\n"
+        f"Входящие ответы: {inbound_ready} ({inbound.get('forwarding_ready', 0)} из {inbound.get('enabled', 0)})\n"
         f"Подтверждённые согласия: {consents.get('verified', 0)}\n"
         f"Suppression / отписки: {data.get('suppressed', 0)}\n"
         f"Ожидают approval: {data.get('pending_approvals', 0)}\n"

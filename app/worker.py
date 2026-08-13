@@ -100,8 +100,11 @@ def send_next_email(db) -> bool:
             content_type = str(attachment.get("content_type", "application/octet-stream"))
             maintype, subtype = content_type.split("/", 1) if "/" in content_type else ("application", "octet-stream")
             message.add_attachment(raw, maintype=maintype, subtype=subtype, filename=str(attachment.get("filename") or "attachment"))
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
-            smtp.starttls(); smtp.login(smtp_username, smtp_password); smtp.send_message(message)
+        smtp_factory = smtplib.SMTP_SSL if smtp_port == 465 else smtplib.SMTP
+        with smtp_factory(smtp_host, smtp_port, timeout=20) as smtp:
+            if smtp_port != 465:
+                smtp.starttls()
+            smtp.login(smtp_username, smtp_password); smtp.send_message(message)
         row.status = "sent"; row.sent_at = now
         if mailbox: mailbox.sent_today += 1; mailbox.last_sent_at = now
     except Exception as exc:

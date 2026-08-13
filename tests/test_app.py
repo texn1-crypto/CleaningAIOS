@@ -684,7 +684,7 @@ def test_delivery_event_suppresses_bounced_recipient(client):
     assert retry.status_code == 409
 
 
-def test_worker_sends_real_attachment(monkeypatch):
+def test_worker_sends_real_attachment(client, monkeypatch):
     import base64
     from sqlalchemy import update
     from app.config import settings
@@ -712,6 +712,45 @@ def test_worker_sends_real_attachment(monkeypatch):
     assert sent and sent[0].is_multipart()
     assert any(part.get_filename() == "offer.txt" for part in sent[0].walk())
     assert "token=" in sent[0].get_body(preferencelist=("plain",)).get_content()
+
+
+def test_worker_supports_smtp_implicit_tls_on_port_465(client, monkeypatch):
+    from sqlalchemy import update
+
+    from app import worker
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import OutboundMessage
+
+    sent = []
+
+    class SMTPSSL:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def login(self, username, password): return None
+        def send_message(self, message): sent.append(message)
+
+    monkeypatch.setattr(worker.smtplib, "SMTP_SSL", SMTPSSL)
+    monkeypatch.setattr(settings, "smtp_host", "smtp.example")
+    monkeypatch.setattr(settings, "smtp_port", 465)
+    monkeypatch.setattr(settings, "smtp_username", "implicit-tls@example.com")
+    monkeypatch.setattr(settings, "smtp_password", "test-secret")
+    monkeypatch.setattr(settings, "smtp_from_email", "implicit-tls@example.com")
+    with SessionLocal() as db:
+        db.execute(update(OutboundMessage).where(OutboundMessage.status.in_(["queued", "waiting_configuration"])).values(status="sent"))
+        row = OutboundMessage(
+            campaign_key="implicit-tls-test",
+            recipient="implicit-tls-recipient@example.com",
+            subject="TLS",
+            body="TLS body",
+        )
+        db.add(row)
+        db.commit()
+        assert worker.send_next_email(db) is True
+        db.refresh(row)
+        assert row.status == "sent"
+    assert len(sent) == 1
 
 
 def test_outreach_suppression_and_deduplication(client):
@@ -1776,6 +1815,12 @@ def test_outreach_summary_is_owner_safe_and_manager_guarded(client):
     summary = response.json()
     assert summary["consents"]["verified"] >= 1
     assert summary["messages"]["statuses"]["queued"] >= 1
+    assert set(summary["inbound"]) == {
+        "enabled",
+        "receiving_ready",
+        "forwarding_ready",
+        "owner_destination_ready",
+    }
     assert summary["safety"] == {
         "verified_consent_required": True,
         "owner_approval_required": True,
@@ -1797,6 +1842,7 @@ def test_telegram_outreach_panel_is_read_only_and_actionable(monkeypatch):
         return {
             "delivery_ready": True,
             "mailboxes": {"total": 2, "active": 2, "ready": 2},
+            "inbound": {"enabled": 2, "receiving_ready": 2, "forwarding_ready": 2, "owner_destination_ready": True},
             "consents": {"verified": 12, "revoked": 1},
             "suppressed": 3,
             "pending_approvals": 1,
@@ -1818,6 +1864,7 @@ def test_telegram_outreach_panel_is_read_only_and_actionable(monkeypatch):
     assert calls == [("GET", "/api/outreach/summary", {})]
     text, kwargs = Update.effective_message.replies[0]
     assert "Подтверждённые согласия: 12" in text
+    assert "Входящие ответы: готовы (2 из 2)" in text
     assert "Ожидают approval: 1" in text
     callbacks = {
         button.callback_data
@@ -3210,13 +3257,14 @@ def test_campaign_attachment_balances_only_consented_recipients(client, monkeypa
         assert all("content_base64" not in message.attachments[0] for message in messages)
 
 
-def test_inbound_mail_is_deduplicated_and_forwarded_to_owner_queue(monkeypatch):
+def test_inbound_mail_is_deduplicated_and_forwarded_through_originating_mailbox(client, monkeypatch):
     from email.message import EmailMessage
 
-    from app import inbound_mail
+    from app import inbound_mail, notifications
+    from app.config import settings
     from app.db import SessionLocal
     from app.models import InboxMessage, OwnerNotification, SenderMailbox
-    from sqlalchemy import func, select
+    from sqlalchemy import func, select, update
 
     raw = EmailMessage()
     raw["From"] = "director@uk.example"
@@ -3237,12 +3285,30 @@ def test_inbound_mail_is_deduplicated_and_forwarded_to_owner_queue(monkeypatch):
             return "OK", [(b"7 (RFC822 {100})", message_bytes)]
         def logout(self): return "BYE", []
 
+    forwarded = []
+
+    class SMTP:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def starttls(self): return None
+        def login(self, username, password): return None
+        def send_message(self, message): forwarded.append(message)
+
     monkeypatch.setenv("IMAP_POOL_TEST", "test-app-password")
+    monkeypatch.setenv("SMTP_POOL_TEST", "test-app-password")
     monkeypatch.setattr(inbound_mail.imaplib, "IMAP4_SSL", IMAP)
+    monkeypatch.setattr(notifications.smtplib, "SMTP", SMTP)
+    monkeypatch.setattr(settings, "owner_notification_email", "owner@example.com")
+    for field in ("smtp_host", "smtp_username", "smtp_password", "smtp_from_email"):
+        monkeypatch.setattr(settings, field, "")
     with SessionLocal() as db:
         mailbox = SenderMailbox(
             name="Inbound test",
             address="pool-inbound@example.com",
+            smtp_host="smtp.gmail.com",
+            username="pool-inbound@example.com",
+            secret_ref="SMTP_POOL_TEST",
             imap_host="imap.gmail.com",
             imap_secret_ref="IMAP_POOL_TEST",
             inbound_enabled=True,
@@ -3258,7 +3324,39 @@ def test_inbound_mail_is_deduplicated_and_forwarded_to_owner_queue(monkeypatch):
         db.commit()
         assert second["duplicates"] == 1
         assert db.scalar(select(func.count()).select_from(InboxMessage).where(InboxMessage.external_id == "<inbound-unique@example.com>")) == 1
-        assert db.scalar(select(func.count()).select_from(OwnerNotification).where(OwnerNotification.idempotency_key == f"inbound-email:{mailbox.id}:7")) == 1
+        notification = db.scalar(select(OwnerNotification).where(OwnerNotification.idempotency_key == f"inbound-email:{mailbox.id}:7"))
+        assert notification is not None
+        assert notification.status == "queued"
+        assert notification.data["reply_to"] == "director@uk.example"
+        inbox = db.get(InboxMessage, int(notification.resource_id))
+        assert inbox.data["forwarded_to_owner"] is False
+
+        db.execute(update(OwnerNotification).where(OwnerNotification.id != notification.id).values(status="sent"))
+        db.commit()
+        assert notifications.send_next_owner_notification(db) is True
+        db.refresh(notification)
+        db.refresh(inbox)
+        assert notification.status == "sent"
+        assert inbox.data["forwarded_to_owner"] is True
+        assert inbox.data["owner_notification_id"] == notification.id
+
+        monkeypatch.setattr(settings, "owner_notification_email", mailbox.address)
+        loop_guard = notifications.queue_owner_notification(
+            db,
+            idempotency_key=f"inbound-loop-guard:{mailbox.id}",
+            channel="email",
+            resource_type="inbox_message",
+            resource_id="999999",
+            subject="Loop guard",
+            body="Must not be sent back to the monitored inbox",
+            data={"mailbox_id": mailbox.id},
+        )
+        assert loop_guard.status == "waiting_configuration"
+
+    assert len(forwarded) == 1
+    assert forwarded[0]["From"] == "pool-inbound@example.com"
+    assert forwarded[0]["To"] == "owner@example.com"
+    assert forwarded[0]["Reply-To"] == "director@uk.example"
 
 
 def test_marketing_agent_creates_two_posts_per_social_channel_for_approval(client):
