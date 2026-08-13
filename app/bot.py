@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import asyncio
 import base64
+from difflib import SequenceMatcher
 import io
 import logging
 import re
@@ -345,11 +348,50 @@ def _mailing_addresses(text: str) -> list[str]:
     return sorted(set(match.group(0).lower() for match in EMAIL_PATTERN.finditer(text or "")))
 
 
-async def mailing_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not allowed(update):
-        await update.effective_message.reply_text("Доступ не разрешён.")
-        return
-    addresses = _mailing_addresses(" ".join(context.args))
+def _has_close_word(text: str, candidates: tuple[str, ...], *, cutoff: float = 0.72) -> bool:
+    words = re.findall(r"[a-zа-я0-9-]+", text.lower().replace("ё", "е"))
+    return any(SequenceMatcher(None, word, candidate).ratio() >= cutoff for word in words for candidate in candidates)
+
+
+def _suggested_bot_action(text: str, intent: dict) -> dict | None:
+    """Infer only a small set of reversible bot actions from an ambiguous message."""
+    normalized = " ".join((text or "").lower().replace("ё", "е").split())
+    action_requested = any(
+        word.startswith(("запуст", "начн", "созда", "сдела", "отправ", "разошл", "разосл"))
+        for word in re.findall(r"[a-zа-я0-9-]+", normalized)
+    )
+    read_requested = any(word in normalized for word in ("покажи", "выведи", "открой", "какие", "что с"))
+    ambiguous_task = intent.get("kind") == "task" and intent.get("agent_type") == "orchestrator"
+
+    if _has_close_word(normalized, ("рассылка", "рассылку", "рассылки", "разослать")) and (action_requested or ambiguous_task):
+        return {
+            "action": "mailing",
+            "question": "Вы хотели запустить рассылку?",
+            "recipients": _mailing_addresses(text),
+        }
+    if read_requested and _has_close_word(normalized, ("задачи", "задачу", "задания")):
+        return {"action": "tasks", "question": "Вы хотели открыть список задач?"}
+    if read_requested and _has_close_word(normalized, ("одобрения", "подтверждения", "согласования")):
+        return {"action": "approvals", "question": "Вы хотели открыть список подтверждений?"}
+    if _has_close_word(normalized, ("дашборд", "панель")):
+        return {"action": "dashboard", "question": "Вы хотели открыть главную панель?"}
+    return None
+
+
+async def _offer_action_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE, suggestion: dict):
+    nonce = secrets.token_urlsafe(6)
+    context.user_data["pending_action_confirmation"] = {**suggestion, "nonce": nonce}
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Да", callback_data=f"intent:{nonce}:yes"),
+        InlineKeyboardButton("❌ Нет", callback_data=f"intent:{nonce}:no"),
+    ]])
+    await update.effective_message.reply_text(
+        f"Я не уверен, что правильно понял запрос.\n\n{suggestion['question']}",
+        reply_markup=keyboard,
+    )
+
+
+async def _begin_mailing(update: Update, context: ContextTypes.DEFAULT_TYPE, addresses: list[str]):
     if len(addresses) > 100:
         await update.effective_message.reply_text("За один черновик можно добавить не более 100 адресов.")
         return
@@ -366,6 +408,13 @@ async def mailing_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(
             "Пришлите email-адреса одним сообщением, через пробел или запятую. Максимум 100. Для отмены: /cancel"
         )
+
+
+async def mailing_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        await update.effective_message.reply_text("Доступ не разрешён.")
+        return
+    await _begin_mailing(update, context, _mailing_addresses(" ".join(getattr(context, "args", ()) or ())))
 
 
 async def mailing_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -651,6 +700,11 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     replied = getattr(message, "reply_to_message", None)
     referenced_text = (getattr(replied, "text", None) or getattr(replied, "caption", None) or "") if replied else ""
     intent = understand_russian_message(message.text or "", referenced_text=referenced_text)
+    suggestion = _suggested_bot_action(message.text or "", intent)
+    expected_kind = {"tasks": "tasks", "approvals": "approvals", "dashboard": "dashboard"}
+    if suggestion and intent.get("kind") != expected_kind.get(suggestion["action"]):
+        await _offer_action_confirmation(update, context, suggestion)
+        return
     try:
         try:
             analysis = await api("POST", "/api/request-analysis", json={
@@ -714,6 +768,15 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Не нашёл предыдущий текст в сохранённой истории. Перешлите письмо или ответьте на него фразой "
                     "«дай обратную связь», и я сразу подготовлю разбор и новый черновик."
                 )
+                return
+            if analysis.get("classification") == "capability_gap":
+                title = intent["title"]
+                await _offer_action_confirmation(update, context, {
+                    "action": "create_task",
+                    "question": f"Вы хотели создать задачу «{title[:180]}»?",
+                    "intent": intent,
+                    "improvement_id": analysis.get("improvement_id"),
+                })
                 return
             data = await api("POST", "/api/tasks", json={
                 "title": intent["title"],
@@ -799,10 +862,52 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Не удалось связаться с CleaningAI OS. Проверьте состояние сервисов в Mission Control.")
 
 
+async def confirmed_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    parts = (q.data or "").split(":", 2)
+    pending = context.user_data.get("pending_action_confirmation")
+    if len(parts) != 3 or not isinstance(pending, dict) or pending.get("nonce") != parts[1]:
+        await update.effective_message.reply_text("Это уточнение уже устарело. Напишите запрос ещё раз.")
+        return
+    context.user_data.pop("pending_action_confirmation", None)
+    if parts[2] == "no":
+        await update.effective_message.reply_text("Действие отменено. Напишите, что вы хотели сделать, другими словами.")
+        return
+
+    action = pending.get("action")
+    if action == "mailing":
+        await _begin_mailing(update, context, pending.get("recipients") or [])
+    elif action == "tasks":
+        await tasks(update, context)
+    elif action == "approvals":
+        await approvals(update, context)
+    elif action == "dashboard":
+        await dashboard(update, context)
+    elif action == "create_task":
+        intent = pending["intent"]
+        data = await api("POST", "/api/tasks", json={
+            "title": intent["title"],
+            "agent_type": intent["agent_type"],
+            "priority": intent["priority"],
+            "payload": intent["payload"],
+            "max_attempts": 3,
+        })
+        improvement = (
+            f" Request Analyst также зафиксировал улучшение #{pending['improvement_id']}."
+            if pending.get("improvement_id") else ""
+        )
+        await update.effective_message.reply_text(
+            f"✅ Выполнено: создана задача #{data['id']} для агента {data['agent_type']}.{improvement}"
+        )
+    else:
+        await update.effective_message.reply_text("Не удалось выполнить подтверждённое действие. Напишите запрос ещё раз.")
+
+
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if not allowed(update): return
-    if q.data == "dashboard": await dashboard(update, context)
+    if q.data.startswith("intent:"): await confirmed_action(update, context)
+    elif q.data == "dashboard": await dashboard(update, context)
     elif q.data == "tasks": await tasks(update, context)
     elif q.data == "decisions": await decisions(update, context)
     elif q.data == "approvals": await approvals(update, context)

@@ -1945,6 +1945,165 @@ def test_telegram_mailing_wizard_keeps_customer_data_out_of_request_analysis(mon
     assert {button.callback_data for button in markup.inline_keyboard[0]} == {"approve:701", "reject:701"}
 
 
+def test_telegram_ambiguous_mailing_confirmation_executes_wizard(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("Ambiguous mailing must not reach request analysis or create a task")
+
+    class Message:
+        text = "запусти рассулку на client@example.com"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Query:
+        def __init__(self, data):
+            self.data = data
+            self.answered = False
+
+        async def answer(self):
+            self.answered = True
+
+    class Update:
+        def __init__(self):
+            self.effective_message = Message()
+            self.effective_user = User()
+            self.callback_query = None
+
+    class Context:
+        def __init__(self):
+            self.user_data = {}
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    update, context = Update(), Context()
+
+    asyncio.run(bot.natural_language(update, context))
+    pending = context.user_data["pending_action_confirmation"]
+    assert pending["action"] == "mailing"
+    assert pending["recipients"] == ["client@example.com"]
+    question, kwargs = update.effective_message.replies[-1]
+    assert "Вы хотели запустить рассылку?" in question
+    buttons = kwargs["reply_markup"].inline_keyboard[0]
+    assert [button.text for button in buttons] == ["✅ Да", "❌ Нет"]
+
+    update.callback_query = Query(buttons[0].callback_data)
+    asyncio.run(bot.callback(update, context))
+    assert update.callback_query.answered is True
+    assert context.user_data.get("pending_action_confirmation") is None
+    assert context.user_data["mailing_draft"] == {
+        "step": "evidence",
+        "recipients": ["client@example.com"],
+    }
+    assert "Получено адресов: 1" in update.effective_message.replies[-1][0]
+    assert calls == []
+
+    asyncio.run(bot.callback(update, context))
+    assert "уже устарело" in update.effective_message.replies[-1][0]
+    assert calls == []
+
+
+def test_telegram_ambiguous_action_waits_for_yes_then_creates_task(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "capability_gap", "improvement_id": 44}
+        if path == "/api/tasks":
+            return {"id": 902, "agent_type": kwargs["json"]["agent_type"]}
+        raise AssertionError(path)
+
+    class Message:
+        text = "Позвони клиенту и согласуй время"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Query:
+        def __init__(self, data): self.data = data
+        async def answer(self): return None
+
+    class Update:
+        def __init__(self):
+            self.effective_message = Message()
+            self.effective_user = User()
+            self.callback_query = None
+
+    class Context:
+        def __init__(self): self.user_data = {}
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    update, context = Update(), Context()
+
+    asyncio.run(bot.natural_language(update, context))
+    assert [path for _, path, _ in calls] == ["/api/request-analysis"]
+    question, kwargs = update.effective_message.replies[-1]
+    assert "Вы хотели создать задачу" in question
+    yes = kwargs["reply_markup"].inline_keyboard[0][0]
+
+    update.callback_query = Query(yes.callback_data)
+    asyncio.run(bot.callback(update, context))
+    assert [path for _, path, _ in calls] == ["/api/request-analysis", "/api/tasks"]
+    assert "✅ Выполнено: создана задача #902" in update.effective_message.replies[-1][0]
+    assert "улучшение #44" in update.effective_message.replies[-1][0]
+
+
+def test_telegram_ambiguous_action_no_cancels_without_execution(monkeypatch):
+    from app import bot
+
+    class Message:
+        text = "запусти рассулку"
+
+        def __init__(self): self.replies = []
+        async def reply_text(self, value, **kwargs): self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Query:
+        def __init__(self, data): self.data = data
+        async def answer(self): return None
+
+    class Update:
+        def __init__(self):
+            self.effective_message = Message()
+            self.effective_user = User()
+            self.callback_query = None
+
+    class Context:
+        def __init__(self): self.user_data = {}
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    update, context = Update(), Context()
+    asyncio.run(bot.natural_language(update, context))
+    no = update.effective_message.replies[-1][1]["reply_markup"].inline_keyboard[0][1]
+    update.callback_query = Query(no.callback_data)
+    asyncio.run(bot.callback(update, context))
+    assert context.user_data.get("mailing_draft") is None
+    assert context.user_data.get("pending_action_confirmation") is None
+    assert "Действие отменено" in update.effective_message.replies[-1][0]
+
+
 def test_compose_telegram_route_is_configurable_without_a_secret():
     compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
     route_lines = [line for line in compose.splitlines() if "api.telegram.org=" in line]
