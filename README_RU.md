@@ -21,7 +21,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - owner-approval gate for tender submissions, contracts, legal/financial commitments, final HR decisions and bulk outreach tasks;
 - key-derived production RBAC, immutable audit events, decisions, tasks and agent heartbeats;
 - CSV/XLSX lead and SPb/LO management-company import with source provenance, guarded website contact enrichment, documented consent evidence and an outreach queue with multiple mailboxes, real attachments, delivery journal, IMAP replies, suppression/unsubscribe, campaign deduplication, owner approval, per-mailbox limits and SMTP delivery;
-- daily source-backed Cleaning News Agent plan with owner-reviewed text and generated images for Telegram, VK, Odnoklassniki and Instagram; Telegram/VK use official publication APIs, while missing credentials and unsupported/manual channels are reported and never imitated;
+- daily source-backed Cleaning News Agent plan with owner-reviewed text and generated images for Telegram, VK, Odnoklassniki and Instagram; Telegram, VK and Odnoklassniki use official publication APIs, while missing credentials and manual channels are reported and never imitated;
 - a two-year 1B RUB annual revenue run-rate goal owned by Growth Officer, weekly cross-agent workstreams and a verified goal snapshot in every 30-minute owner report;
 - unified inbound message inbox, content plan, staffing/reserve view, vacancy Telegram drafts, payment calendar and complaint/SLA control;
 - public lead capture into CRM/inbox with consent, abuse protection, UTM attribution, deterministic hot-lead scoring, Sales tasks and owner-email notifications;
@@ -63,7 +63,7 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 - `COMPANY_LEGAL_NAME`, `COMPANY_INN`, company contacts/address and `PRIVACY_CONTACT_EMAIL` before enabling the public production lead form
 - `OWNER_NOTIFICATION_EMAIL` plus SMTP for hot-lead alerts; optional Russian advertising account credentials listed in `.env.example`
 - per-mailbox `SMTP_*` and `IMAP_*` environment secrets for outreach and inbound replies; secrets are referenced by name from `SenderMailbox` and are never returned by the API
-- social administrator credentials listed in `.env.example`; Telegram and VK publish only after exact owner approval, while Odnoklassniki remains `adapter_required` and Instagram remains manual/legal-review only
+- social administrator credentials listed in `.env.example`; Telegram, VK and Odnoklassniki publish only after exact owner approval, while Instagram remains manual/legal-review only
 - `IMAGE_GENERATION_API_KEY` plus the explicit `SOCIAL_IMAGE_GENERATION_ENABLED=true` owner switch for paid social-image generation; the default is disabled
 - without a paid image key the worker uses the repository's original cleaning-photo pool, still checksum-binds every selected file to the owner preview
 
@@ -218,7 +218,7 @@ Scheduler ежедневно создаёт задачу Cleaning News Agent. А
 привязан к SHA-256 и неизменяемому digest всего набора; любая правка текста, времени
 или изображения после просмотра отклоняет решение и требует нового preview. Одобрение
 переводит разрешённые каналы в `scheduled`. Worker публикует одобренный набор через
-официальные Telegram Bot API и VK API, фиксирует внешний post ID и не повторяет
+официальные Telegram Bot API, VK API и Odnoklassniki REST API, фиксирует внешний post ID и не повторяет
 неоднозначный запрос после timeout без ручной сверки. Отсутствие официального токена
 или прав администратора остаётся видимым `credentials_required/adapter_required`,
 а не фиктивной публикацией. Кнопка `/social` показывает состояния подборок и каналов.
