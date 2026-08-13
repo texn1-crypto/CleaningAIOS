@@ -1125,6 +1125,8 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Request Analyst проверяет каждый запрос. Если функции не хватает, он создаёт техническое задание для Codex с критериями и тест-планом.\n\n"
                 "Оплата, договоры, подача тендеров, окончательные кадровые решения и массовые рассылки всегда потребуют вашего подтверждения."
             )
+        elif kind == "menu":
+            await start(update, context)
         elif kind == "dashboard":
             await dashboard(update, context)
         elif kind == "tasks":

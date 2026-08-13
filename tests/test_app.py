@@ -953,6 +953,8 @@ def test_telegram_requires_owner_id(monkeypatch):
 def test_russian_chat_reads_existing_sections():
     from app.chat import understand_russian_message
 
+    assert understand_russian_message("Меню") == {"kind": "menu"}
+    assert understand_russian_message("Открой меню") == {"kind": "menu"}
     assert understand_russian_message("Покажи текущие задачи")["kind"] == "tasks"
     assert understand_russian_message("Что с тендерами?")["record_type"] == "tender"
     assert understand_russian_message("Покажи финансы")["module"] == "finance"
@@ -967,6 +969,62 @@ def test_russian_chat_reads_existing_sections():
         "kind": "task_eta",
         "task_id": 42,
     }
+
+
+def test_menu_request_is_supported_and_does_not_create_an_improvement(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "Меню"
+    response = client.post(
+        "/api/request-analysis",
+        json={"message": message, "intent": understand_russian_message(message)},
+    )
+    assert response.status_code == 200
+    analysis = response.json()
+    assert analysis["classification"] == "supported"
+    assert analysis["fully_supported"] is True
+    assert analysis["improvement_id"] is None
+
+
+def test_telegram_menu_phrase_opens_interactive_menu(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        assert path == "/api/request-analysis"
+        return {"classification": "supported", "improvement_id": None}
+
+    class Message:
+        text = "Меню"
+        reply_to_message = None
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+
+    assert len(calls) == 1
+    text, kwargs = Update.effective_message.replies[-1]
+    assert text == "CleaningAI OS · выберите раздел:"
+    buttons = [button for row in kwargs["reply_markup"].inline_keyboard for button in row]
+    assert any(button.callback_data == "outreach" for button in buttons)
+    assert any(button.callback_data == "tasks" for button in buttons)
 
 
 def test_russian_chat_routes_misspelled_social_setup_request_to_marketing(client, monkeypatch):
