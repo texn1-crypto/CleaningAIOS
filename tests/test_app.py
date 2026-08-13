@@ -680,6 +680,161 @@ def test_russian_chat_reads_existing_sections():
     }
 
 
+def test_russian_chat_routes_misspelled_social_setup_request_to_marketing(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "начните офрмлять социалбные сети вк и однокласники"
+    intent = understand_russian_message(message)
+    assert intent["kind"] == "task"
+    assert intent["agent_type"] == "marketing"
+    assert intent["payload"]["action"] == "prepare_social_account_setup"
+    assert intent["payload"]["channels"] == ["vk", "odnoklassniki"]
+    analysis = client.post("/api/request-analysis", json={"message": message, "intent": intent}).json()
+    assert analysis["classification"] == "supported"
+    assert analysis["improvement_id"] is None
+
+
+def test_social_account_setup_persists_real_progress_and_audits_failures(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "social_vk_url", "")
+    monkeypatch.setattr(settings, "vk_community_id", "")
+    monkeypatch.setattr(settings, "vk_community_token", "")
+    monkeypatch.setattr(settings, "social_odnoklassniki_url", "")
+    monkeypatch.setattr(settings, "odnoklassniki_group_id", "")
+    monkeypatch.setattr(settings, "odnoklassniki_application_key", "")
+    monkeypatch.setattr(settings, "odnoklassniki_session_secret", "")
+    task = client.post("/api/tasks", json={
+        "title": "Начать оформление VK и Одноклассников",
+        "agent_type": "marketing",
+        "payload": {"action": "prepare_social_account_setup", "channels": ["vk", "odnoklassniki"]},
+        "max_attempts": 1,
+    }).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    assert completed["status"] == "done"
+    result = completed["result"]
+    assert result["status"] == "setup_in_progress"
+    assert result["records_created"] == 2
+    assert result["external_accounts_created"] == 0
+    assert result["publication_started"] is False
+    assert {row["channel"] for row in result["platforms"]} == {"vk", "odnoklassniki"}
+    assert all(row["status"] == "integration_configuration_required" for row in result["platforms"])
+    records = client.get("/api/records?record_type=social_account_setup").json()
+    assert {row["data"]["channel"] for row in records} >= {"vk", "odnoklassniki"}
+    assert any(
+        row["action"] == "task.completed" and row["resource_id"] == str(task["id"])
+        for row in client.get("/api/audit").json()
+    )
+
+    failed_task = client.post("/api/tasks", json={
+        "title": "Неподдерживаемая социальная площадка",
+        "agent_type": "marketing",
+        "payload": {"action": "prepare_social_account_setup", "channels": ["unknown"]},
+        "max_attempts": 1,
+    }).json()
+    failed = client.post(f"/api/tasks/{failed_task['id']}/run").json()
+    assert failed["status"] == "failed"
+    assert "Unsupported social channels" in failed["result"]["error"]
+    assert any(
+        row["action"] == "task.failed" and row["resource_id"] == str(failed_task["id"])
+        for row in client.get("/api/audit").json()
+    )
+
+
+def test_telegram_social_setup_runs_agent_and_returns_actual_result(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 611, "agent_type": "marketing", "title": "Соцсети"}
+        if path == "/api/tasks/611/run":
+            return {
+                "status": "done",
+                "result": {
+                    "status": "setup_in_progress",
+                    "records_created": 2,
+                    "records_updated": 0,
+                    "external_accounts_created": 0,
+                    "platforms": [
+                        {"channel": "vk", "status": "integration_configuration_required", "missing_configuration": ["SOCIAL_VK_URL"]},
+                        {"channel": "odnoklassniki", "status": "integration_configuration_required", "missing_configuration": ["SOCIAL_ODNOKLASSNIKI_URL"]},
+                    ],
+                },
+            }
+        raise AssertionError(path)
+
+    class Message:
+        text = "начните офрмлять социалбные сети вк и однокласники"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    reply = Update.effective_message.replies[-1]
+    assert "Оформление социальных сетей начато" in reply
+    assert "VK" in reply and "Одноклассники" in reply
+    assert "Внешних аккаунтов автоматически создано: 0" in reply
+    task_payload = next(kwargs["json"] for _, path, kwargs in calls if path == "/api/tasks")
+    assert task_payload["agent_type"] == "marketing"
+    assert task_payload["payload"]["action"] == "prepare_social_account_setup"
+    assert task_payload["max_attempts"] == 1
+
+
+def test_telegram_social_setup_preserves_failed_status(monkeypatch):
+    from app import bot
+
+    async def fake_api(method, path, **kwargs):
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 612, "agent_type": "marketing", "title": "Соцсети"}
+        if path == "/api/tasks/612/run":
+            return {"status": "failed", "result": {"error": "adapter failure"}}
+        raise AssertionError(path)
+
+    class Message:
+        text = "начните оформлять социальные сети вк и одноклассники"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    reply = Update.effective_message.replies[-1]
+    assert "не началось" in reply
+    assert "adapter failure" in reply
+
+
 def test_task_timing_report_does_not_treat_empty_agent_summary_as_completion(client):
     from app.chat import understand_russian_message
 

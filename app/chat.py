@@ -36,7 +36,11 @@ def _task_agent(text: str) -> str:
         return "hr"
     if _contains(text, "финанс", "платеж", "оплат", "счет", "деньг", "марж", "прибыл", "расход", "бюджет"):
         return "finance"
-    if _contains(text, "маркет", "реклам", "контент", "публикац", "пост", "smm", "рассыл"):
+    if _contains(
+        text,
+        "маркет", "реклам", "контент", "публикац", "пост", "smm", "рассыл",
+        "соцсет", "социальн", "вконтакт", "одноклас", " вк ", "vk",
+    ):
         return "marketing"
     if _contains(text, "исслед", "собери дан", "найди информац", "проведи поиск"):
         return "research"
@@ -130,7 +134,8 @@ def understand_russian_message(message: str) -> dict[str, Any]:
         text,
         "создай", "поставь", "добавь", "запусти", "проведи", "проанализируй",
         "найди", "собери", "подготовь", "сделай", "оплати", "переведи", "подпиши",
-        "подай", "отправь", "найми", "уволь", "разошли",
+        "подай", "отправь", "найми", "уволь", "разошли", "начни", "начните",
+        "оформи", "оформляй", "оформлять", "настрой", "зарегистрируй",
     )
     read_words = _contains(text, "покажи", "выведи", "список", "сколько", "какие", "что с", "статус", "состояние")
 
@@ -173,6 +178,20 @@ def understand_russian_message(message: str) -> dict[str, Any]:
         payload.update({"collection": "tenders", "query": safe_original[:1000]})
     if agent_type == "sales" and ("коммерческ" in text or re.search(r"\bкп\b", text)) and "предлож" in text:
         payload.update({"action": "generate_proposal", "client_query": _proposal_client_query(safe_original)})
+    if agent_type == "marketing" and _contains(
+        text,
+        "оформ", "настрой", "зарегистр", "создай", "начни", "начните",
+    ) and _contains(text, "соцсет", "социальн", "вконтакт", "одноклас", " вк ", "vk"):
+        channels: list[str] = []
+        if re.search(r"(?:^|\s)(?:вк|vk)(?:\s|$)", text) or "вконтакт" in text:
+            channels.append("vk")
+        if "одноклас" in text:
+            channels.append("odnoklassniki")
+        if "телеграм" in text or "telegram" in text:
+            channels.append("telegram")
+        if "инстаграм" in text or "instagram" in text:
+            channels.append("instagram")
+        payload.update({"action": "prepare_social_account_setup", "channels": channels or ["vk", "odnoklassniki"]})
     return {
         "kind": "task",
         "title": safe_original[:255],

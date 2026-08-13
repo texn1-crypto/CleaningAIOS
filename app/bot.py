@@ -389,6 +389,33 @@ async def task_timing(update: Update, intent: dict):
     await update.effective_message.reply_text(format_task_timing(result))
 
 
+def format_social_account_setup(result: dict, task_id: int) -> str:
+    if result.get("status") != "setup_in_progress":
+        return (
+            f"Оформление соцсетей не началось. Задача #{task_id} сохранила фактическую ошибку: "
+            f"{result.get('error') or result.get('reason') or 'неизвестная ошибка'}."
+        )
+    labels = {"vk": "VK", "odnoklassniki": "Одноклассники", "telegram": "Telegram", "instagram": "Instagram"}
+    lines = [
+        "📱 Оформление социальных сетей начато",
+        f"Задача #{task_id}: сохранено новых карточек {result.get('records_created', 0)}, обновлено {result.get('records_updated', 0)}.",
+    ]
+    for platform in result.get("platforms") or []:
+        missing = platform.get("missing_configuration") or []
+        lines.append(
+            f"• {labels.get(platform.get('channel'), platform.get('channel'))}: "
+            f"{platform.get('status')}" + (f"; нужно: {', '.join(missing)}" if missing else "")
+        )
+    lines.extend(
+        [
+            "",
+            "Внешних аккаунтов автоматически создано: 0. Телефонную проверку, CAPTCHA и подтверждение владельца нельзя имитировать.",
+            "Публикации не запускались; финальные изображения и текст потребуют отдельного визуального согласования.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 async def module_summary(update: Update, module: str, title: str):
     data = (await api("GET", "/api/modules/summary"))[module]
     await update.effective_message.reply_text(title + "\n" + "\n".join(f"{key}: {value}" for key, value in data.items()))
@@ -469,7 +496,9 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "agent_type": intent["agent_type"],
                 "priority": intent["priority"],
                 "payload": intent["payload"],
-                "max_attempts": 1 if intent["payload"].get("action") == "generate_proposal" else 3,
+                "max_attempts": 1
+                if intent["payload"].get("action") in {"generate_proposal", "prepare_social_account_setup"}
+                else 3,
             })
             protection = " Критическое действие будет остановлено до вашего подтверждения." if intent["protected"] else ""
             if intent["payload"].get("action") == "generate_proposal":
@@ -492,6 +521,16 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"Не удалось подготовить КП: {result.get('error', 'неизвестная ошибка')}. "
                         "Результат записан в задаче и audit log."
                     )
+            elif intent["payload"].get("action") == "prepare_social_account_setup":
+                completed = await api("POST", f"/api/tasks/{data['id']}/run")
+                result = completed.get("result") or {}
+                if completed.get("status") != "done":
+                    result = {
+                        **result,
+                        "status": "failed",
+                        "error": result.get("error") or f"статус задачи {completed.get('status', 'unknown')}",
+                    }
+                await update.effective_message.reply_text(format_social_account_setup(result, data["id"]))
             elif analysis.get("improvement_id"):
                 await update.effective_message.reply_text(
                     f"Я сохранил запрос как задачу #{data['id']}, но текущая версия не может гарантировать полный результат. "

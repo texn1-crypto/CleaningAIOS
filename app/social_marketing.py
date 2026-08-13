@@ -18,6 +18,7 @@ SOCIAL_CHANNELS = ("telegram", "vk", "odnoklassniki", "instagram")
 LEGAL_REVIEW_CHANNELS = {"instagram"}
 MOSCOW = ZoneInfo("Europe/Moscow")
 VISUAL_APPROVAL_VERSION = 1
+SOCIAL_SETUP_VERSION = 1
 
 TOPICS = (
     (
@@ -45,6 +46,144 @@ TOPICS = (
         "Первое впечатление формируют входная группа, санузлы и зоны общего пользования. Стабильный график, дневной дежурный персонал и оперативная реакция на инциденты помогают поддерживать сервисный уровень в течение всего дня.",
     ),
 )
+
+
+def _social_platform_state(channel: str) -> dict:
+    if channel == "vk":
+        public_url = settings.social_vk_url
+        credentials_present = bool(settings.vk_community_id and settings.vk_community_token)
+        missing = [
+            name
+            for name, configured in (
+                ("SOCIAL_VK_URL", bool(public_url)),
+                ("VK_COMMUNITY_ID", bool(settings.vk_community_id)),
+                ("VK_COMMUNITY_TOKEN", bool(settings.vk_community_token)),
+            )
+            if not configured
+        ]
+        owner_steps = [
+            "Создать или выбрать официальное сообщество VK и пройти проверку телефона/CAPTCHA.",
+            "Подтвердить владельца сообщества и передать публичную ссылку без пароля от аккаунта.",
+        ]
+    elif channel == "odnoklassniki":
+        public_url = settings.social_odnoklassniki_url
+        credentials_present = bool(
+            settings.odnoklassniki_group_id
+            and settings.odnoklassniki_application_key
+            and settings.odnoklassniki_session_secret
+        )
+        missing = [
+            name
+            for name, configured in (
+                ("SOCIAL_ODNOKLASSNIKI_URL", bool(public_url)),
+                ("ODNOKLASSNIKI_GROUP_ID", bool(settings.odnoklassniki_group_id)),
+                ("ODNOKLASSNIKI_APPLICATION_KEY", bool(settings.odnoklassniki_application_key)),
+                ("ODNOKLASSNIKI_SESSION_SECRET", bool(settings.odnoklassniki_session_secret)),
+            )
+            if not configured
+        ]
+        owner_steps = [
+            "Создать или выбрать официальную группу Одноклассников и пройти проверку телефона/CAPTCHA.",
+            "Подтвердить владельца группы и передать публичную ссылку без пароля от аккаунта.",
+        ]
+    elif channel == "telegram":
+        public_url = settings.social_telegram_url
+        credentials_present = bool(settings.telegram_bot_token and settings.telegram_social_chat_id)
+        missing = [
+            name
+            for name, configured in (
+                ("SOCIAL_TELEGRAM_URL", bool(public_url)),
+                ("TELEGRAM_SOCIAL_CHAT_ID", bool(settings.telegram_social_chat_id)),
+            )
+            if not configured
+        ]
+        owner_steps = ["Создать или выбрать официальный Telegram-канал и назначить бота администратором."]
+    elif channel == "instagram":
+        public_url = settings.social_instagram_url
+        credentials_present = False
+        missing = ["LEGAL_REVIEW", "MANUAL_PUBLICATION_ONLY"]
+        owner_steps = ["Пройти юридическую проверку площадки и подтвердить только ручной режим публикации."]
+    else:
+        raise ValueError(f"Unsupported social channel: {channel}")
+
+    return {
+        "channel": channel,
+        "public_url": public_url,
+        "public_url_configured": bool(public_url),
+        "credentials_present": credentials_present,
+        "missing_configuration": missing,
+        "status": "integration_configuration_required" if missing else "credentials_present_adapter_required",
+        "owner_steps": owner_steps,
+        "system_steps": [
+            "Подготовить название, описание, контакты, аватар и обложку в фирменном стиле.",
+            "Привязать публикации к общему контент-плану и визуальному owner approval.",
+            "Провести тестовую публикацию только после проверки адаптера и отдельного подтверждения.",
+        ],
+        "automatic_publication_enabled": False,
+    }
+
+
+def prepare_social_account_setup(db: Session, *, channels: list[str]) -> dict:
+    requested = list(dict.fromkeys(str(channel).strip().lower() for channel in channels if str(channel).strip()))
+    if not requested:
+        requested = ["vk", "odnoklassniki"]
+    unknown = [channel for channel in requested if channel not in SOCIAL_CHANNELS]
+    if unknown:
+        raise ValueError("Unsupported social channels: " + ", ".join(unknown))
+
+    created = 0
+    updated = 0
+    platforms: list[dict] = []
+    for channel in requested:
+        state = _social_platform_state(channel)
+        external_id = f"social-account-setup:{channel}:v{SOCIAL_SETUP_VERSION}"
+        record = db.scalar(
+            select(BusinessRecord).where(
+                BusinessRecord.record_type == "social_account_setup",
+                BusinessRecord.external_id == external_id,
+            )
+        )
+        if record is None:
+            record = BusinessRecord(
+                record_type="social_account_setup",
+                external_id=external_id,
+                title=f"Оформление официальной страницы: {channel}",
+                status=state["status"],
+                source="marketing_agent",
+                data={"setup_version": SOCIAL_SETUP_VERSION, **state},
+            )
+            db.add(record)
+            created += 1
+        else:
+            record.status = state["status"]
+            record.data = {**(record.data or {}), "setup_version": SOCIAL_SETUP_VERSION, **state}
+            updated += 1
+        db.flush()
+        platforms.append({"record_id": record.id, **state})
+
+    return {
+        "status": "setup_in_progress",
+        "action": "prepare_social_account_setup",
+        "requested_channels": requested,
+        "records_created": created,
+        "records_updated": updated,
+        "external_accounts_created": 0,
+        "platforms": platforms,
+        "publication_started": False,
+        "owner_approval_preserved": True,
+        "message": (
+            "Чек-листы оформления сохранены. Регистрация внешних аккаунтов, телефонная проверка и CAPTCHA "
+            "должны быть выполнены владельцем; система не выдаёт их за завершённые действия."
+        ),
+        "evidence": [
+            {
+                "type": "social_account_setup_records",
+                "record_ids": [platform["record_id"] for platform in platforms],
+                "channels": requested,
+                "external_accounts_created": 0,
+            }
+        ],
+    }
 
 
 def _slot_utc(day: datetime, hour: int) -> datetime:

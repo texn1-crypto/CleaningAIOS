@@ -213,6 +213,10 @@ class SalesAgent:
 class MarketingAgent:
     name = "marketing"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "prepare_social_account_setup":
+            from .social_marketing import prepare_social_account_setup
+
+            return prepare_social_account_setup(db, channels=payload.get("channels") or [])
         if payload.get("action") == "prepare_daily_social_plan":
             from .social_marketing import prepare_daily_social_plan
 

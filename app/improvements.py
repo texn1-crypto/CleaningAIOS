@@ -72,12 +72,16 @@ def deterministic_assessment(message: str, intent: dict[str, Any]) -> dict[str, 
             "should_create_improvement": False,
         }
 
-    if intent.get("payload", {}).get("action") in {"generate_proposal", "revise_proposal"}:
+    if intent.get("payload", {}).get("action") in {
+        "generate_proposal",
+        "revise_proposal",
+        "prepare_social_account_setup",
+    }:
         return {
             "fully_supported": True,
             "capability_score": 1.0,
             "classification": "supported",
-            "reason": "Система формирует проверяемый проект коммерческого предложения и не отправляет его без проверки владельца.",
+            "reason": "Запрос связан с проверенным исполняемым workflow и возвращает фактический результат из общей базы.",
             "missing_capabilities": [],
             "suggested_function": "",
             "acceptance_criteria": [],
