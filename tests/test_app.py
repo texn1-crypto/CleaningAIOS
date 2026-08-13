@@ -1183,9 +1183,10 @@ def test_telegram_application_registers_natural_language_handler(monkeypatch):
 
 def test_compose_telegram_route_is_configurable_without_a_secret():
     compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
-    route_line = next(line for line in compose.splitlines() if "api.telegram.org=" in line)
-    assert "api.telegram.org=${TELEGRAM_API_IP:-" in route_line
-    assert "TELEGRAM_BOT_TOKEN" not in route_line
+    route_lines = [line for line in compose.splitlines() if "api.telegram.org=" in line]
+    assert len(route_lines) == 2
+    assert all("api.telegram.org=${TELEGRAM_API_IP:-" in line for line in route_lines)
+    assert all("TELEGRAM_BOT_TOKEN" not in line for line in route_lines)
 
 
 def test_sales_agent_generates_downloadable_proposal_pdf(client, monkeypatch, tmp_path):

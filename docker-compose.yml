@@ -51,6 +51,10 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "app.worker"]
+    # Owner notifications use Telegram from the worker, so it needs the same
+    # configurable cloud route as the long-polling bot service.
+    extra_hosts:
+      - "api.telegram.org=${TELEGRAM_API_IP:-149.154.167.220}"
     volumes: [tender_documents:/data/documents]
     healthcheck:
       test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]

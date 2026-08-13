@@ -33,19 +33,21 @@ docker compose build --build-arg DEBIAN_MIRROR=mirror.yandex.ru
 The default remains `deb.debian.org`; the mirror override only affects the image
 build and is not stored in the runtime environment.
 
-The Telegram service supports `TELEGRAM_API_IP` as a routing override for cloud
-providers that cannot reach Telegram's DNS-selected address. The example default
-is a TLS-verified Telegram API endpoint. If startup logs show
-`Network is unreachable`, verify a replacement without including the bot token:
+The Telegram bot and worker services support `TELEGRAM_API_IP` as a routing
+override for cloud providers that cannot reach Telegram's DNS-selected address.
+The example default is a TLS-verified Telegram API endpoint. The worker needs the
+same route because it delivers persisted owner notifications. If startup or
+notification logs show `Network is unreachable`, verify a replacement without
+including the bot token:
 
 ```bash
 curl --resolve api.telegram.org:443:REPLACEMENT_IP https://api.telegram.org/
 ```
 
-Set `TELEGRAM_API_IP` in the server `.env`, then recreate only the bot:
+Set `TELEGRAM_API_IP` in the server `.env`, then recreate the bot and worker:
 
 ```bash
-docker compose --profile telegram up -d --force-recreate bot
+docker compose --profile telegram up -d --force-recreate bot worker
 ```
 
 `OWNER_ACTIVITY_REPORT_INTERVAL_MINUTES=30` makes the scheduler create one
