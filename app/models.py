@@ -126,6 +126,29 @@ class Suppression(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class OutreachConsent(Base):
+    __tablename__ = "outreach_consents"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('verified', 'revoked')",
+            name="ck_outreach_consent_status",
+        ),
+    )
+    address: Mapped[str] = mapped_column(String(320), primary_key=True)
+    record_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("business_records.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="verified", index=True)
+    purpose: Mapped[str] = mapped_column(String(128), default="commercial_outreach")
+    source_url: Mapped[str] = mapped_column(String(1024), default="")
+    evidence_hash: Mapped[str] = mapped_column(String(64))
+    verified_by: Mapped[str] = mapped_column(String(128))
+    verified_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class OutboundMessage(Base):
     __tablename__ = "outbound_messages"
     __table_args__ = (UniqueConstraint("campaign_key", "recipient", name="uq_campaign_recipient"),)
@@ -332,6 +355,12 @@ class SenderMailbox(Base):
     smtp_port: Mapped[int] = mapped_column(Integer, default=587)
     username: Mapped[str] = mapped_column(String(320), default="")
     secret_ref: Mapped[str] = mapped_column(String(255), default="")
+    imap_host: Mapped[str] = mapped_column(String(255), default="")
+    imap_port: Mapped[int] = mapped_column(Integer, default=993)
+    imap_username: Mapped[str] = mapped_column(String(320), default="")
+    imap_secret_ref: Mapped[str] = mapped_column(String(255), default="")
+    inbound_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    last_imap_uid: Mapped[int] = mapped_column(Integer, default=0)
     per_minute: Mapped[int] = mapped_column(Integer, default=10)
     per_day: Mapped[int] = mapped_column(Integer, default=100)
     sent_today: Mapped[int] = mapped_column(Integer, default=0)

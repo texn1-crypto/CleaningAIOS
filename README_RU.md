@@ -13,14 +13,16 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - versioned Company Brain facts with confidence, source and expiry;
 - deterministic Decision Engine, separate owner Approval Engine and auditable Agent Runtime runs;
 - automatic event routing from Sales, Tenders, HR, Finance and Marketing records to their agents;
-- AI CEO, Research, Tender, Sales, Marketing, HR, Finance, Copywriter, Creative and Meta Brain agents;
+- AI CEO, Growth Officer, Research, Tender, Sales, Marketing, HR, Finance, Copywriter, Creative and Meta Brain agents;
 - optional OpenAI-compatible Responses API advisor with strict JSON output, aggregate-only input and deterministic fallback;
 - business goals/KPI progress, structured decisions, outcome measurement and three-scenario simulator;
 - tender opportunity scoring and document registry with structured analysis;
 - configurable HTTP JSON-feed tender collection and size-limited document download with SHA-256 verification;
 - owner-approval gate for tender submissions, contracts, legal/financial commitments, final HR decisions and bulk outreach tasks;
 - key-derived production RBAC, immutable audit events, decisions, tasks and agent heartbeats;
-- CSV/XLSX lead import and outreach queue with multiple mailboxes, templates, real attachments, delivery journal, bounce/complaint handling, suppression, unsubscribe, campaign/recipient deduplication, approvals, minute/day limits and SMTP delivery;
+- CSV/XLSX lead and SPb/LO management-company import with source provenance, guarded website contact enrichment, documented consent evidence and an outreach queue with multiple mailboxes, real attachments, delivery journal, IMAP replies, suppression/unsubscribe, campaign deduplication, owner approval, per-mailbox limits and SMTP delivery;
+- daily Marketing Agent plan with two owner-reviewed posts per Telegram, VK, Odnoklassniki and Instagram channel; missing official publishing credentials are reported and never imitated;
+- a two-year 1B RUB annual revenue run-rate goal owned by Growth Officer, weekly cross-agent workstreams and a verified goal snapshot in every 30-minute owner report;
 - unified inbound message inbox, content plan, staffing/reserve view, vacancy Telegram drafts, payment calendar and complaint/SLA control;
 - public lead capture into CRM/inbox with consent, abuse protection, UTM attribution, deterministic hot-lead scoring, Sales tasks and owner-email notifications;
 - Russian marketing-provider registry, trackable hypotheses/experiments, manual external campaign binding, media queue and evidence-backed attribution analytics;
@@ -60,6 +62,8 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 - `TENDER_SOURCES` and per-source credentials/API keys for external tender ingestion
 - `COMPANY_LEGAL_NAME`, `COMPANY_INN`, company contacts/address and `PRIVACY_CONTACT_EMAIL` before enabling the public production lead form
 - `OWNER_NOTIFICATION_EMAIL` plus SMTP for hot-lead alerts; optional Russian advertising account credentials listed in `.env.example`
+- per-mailbox `SMTP_*` and `IMAP_*` environment secrets for outreach and inbound replies; secrets are referenced by name from `SenderMailbox` and are never returned by the API
+- social administrator credentials listed in `.env.example`; content preparation works without them, but real external publication remains unavailable until an official channel adapter is configured
 
 See [production deployment](docs/PRODUCTION.md) and [baseline failures](docs/BASELINE.md).
 
@@ -77,7 +81,7 @@ The operational APIs include `/api/events`, `/api/brain`, `/api/agent-runs`,
 `/api/finance/site-economics`, `/api/simulations`, `/api/tenders/{id}/score`,
 `/api/imports/leads`, `/api/inbox`, `/api/hr/staffing`, `/api/finance/payment-calendar`,
 `/api/marketing/content`, `/api/operations/quality` and
-`/api/outreach/campaigns/launch`. Apply migrations through `0010` before deploying.
+`/api/outreach/campaigns/launch`. Apply migrations through `0011` before deploying.
 
 Domain records now have guarded lifecycle transitions through `PATCH /api/records/{id}`.
 CRM touches are stored through `/api/records/{id}/contacts`. Domain events use a
@@ -114,6 +118,53 @@ Bot API server и `TELEGRAM_BOT_API_BASE_URL`. Без него запрос ос
 превращаются в задачи подходящего агента. Неизвестные поручения передаются
 Orchestrator. Оплата, договоры, подача заявки на тендер, окончательные кадровые
 решения и массовые рассылки сохраняют обязательное подтверждение владельца.
+
+## База управляющих компаний и согласованная email-рассылка
+
+`POST /api/research/management-companies/import` принимает официальный или
+проверенный CSV/XLSX-экспорт по Санкт-Петербургу и Ленинградской области. Каждая
+запись хранит источник, URL и время сбора; повторный импорт обновляет запись по
+ИНН, ОГРН, email или устойчивому хешу названия. Сайт отдельной УК можно проверить
+через `POST /api/research/management-companies/{id}/enrich`: сборщик соблюдает
+`robots.txt`, ограничивает размер и число страниц, не ходит на локальные адреса и
+сохраняет найденные телефоны/email вместе с provenance.
+
+Публично указанный адрес не является автоматически подтверждённым согласием на
+рекламную рассылку. Владелец фиксирует основание через
+`PUT /api/outreach/consents`; доказательство хранится как SHA-256, а отзыв сразу
+добавляет адрес в suppression. Массовая кампания отклоняется до проверки всех
+согласий и затем требует отдельного owner approval, привязанного к точному списку
+получателей, теме, тексту и хешам вложений. Это соответствует требованию
+предварительного согласия из [статьи 18 закона «О рекламе»](https://www.consultant.ru/document/cons_doc_LAW_58968/f892dec1383709792452f18d36e7043306e2be0a/).
+
+В Telegram документ с подписью «разошли по базе УК» создаёт только защищённую
+задачу и показывает число допустимых получателей, тему, текст и кнопки решения.
+После одобрения worker распределяет письма по активным ящикам с учётом их очереди
+и лимитов; лимит одного ящика не блокирует остальные. IMAP worker дедуплицирует
+ответы, сохраняет их в едином inbox и ставит пересылку на
+`OWNER_NOTIFICATION_EMAIL`. Для Gmail каждый ящик создаётся владельцем вручную,
+включается двухэтапная аутентификация и отдельный пароль приложения; Google не
+позволяет надёжно автоматизировать создание аккаунта, CAPTCHA и телефонную
+проверку. Лимиты приложения следует держать существенно ниже опубликованного
+[лимита Gmail](https://support.google.com/mail/answer/22839) и увеличивать только
+по фактической репутации домена и ответам адресатов.
+
+## Социальные сети и цель 1 млрд ₽
+
+Scheduler ежедневно создаёт задачу Marketing Agent. Агент готовит два варианта
+контента и адаптирует каждый для Telegram, VK, Одноклассников и Instagram — всего
+восемь `ContentItem` со статусом `approval`. Единое решение владельца переводит
+их в `scheduled`; отсутствие официального токена или прав администратора остаётся
+видимым `credentials_required/adapter_required`, а не фиктивной публикацией.
+
+Growth Officer владеет целью `annual_revenue_run_rate_rub = 1_000_000_000` с
+горизонтом 24 месяца. Факт считается только по активным договорам как сумма
+`monthly_revenue × 12`. Агент измеряет разрыв и темп, создаёт недельные задачи для
+Sales, Marketing, Tender, Finance и HR и сохраняет общий KPI для AI CEO. Каждый
+регулярный 30-минутный отчёт содержит факт run-rate, процент прогресса, разрыв до
+цели, статус темпа и источник данных. Это целевой ориентир, а не гарантия
+финансового результата; внешние расходы, цены, договоры и рассылки по-прежнему
+требуют решения владельца.
 
 ## Request Analyst и контур улучшений
 

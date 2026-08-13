@@ -275,22 +275,37 @@ def test_tender_scoring_and_document_registry(client):
     assert document.json()["status"] == "analyzed"
 
 
-def test_csv_import_and_bulk_campaign_approval(client):
+def test_csv_import_and_bulk_campaign_approval(client, monkeypatch):
     import base64
+    from app.config import settings
+    for field in ("smtp_host", "smtp_username", "smtp_password", "smtp_from_email"):
+        monkeypatch.setattr(settings, field, "")
     content = base64.b64encode("company,email,budget\nУК Альфа,alpha@example.com,500000\n,missing@example.com,10\n".encode()).decode()
     imported = client.post("/api/imports/leads", json={"filename": "leads.csv", "content_base64": content}).json()
     assert imported["imported_rows"] == 1
+    for address in ("alpha@example.com", "second@example.com"):
+        consent = client.put("/api/outreach/consents", json={
+            "address": address,
+            "source_url": "https://consent.example.test/evidence",
+            "evidence": f"Documented opt-in from {address}",
+        })
+        assert consent.status_code == 200
     launch = {"campaign_key": "approved-campaign", "recipients": ["alpha@example.com", "second@example.com"], "subject": "Клининг", "body": "Предложение"}
     blocked = client.post("/api/outreach/campaigns/launch", headers={"X-Role": "manager"}, json=launch).json()
     assert blocked["status"] == "waiting_approval"
     client.post(f"/api/approvals/{blocked['approval_id']}/approve", json={"note": "Разрешаю"})
     launch["approval_id"] = blocked["approval_id"]
     queued = client.post("/api/outreach/campaigns/launch", headers={"X-Role": "manager"}, json=launch).json()
-    assert queued["status"] == "queued"
+    assert queued["status"] == "credentials_required"
     assert queued["queued"] == 2
 
 
 def test_bulk_campaign_approval_cannot_authorize_changed_content(client):
+    assert client.put("/api/outreach/consents", json={
+        "address": "one@example.com",
+        "source_url": "https://consent.example.test/one",
+        "evidence": "Documented opt-in for tamper test",
+    }).status_code == 200
     launch = {"campaign_key": "tamper-proof-campaign", "recipients": ["one@example.com"], "subject": "Original", "body": "Original body"}
     blocked = client.post("/api/outreach/campaigns/launch", headers={"X-Role": "manager"}, json=launch).json()
     client.post(f"/api/approvals/{blocked['approval_id']}/approve", json={"note": "Original approved"})
@@ -1893,3 +1908,302 @@ def test_telegram_owner_notification_uses_existing_approval_buttons(monkeypatch)
     assert captured["payload"]["chat_id"] == "999"
     buttons = captured["payload"]["reply_markup"]["inline_keyboard"][0]
     assert {item["callback_data"] for item in buttons} == {"approve:42", "reject:42"}
+
+
+def test_management_company_import_preserves_provenance_and_requires_consent(client):
+    import base64
+
+    csv = (
+        "company,region,email,phone,website,inn\n"
+        "УК Север Тест,Санкт-Петербург,office@uk-sever.example,+7 812 123-45-67,https://uk-sever.example,7812345678\n"
+        "УК вне региона,Москва,other@example.com,,,\n"
+    ).encode()
+    response = client.post("/api/research/management-companies/import", json={
+        "filename": "management-companies.csv",
+        "content_base64": base64.b64encode(csv).decode(),
+        "source_kind": "gis_housing",
+        "source_url": "https://dom.gosuslugi.ru/",
+    })
+    assert response.status_code == 201
+    result = response.json()
+    assert result["created"] == 1
+    assert result["skipped"] == 1
+    record = next(row for row in client.get("/api/records?record_type=management_company").json() if row["title"] == "УК Север Тест")
+    assert record["data"]["marketing_consent_status"] == "unknown"
+    assert record["data"]["provenance"][0]["source_url"] == "https://dom.gosuslugi.ru/"
+
+    blocked = client.post("/api/outreach/campaigns/launch", headers={"X-Role": "manager"}, json={
+        "campaign_key": "uk-no-consent-test",
+        "recipients": ["office@uk-sever.example"],
+        "subject": "Клининг",
+        "body": "Предложение",
+    })
+    assert blocked.status_code == 422
+    assert blocked.json()["detail"]["count"] == 1
+
+
+def test_campaign_attachment_balances_only_consented_recipients(client, monkeypatch, tmp_path):
+    import base64
+
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import OutboundMessage
+    from sqlalchemy import select
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    monkeypatch.setenv("SMTP_POOL_A", "safe-test-secret-a")
+    monkeypatch.setenv("SMTP_POOL_B", "safe-test-secret-b")
+    first = client.post("/api/outreach/mailboxes", json={
+        "name": "Gmail pool A",
+        "address": "pool-a@example.com",
+        "smtp_host": "smtp.gmail.com",
+        "secret_ref": "SMTP_POOL_A",
+        "per_minute": 2,
+        "per_day": 50,
+    }).json()
+    second = client.post("/api/outreach/mailboxes", json={
+        "name": "Gmail pool B",
+        "address": "pool-b@example.com",
+        "smtp_host": "smtp.gmail.com",
+        "secret_ref": "SMTP_POOL_B",
+        "per_minute": 2,
+        "per_day": 50,
+    }).json()
+    recipients = ["consented-a@example.com", "consented-b@example.com"]
+    for address in recipients:
+        assert client.put("/api/outreach/consents", json={
+            "address": address,
+            "source_url": f"https://consent.example.test/{address}",
+            "evidence": f"Opt-in evidence recorded for {address}",
+        }).status_code == 200
+    launch = {
+        "campaign_key": "balanced-attachment-test",
+        "recipients": recipients,
+        "subject": "Предложение",
+        "body": "Добрый день",
+        "attachments": [{
+            "filename": "offer.pdf",
+            "content_type": "application/pdf",
+            "content_base64": base64.b64encode(b"%PDF-safe-test").decode(),
+        }],
+        "auto_balance_mailboxes": True,
+    }
+    waiting = client.post("/api/outreach/campaigns/launch", headers={"X-Role": "manager"}, json=launch).json()
+    assert waiting["status"] == "waiting_approval"
+    client.post(f"/api/approvals/{waiting['approval_id']}/approve", json={"note": "Approved exact recipients and attachment"})
+    launch["approval_id"] = waiting["approval_id"]
+    queued = client.post("/api/outreach/campaigns/launch", headers={"X-Role": "manager"}, json=launch).json()
+    assert queued["queued"] == 2
+    assert queued["mailbox_distribution"] == {str(first["id"]): 1, str(second["id"]): 1}
+    with SessionLocal() as db:
+        messages = db.scalars(select(OutboundMessage).where(OutboundMessage.campaign_key == launch["campaign_key"])).all()
+        assert all(message.attachments[0]["storage_path"].startswith(str(tmp_path)) for message in messages)
+        assert all("content_base64" not in message.attachments[0] for message in messages)
+
+
+def test_inbound_mail_is_deduplicated_and_forwarded_to_owner_queue(monkeypatch):
+    from email.message import EmailMessage
+
+    from app import inbound_mail
+    from app.db import SessionLocal
+    from app.models import InboxMessage, OwnerNotification, SenderMailbox
+    from sqlalchemy import func, select
+
+    raw = EmailMessage()
+    raw["From"] = "director@uk.example"
+    raw["To"] = "pool-inbound@example.com"
+    raw["Subject"] = "Re: Клининг"
+    raw["Message-ID"] = "<inbound-unique@example.com>"
+    raw.set_content("Интересно, пришлите расчёт.")
+    message_bytes = raw.as_bytes()
+
+    class IMAP:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def login(self, username, password): return "OK", []
+        def select(self, mailbox, readonly=True): return "OK", [b"1"]
+        def uid(self, command, *args):
+            if command == "search": return "OK", [b"7"]
+            return "OK", [(b"7 (RFC822 {100})", message_bytes)]
+        def logout(self): return "BYE", []
+
+    monkeypatch.setenv("IMAP_POOL_TEST", "test-app-password")
+    monkeypatch.setattr(inbound_mail.imaplib, "IMAP4_SSL", IMAP)
+    with SessionLocal() as db:
+        mailbox = SenderMailbox(
+            name="Inbound test",
+            address="pool-inbound@example.com",
+            imap_host="imap.gmail.com",
+            imap_secret_ref="IMAP_POOL_TEST",
+            inbound_enabled=True,
+        )
+        db.add(mailbox)
+        db.commit(); db.refresh(mailbox)
+        first = inbound_mail.collect_mailbox_replies(db, mailbox)
+        db.commit()
+        assert first["received"] == 1
+        mailbox.last_imap_uid = 0
+        db.commit()
+        second = inbound_mail.collect_mailbox_replies(db, mailbox)
+        db.commit()
+        assert second["duplicates"] == 1
+        assert db.scalar(select(func.count()).select_from(InboxMessage).where(InboxMessage.external_id == "<inbound-unique@example.com>")) == 1
+        assert db.scalar(select(func.count()).select_from(OwnerNotification).where(OwnerNotification.idempotency_key == f"inbound-email:{mailbox.id}:7")) == 1
+
+
+def test_marketing_agent_creates_two_posts_per_social_channel_for_approval(client):
+    task = client.post("/api/tasks", json={
+        "title": "Daily social plan deterministic test",
+        "agent_type": "marketing",
+        "payload": {"action": "prepare_daily_social_plan", "day": "2031-06-18T06:00:00+00:00"},
+        "max_attempts": 1,
+    }).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    assert completed["status"] == "done"
+    result = completed["result"]
+    assert result["created"] == 8
+    items = [row for row in client.get("/api/marketing/content?status=approval").json() if row["id"] in result["content_item_ids"]]
+    assert len(items) == 8
+    assert {row["channel"] for row in items} == {"telegram", "vk", "odnoklassniki", "instagram"}
+    assert all(sum(row["channel"] == channel for row in items) == 2 for channel in {"telegram", "vk", "odnoklassniki", "instagram"})
+    approved = client.post(f"/api/approvals/{result['approval_id']}/approve", json={"note": "Content reviewed"})
+    assert approved.status_code == 200
+    scheduled = client.get("/api/marketing/content?status=scheduled").json()
+    assert set(result["content_item_ids"]).issubset({row["id"] for row in scheduled})
+
+
+def test_telegram_document_creates_guarded_outreach_draft(monkeypatch, tmp_path):
+    from app import bot
+    from app.config import settings
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        assert path == "/api/outreach/campaigns/management-companies/draft"
+        return {
+            "status": "blocked",
+            "task_id": 501,
+            "approval_id": 77,
+            "recipient_count": 12,
+            "subject": "Предложение по клинингу",
+            "body": "Добрый день!",
+        }
+
+    class File:
+        async def download_to_drive(self, custom_path):
+            Path(custom_path).write_bytes(b"%PDF-telegram-outreach")
+
+    class Bot:
+        async def get_file(self, file_id): return File()
+
+    class Document:
+        file_name = "offer.pdf"
+        file_size = 100
+        file_id = "outreach-file"
+        mime_type = "application/pdf"
+
+    class Message:
+        document = Document()
+        caption = "Разошли это предложение по базе УК"
+        replies = []
+        async def reply_text(self, value, **kwargs): self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    class Context:
+        bot = Bot()
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.proposal_document(Update(), Context()))
+    assert len(calls) == 1
+    assert "12" in Update.effective_message.replies[0][0]
+    markup = Update.effective_message.replies[0][1]["reply_markup"]
+    assert {button.callback_data for button in markup.inline_keyboard[0]} == {"approve:77", "reject:77"}
+
+
+def test_growth_officer_owns_billion_ruble_goal_and_delegates_from_real_contracts(client):
+    customer = client.post("/api/entities", json={"entity_type": "client", "name": "Growth customer"}).json()
+    site = client.post("/api/entities", json={"entity_type": "site", "name": "Growth site", "parent_id": customer["id"]}).json()
+    client.post("/api/entities", json={
+        "entity_type": "contract",
+        "name": "Growth contract",
+        "parent_id": site["id"],
+        "status": "active",
+        "data": {"monthly_revenue": 1_000_000},
+    })
+    task = client.post("/api/tasks", json={
+        "title": "Growth Officer billion target test",
+        "agent_type": "growth_officer",
+        "payload": {"action": "billion_revenue_review", "review_at": "2030-01-02T09:00:00"},
+        "max_attempts": 1,
+    }).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    assert completed["status"] == "done"
+    result = completed["result"]
+    assert result["target_rub"] == 1_000_000_000
+    assert result["current_rub"] >= 12_000_000
+    assert result["source"] == "active contract monthly_revenue fields multiplied by 12"
+    assert {row["agent_type"] for row in result["delegated_tasks"]} == {"sales", "marketing", "tender", "finance", "hr"}
+    assert result["owner_approval_preserved"] is True
+    goal = next(row for row in client.get("/api/goals").json() if row["metric"] == "annual_revenue_run_rate_rub")
+    assert goal["owner"] == "growth_officer"
+    assert goal["target"] == 1_000_000_000
+
+    report_task = client.post("/api/tasks", json={
+        "title": "Growth in 30 minute report test",
+        "agent_type": "orchestrator",
+        "payload": {"action": "system_activity_report", "period_minutes": 30},
+        "max_attempts": 1,
+    }).json()
+    report = client.post(f"/api/tasks/{report_task['id']}/run").json()["result"]
+    assert report["strategic_growth"]["target_rub"] == 1_000_000_000
+    assert report["strategic_growth"]["current_rub"] >= 12_000_000
+    from app.reports import format_activity_report
+    assert "1 млрд" in format_activity_report(report)
+
+
+def test_worker_skips_rate_limited_mailbox_without_starving_pool(monkeypatch):
+    from datetime import datetime, timezone
+
+    from app import worker
+    from app.db import SessionLocal
+    from app.models import OutboundMessage, SenderMailbox
+    from sqlalchemy import select
+
+    sent = []
+
+    class SMTP:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def starttls(self): return None
+        def login(self, username, password): return None
+        def send_message(self, message): sent.append(message["To"])
+
+    monkeypatch.setattr(worker.smtplib, "SMTP", SMTP)
+    monkeypatch.setenv("SMTP_LIMITED_TEST", "secret-a")
+    monkeypatch.setenv("SMTP_AVAILABLE_TEST", "secret-b")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with SessionLocal() as db:
+        limited = SenderMailbox(name="Limited", address="limited@example.com", smtp_host="smtp.example.com", username="limited@example.com", secret_ref="SMTP_LIMITED_TEST", per_minute=100, per_day=1)
+        available = SenderMailbox(name="Available", address="available@example.com", smtp_host="smtp.example.com", username="available@example.com", secret_ref="SMTP_AVAILABLE_TEST", per_minute=100, per_day=10)
+        db.add_all([limited, available]); db.flush()
+        db.add_all([
+            OutboundMessage(campaign_key="limit-marker", recipient="already@example.com", subject="Done", body="Done", mailbox_id=limited.id, status="sent", scheduled_at=now, sent_at=now),
+            OutboundMessage(campaign_key="limited-queue", recipient="wait@example.com", subject="Wait", body="Wait", mailbox_id=limited.id, status="queued", scheduled_at=now),
+            OutboundMessage(campaign_key="available-queue", recipient="send@example.com", subject="Send", body="Send", mailbox_id=available.id, status="queued", scheduled_at=now),
+        ])
+        db.commit()
+        assert worker.send_next_email(db) is True
+        assert db.scalar(select(OutboundMessage.status).where(OutboundMessage.campaign_key == "limited-queue")) == "queued"
+        assert db.scalar(select(OutboundMessage.status).where(OutboundMessage.campaign_key == "available-queue")) == "sent"
+    assert sent == ["send@example.com"]

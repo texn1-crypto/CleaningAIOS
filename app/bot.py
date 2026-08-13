@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import logging
 import re
@@ -93,11 +94,55 @@ async def proposal_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = message.document
     filename = _safe_document_filename(document.file_name or "proposal.docx")
     suffix = Path(filename).suffix.lower()
+    caption = " ".join((message.caption or "").split())
+    normalized = caption.lower().replace("ё", "е")
+    is_outreach_request = any(token in normalized for token in ("рассыл", "разошл", "разосл", "отправь базе", "разослать"))
+    if is_outreach_request:
+        if suffix not in {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".odt"}:
+            await message.reply_text("Для рассылки можно приложить PDF, Word, Excel или ODT-документ.")
+            return
+        if int(document.file_size or 0) > settings.max_attachment_bytes:
+            await message.reply_text(f"Вложение больше безопасного лимита {settings.max_attachment_bytes // 1_000_000} МБ. Сожмите файл и пришлите снова.")
+            return
+        try:
+            directory = Path(settings.document_storage_path) / "telegram-inbox"
+            directory.mkdir(parents=True, exist_ok=True)
+            stored = directory / f"{secrets.token_hex(10)}-{filename}"
+            telegram_file = await context.bot.get_file(document.file_id)
+            await telegram_file.download_to_drive(custom_path=str(stored))
+            raw = stored.read_bytes()
+            if not raw or len(raw) > settings.max_attachment_bytes:
+                raise RuntimeError("Файл пуст или превышает лимит")
+            draft = await api("POST", "/api/outreach/campaigns/management-companies/draft", json={
+                "filename": filename,
+                "content_type": document.mime_type or "application/octet-stream",
+                "content_base64": base64.b64encode(raw).decode(),
+            })
+            if draft.get("status") == "no_verified_recipients":
+                await message.reply_text(
+                    "Документ получен, но рассылка не создана: в базе пока нет адресов УК с зафиксированным согласием на рекламную рассылку. "
+                    "Публичный email с сайта сам по себе не считается согласием."
+                )
+                return
+            approval_id = draft.get("approval_id")
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Одобрить рассылку", callback_data=f"approve:{approval_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{approval_id}"),
+            ]])
+            await message.reply_text(
+                f"Черновик рассылки создан как задача #{draft['task_id']}.\n"
+                f"Получателей с подтверждённым согласием: {draft['recipient_count']}.\n"
+                f"Тема: {draft['subject']}\nТекст: {draft['body']}\n\n"
+                "До вашего нажатия ни одно письмо не будет поставлено в очередь.",
+                reply_markup=keyboard,
+            )
+            return
+        except (httpx.HTTPError, TelegramError, OSError, RuntimeError) as exc:
+            await message.reply_text(f"Документ получен, но черновик рассылки не создан: {type(exc).__name__}: {str(exc)[:300]}.")
+            return
     if suffix not in {".docx", ".pdf"}:
         await message.reply_text("Файл получен, но редактор КП принимает DOCX или PDF. Пришлите документ в одном из этих форматов.")
         return
-    caption = " ".join((message.caption or "").split())
-    normalized = caption.lower().replace("ё", "е")
     is_proposal_request = bool(
         re.search(r"\bкп\b", normalized)
         or "коммерческ" in normalized

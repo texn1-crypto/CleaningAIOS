@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -13,13 +14,15 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MessageTemplate, OperatingEntity, OutboundMessage, SenderMailbox, Suppression, Task, TenderDocument
+from .models import BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, SenderMailbox, Suppression, Task, TenderDocument
 from .integrations import collect_tenders, download_tender_document
 from .improvements import retry_workspace_handoff
+from .management_companies import enrich_management_company, import_management_companies
 from .operations import business_graph, create_ceo_actions, entity_view, goal_progress, parse_lead_import, score_tender, simulate_site, site_economics, validate_entity
 from .orchestrator import audit, dispatch
+from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, verified_recipients
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, ContentItemCreate, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, OperatingEntityCreate, OperatingEntityUpdate, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
+from .schemas import CampaignLaunch, ContentItemCreate, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
 from .security import Principal, principal, require_role
 
 router = APIRouter(prefix="/api")
@@ -303,14 +306,54 @@ def create_mailbox(payload: MailboxCreate, db: Session = Depends(get_db), actor:
     try: db.commit()
     except IntegrityError: db.rollback(); raise HTTPException(409, "Mailbox already exists")
     db.refresh(row)
-    return {"id": row.id, "name": row.name, "address": row.address, "active": row.active, "secret_configured": bool(row.secret_ref)}
+    return {"id": row.id, "name": row.name, "address": row.address, "active": row.active, "secret_configured": bool(row.secret_ref and os.environ.get(row.secret_ref)), "inbound_enabled": row.inbound_enabled, "inbound_secret_configured": bool(row.imap_secret_ref and os.environ.get(row.imap_secret_ref))}
 
 
 @router.get("/outreach/mailboxes")
 def mailboxes(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "manager")
     rows = db.scalars(select(SenderMailbox).order_by(SenderMailbox.id)).all()
-    return [{"id": x.id, "name": x.name, "address": x.address, "active": x.active, "per_minute": x.per_minute, "per_day": x.per_day, "sent_today": x.sent_today, "last_sent_at": x.last_sent_at, "secret_configured": bool(x.secret_ref)} for x in rows]
+    return [{"id": x.id, "name": x.name, "address": x.address, "active": x.active, "per_minute": x.per_minute, "per_day": x.per_day, "sent_today": x.sent_today, "last_sent_at": x.last_sent_at, "secret_configured": bool(x.secret_ref and os.environ.get(x.secret_ref)), "inbound_enabled": x.inbound_enabled, "inbound_secret_configured": bool(x.imap_secret_ref and os.environ.get(x.imap_secret_ref))} for x in rows]
+
+
+@router.put("/outreach/consents")
+def record_outreach_consent(payload: OutreachConsentUpsert, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "owner")
+    if payload.record_id:
+        record = db.get(BusinessRecord, payload.record_id)
+        if not record:
+            raise HTTPException(404, "Business record not found")
+    row = upsert_consent(
+        db,
+        address=str(payload.address),
+        record_id=payload.record_id,
+        status=payload.status,
+        purpose=payload.purpose,
+        source_url=payload.source_url,
+        evidence=payload.evidence,
+        actor=actor.subject,
+    )
+    event_bus.publish(
+        db,
+        f"outreach.consent_{row.status}",
+        "email",
+        row.address,
+        {"record_id": row.record_id, "purpose": row.purpose, "evidence_hash": row.evidence_hash},
+        actor=actor.subject,
+    )
+    audit(db, actor.subject, f"outreach.consent_{row.status}", "email", row.address, {"record_id": row.record_id, "evidence_hash": row.evidence_hash})
+    db.commit()
+    return {"address": row.address, "status": row.status, "record_id": row.record_id, "purpose": row.purpose, "evidence_hash": row.evidence_hash}
+
+
+@router.get("/outreach/consents")
+def outreach_consents(status: Optional[str] = None, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    query = select(OutreachConsent).order_by(OutreachConsent.address)
+    if status:
+        query = query.where(OutreachConsent.status == status)
+    rows = db.scalars(query.limit(5000)).all()
+    return [{"address": row.address, "status": row.status, "record_id": row.record_id, "purpose": row.purpose, "source_url": row.source_url, "evidence_hash": row.evidence_hash, "verified_at": row.verified_at} for row in rows]
 
 
 @router.post("/outreach/templates", status_code=201)
@@ -359,25 +402,135 @@ def delivery_event(payload: DeliveryEventCreate, db: Session = Depends(get_db), 
 def launch_campaign(payload: CampaignLaunch, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "manager")
     recipients = sorted(set(str(address).lower() for address in payload.recipients))
-    recipient_digest = hashlib.sha256("\n".join(recipients).encode()).hexdigest()
-    approval_payload = payload.model_dump(mode="json", exclude={"recipients", "approval_id"}) | {"recipient_count": len(recipients), "recipient_digest": recipient_digest}
+    _, without_consent = verified_recipients(db, recipients)
+    if without_consent:
+        raise HTTPException(422, {"message": "Verified commercial-outreach consent is required", "addresses_without_consent": without_consent[:100], "count": len(without_consent)})
+    try:
+        approval_payload = campaign_approval_payload(
+            recipients=recipients,
+            subject=payload.subject,
+            body=payload.body,
+            mailbox_id=payload.mailbox_id,
+            template_id=payload.template_id,
+            scheduled_at=payload.scheduled_at,
+            attachments=payload.attachments,
+            auto_balance_mailboxes=payload.auto_balance_mailboxes,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     if not approval_engine.authorized(db, "bulk_outreach", payload.approval_id, "campaign", payload.campaign_key, approval_payload):
         request = approval_engine.request(db, "bulk_outreach", "campaign", payload.campaign_key, actor.subject, approval_payload, "Bulk outreach requires owner approval")
         event_bus.publish(db, "approval.requested", "campaign", payload.campaign_key, {"approval_id": request.id, "recipient_count": len(payload.recipients)}, idempotency_key=f"campaign:{payload.campaign_key}:approval:{request.id}")
         db.commit()
         return {"status": "waiting_approval", "approval_id": request.id, "recipient_count": len(payload.recipients)}
-    if payload.mailbox_id and not db.get(SenderMailbox, payload.mailbox_id): raise HTTPException(404, "Mailbox not found")
-    queued = suppressed = duplicate = 0
-    when = payload.scheduled_at or datetime.now(timezone.utc).replace(tzinfo=None)
-    for address in recipients:
-        if db.get(Suppression, address): suppressed += 1; continue
-        if db.scalar(select(OutboundMessage.id).where(OutboundMessage.campaign_key == payload.campaign_key, OutboundMessage.recipient == address)):
-            duplicate += 1; continue
-        db.add(OutboundMessage(campaign_key=payload.campaign_key, recipient=address, subject=payload.subject, body=payload.body, mailbox_id=payload.mailbox_id, template_id=payload.template_id, scheduled_at=when)); queued += 1
-    event_bus.publish(db, "campaign.queued", "campaign", payload.campaign_key, {"queued": queued, "suppressed": suppressed, "duplicate": duplicate}, idempotency_key=f"campaign:{payload.campaign_key}:queued")
-    audit(db, actor.subject, "campaign.queued", "campaign", payload.campaign_key, {"queued": queued, "suppressed": suppressed, "duplicate": duplicate})
+    try:
+        result = queue_campaign(
+            db,
+            campaign_key=payload.campaign_key,
+            recipients=recipients,
+            subject=payload.subject,
+            body=payload.body,
+            mailbox_id=payload.mailbox_id,
+            template_id=payload.template_id,
+            scheduled_at=payload.scheduled_at,
+            attachments=payload.attachments,
+            auto_balance_mailboxes=payload.auto_balance_mailboxes,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event_bus.publish(db, "campaign.queued", "campaign", payload.campaign_key, result, idempotency_key=f"campaign:{payload.campaign_key}:queued")
+    audit(db, actor.subject, "campaign.queued", "campaign", payload.campaign_key, result)
     db.commit()
-    return {"status": "queued", "queued": queued, "suppressed": suppressed, "duplicate": duplicate}
+    return result
+
+
+@router.post("/outreach/campaigns/management-companies/draft", status_code=201)
+def draft_management_company_campaign(payload: ManagementCompanyCampaignDraft, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "owner")
+    suffix = payload.filename.lower().rsplit(".", 1)[-1] if "." in payload.filename else ""
+    if suffix not in {"pdf", "doc", "docx", "xls", "xlsx", "odt"}:
+        raise HTTPException(422, "Only PDF, Word, Excel or ODT documents are allowed")
+    recipients = db.scalars(
+        select(OutreachConsent.address)
+        .join(BusinessRecord, OutreachConsent.record_id == BusinessRecord.id)
+        .where(
+            OutreachConsent.status == "verified",
+            OutreachConsent.purpose == "commercial_outreach",
+            BusinessRecord.record_type == "management_company",
+        )
+        .order_by(OutreachConsent.address)
+    ).all()
+    recipients = sorted(set(recipients))
+    if not recipients:
+        return {"status": "no_verified_recipients", "recipient_count": 0, "message": "Import management companies and record consent evidence before creating a campaign"}
+    attachment = {"filename": payload.filename, "content_type": payload.content_type, "content_base64": payload.content_base64}
+    digest = hashlib.sha256(f"{payload.subject}\n{payload.body}\n{payload.content_base64}".encode()).hexdigest()
+    campaign_key = f"management-companies-{digest[:32]}"
+    try:
+        attachments = persist_campaign_attachments(campaign_key, [attachment])
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    task = Task(
+        title=f"Рассылка УК: {payload.filename}"[:255],
+        agent_type="sales",
+        priority="high",
+        payload={
+            "action": "execute_bulk_outreach_campaign",
+            "action_kind": "bulk_outreach",
+            "source": "telegram_document",
+            "original_message": f"Разослать документ {payload.filename} по подтверждённой базе УК",
+            "campaign_key": campaign_key,
+            "recipients": recipients,
+            "subject": payload.subject,
+            "body": payload.body,
+            "scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
+            "attachments": attachments,
+            "auto_balance_mailboxes": True,
+        },
+        max_attempts=1,
+    )
+    db.add(task)
+    db.flush()
+    result = dispatch(db, task)
+    audit(db, actor.subject, "campaign.draft_created", "task", str(task.id), {"campaign_key": campaign_key, "recipient_count": len(recipients), "attachment_sha256": attachments[0]["sha256"]})
+    db.commit()
+    return {"status": task.status, "task_id": task.id, "approval_id": result.get("approval_id"), "recipient_count": len(recipients), "campaign_key": campaign_key, "subject": payload.subject, "body": payload.body, "attachment_sha256": attachments[0]["sha256"]}
+
+
+@router.post("/research/management-companies/import", status_code=201)
+def import_management_company_registry(payload: ManagementCompanyImport, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    try:
+        content = base64.b64decode(payload.content_base64, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(422, "Invalid base64 content") from exc
+    if len(content) > settings.max_import_bytes:
+        raise HTTPException(413, "Import file is too large")
+    try:
+        result = import_management_companies(db, filename=payload.filename, content=content, source_kind=payload.source_kind, source_url=payload.source_url, actor=actor.subject)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event_bus.publish(db, "management_company.registry_imported", "import_job", str(result["job_id"]), result, actor=actor.subject)
+    audit(db, actor.subject, "management_company.registry_imported", "import_job", str(result["job_id"]), result)
+    db.commit()
+    return result
+
+
+@router.post("/research/management-companies/{record_id}/enrich")
+def enrich_management_company_contacts(record_id: int, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "operator")
+    try:
+        result = enrich_management_company(db, record_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event_bus.publish(db, "management_company.contacts_enriched", "management_company", str(record_id), result, actor=actor.subject)
+    audit(db, actor.subject, "management_company.contacts_enriched", "management_company", str(record_id), result)
+    db.commit()
+    return result
 
 
 @router.post("/imports/leads", status_code=201)

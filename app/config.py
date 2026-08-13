@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     ceo_review_interval_hours: int = 24
     owner_activity_report_interval_minutes: int = 30
     ceo_development_cadence_hours: int = 24
+    growth_review_interval_hours: int = 24
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
@@ -32,6 +33,7 @@ class Settings(BaseSettings):
     unsubscribe_secret: str = ""
     outreach_per_minute: int = 10
     outreach_per_day: int = 100
+    inbound_mail_poll_seconds: int = 60
     llm_api_key: str = ""
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-5.6-terra"
@@ -59,6 +61,14 @@ class Settings(BaseSettings):
     avito_client_id: str = ""
     avito_client_secret: str = ""
     telegram_ads_token: str = ""
+    telegram_social_chat_id: str = ""
+    vk_community_id: str = ""
+    vk_community_token: str = ""
+    odnoklassniki_group_id: str = ""
+    odnoklassniki_application_key: str = ""
+    odnoklassniki_session_secret: str = ""
+    instagram_business_account_id: str = ""
+    instagram_access_token: str = ""
     image_generation_api_key: str = ""
     video_generation_api_key: str = ""
     tender_sources: str = ""

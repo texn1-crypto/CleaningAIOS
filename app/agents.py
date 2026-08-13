@@ -152,6 +152,35 @@ class SalesAgent:
         if payload.get("action") == "generate_proposal":
             from .proposals import generate_proposal
             return generate_proposal(db, payload)
+        if payload.get("action") == "execute_bulk_outreach_campaign":
+            from .outreach import queue_campaign
+
+            result = queue_campaign(
+                db,
+                campaign_key=payload["campaign_key"],
+                recipients=payload["recipients"],
+                subject=payload["subject"],
+                body=payload["body"],
+                mailbox_id=payload.get("mailbox_id"),
+                template_id=payload.get("template_id"),
+                scheduled_at=(
+                    datetime.fromisoformat(payload["scheduled_at"])
+                    if isinstance(payload.get("scheduled_at"), str)
+                    else payload.get("scheduled_at")
+                ),
+                attachments=payload.get("attachments") or [],
+                auto_balance_mailboxes=payload.get("auto_balance_mailboxes", True),
+            )
+            return {
+                **result,
+                "campaign_key": payload["campaign_key"],
+                "owner_approval_verified": True,
+                "evidence": [{
+                    "type": "outreach_campaign_queued",
+                    "queued": result["queued"],
+                    "mailbox_distribution": result["mailbox_distribution"],
+                }],
+            }
         leads = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "lead")).all()
         pipeline = sum(float(x.data.get("budget", 0) or 0) for x in leads if x.status not in {"won", "lost"})
         return {"lead_count": len(leads), "qualified": sum(1 for x in leads if (x.score or 0) >= 60 or x.status == "qualified"), "follow_ups_due": sum(1 for x in leads if x.status == "follow_up"), "pipeline_amount": pipeline, "loss_reasons": [x.data.get("loss_reason") for x in leads if x.status == "lost" and x.data.get("loss_reason")], "evidence": [{"record_id": x.id, "status": x.status} for x in leads]}
@@ -160,6 +189,11 @@ class SalesAgent:
 class MarketingAgent:
     name = "marketing"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "prepare_daily_social_plan":
+            from .social_marketing import prepare_daily_social_plan
+
+            day = datetime.fromisoformat(payload["day"]) if payload.get("day") else None
+            return prepare_daily_social_plan(db, day=day)
         campaigns = db.scalar(select(func.count(BusinessRecord.id)).where(BusinessRecord.record_type == "campaign")) or 0
         experiments = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "marketing_experiment")).all()
         providers = db.scalar(select(func.count(BusinessRecord.id)).where(BusinessRecord.record_type == "marketing_provider")) or 0
@@ -269,6 +303,16 @@ class MetaBrainAgent:
         return {"agents_evaluated": len(states), "data_gaps": gaps, "decision_outcomes_measured": len(measured), "decision_success_rate": success_rate, "recommendations": [f"Restore telemetry for {x}" for x in gaps] + (["Start measuring decision outcomes"] if not measured else []), "evidence": [{"decision_id": x.decision_id, "successful": x.successful} for x in measured]}
 
 
+class GrowthOfficerAgent:
+    name = "growth_officer"
+
+    def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        from .growth import run_growth_review
+
+        review_at = datetime.fromisoformat(payload["review_at"]) if payload.get("review_at") else None
+        return run_growth_review(db, now=review_at)
+
+
 class RequestAnalystAgent:
     name = "request_analyst"
 
@@ -308,7 +352,7 @@ class CreativeAgent:
 
 
 AGENTS: dict[str, Agent] = {}
-for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), MetaBrainAgent(), RequestAnalystAgent(), CopywriterAgent(), CreativeAgent()]:
+for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), GrowthOfficerAgent(), MetaBrainAgent(), RequestAnalystAgent(), CopywriterAgent(), CreativeAgent()]:
     AGENTS[agent.name] = agent
 
 

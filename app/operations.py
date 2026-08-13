@@ -108,7 +108,7 @@ def score_tender(data: dict[str, Any]) -> dict[str, Any]:
 def goal_progress(row: BusinessGoal) -> dict[str, Any]:
     span = row.target - row.baseline
     progress = 100 if span == 0 and row.current >= row.target else (row.current - row.baseline) / span * 100 if span else 0
-    return {"id": row.id, "title": row.title, "status": row.status, "metric": row.metric, "baseline": row.baseline, "target": row.target, "current": row.current, "unit": row.unit, "progress_percent": round(max(0, min(100, progress)), 2), "deadline_at": row.deadline_at, "strategy": row.strategy}
+    return {"id": row.id, "title": row.title, "status": row.status, "owner": row.owner, "metric": row.metric, "baseline": row.baseline, "target": row.target, "current": row.current, "unit": row.unit, "progress_percent": round(max(0, min(100, progress)), 2), "deadline_at": row.deadline_at, "strategy": row.strategy}
 
 
 def create_ceo_actions(db: Session) -> list[Task]:

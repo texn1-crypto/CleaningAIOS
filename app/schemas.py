@@ -146,6 +146,11 @@ class MailboxCreate(BaseModel):
     smtp_port: int = Field(default=587, ge=1, le=65535)
     username: str = ""
     secret_ref: str = Field(default="", pattern="^$|^SMTP_[A-Z0-9_]+$")
+    imap_host: str = ""
+    imap_port: int = Field(default=993, ge=1, le=65535)
+    imap_username: str = ""
+    imap_secret_ref: str = Field(default="", pattern="^$|^IMAP_[A-Z0-9_]+$")
+    inbound_enabled: bool = False
     per_minute: int = Field(default=10, ge=1, le=1000)
     per_day: int = Field(default=100, ge=1, le=100000)
 
@@ -168,6 +173,20 @@ class SimulationRequest(BaseModel):
 class ImportFile(BaseModel):
     filename: str = Field(min_length=5, max_length=255)
     content_base64: str = Field(min_length=1)
+
+
+class ManagementCompanyImport(ImportFile):
+    source_kind: str = Field(pattern="^(gis_housing|housing_inspection|company_website|manual_public_export)$")
+    source_url: str = Field(min_length=8, max_length=1024)
+
+
+class OutreachConsentUpsert(BaseModel):
+    address: EmailStr
+    record_id: Optional[int] = None
+    status: str = Field(default="verified", pattern="^(verified|revoked)$")
+    purpose: str = Field(default="commercial_outreach", min_length=3, max_length=128)
+    source_url: str = Field(min_length=8, max_length=1024)
+    evidence: str = Field(min_length=10, max_length=4000)
 
 
 class StructuredDecisionCreate(BaseModel):
@@ -193,6 +212,25 @@ class CampaignLaunch(BaseModel):
     template_id: Optional[int] = None
     scheduled_at: Optional[datetime] = None
     approval_id: Optional[int] = None
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    auto_balance_mailboxes: bool = True
+
+
+class ManagementCompanyCampaignDraft(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(default="application/octet-stream", max_length=128)
+    content_base64: str = Field(min_length=1)
+    subject: str = Field(default="Предложение по клининговому обслуживанию", min_length=1, max_length=255)
+    body: str = Field(
+        default=(
+            "Добрый день! Предлагаем обсудить профессиональное клининговое обслуживание ваших объектов. "
+            "Подробное предложение приложено к письму. Если тема актуальна, ответьте на это сообщение — "
+            "мы уточним параметры объекта и подготовим расчёт."
+        ),
+        min_length=1,
+        max_length=20_000,
+    )
+    scheduled_at: Optional[datetime] = None
 
 
 class InboxMessageCreate(BaseModel):
@@ -235,7 +273,7 @@ class DeliveryEventCreate(BaseModel):
 
 class ContentItemCreate(BaseModel):
     campaign_id: Optional[int] = None
-    channel: str = Field(pattern="^(telegram|vk|website|email|other)$")
+    channel: str = Field(pattern="^(telegram|vk|odnoklassniki|instagram|website|email|other)$")
     title: str = Field(min_length=2, max_length=255)
     body: str = ""
     status: str = Field(default="idea", pattern="^(idea|draft|approval|scheduled|published|cancelled)$")

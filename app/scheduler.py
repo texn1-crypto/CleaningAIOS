@@ -31,6 +31,21 @@ def schedule_cycle() -> None:
             now=now,
             cadence_hours=settings.ceo_development_cadence_hours,
         )
+        social_day = now.date().isoformat()
+        social_title = f"Daily social content plan · {social_day}"
+        if not db.scalar(select(Task.id).where(Task.title == social_title)):
+            task = Task(
+                title=social_title,
+                agent_type="marketing",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={"action": "prepare_daily_social_plan", "day": now.isoformat(), "source": "scheduler"},
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(db, task, actor="scheduler", reason="daily_social_content_plan")
         report_interval = max(5, min(settings.owner_activity_report_interval_minutes, 24 * 60))
         report_window = owner_report_window(now, report_interval)
         report_key = f"owner-activity-report:{report_window.isoformat()}"
@@ -60,6 +75,19 @@ def schedule_cycle() -> None:
         if not active and not recent:
             task = Task(title="AI CEO business review", agent_type="ceo", status="queued", priority="high", run_after=now)
             db.add(task); db.flush(); record_task_created(db, task, actor="scheduler", reason="recurring_ceo_review")
+        growth_active = db.scalar(select(Task.id).where(Task.agent_type == "growth_officer", Task.status.in_(["open", "queued", "running"])))
+        growth_recent = db.scalar(select(Task.id).where(Task.agent_type == "growth_officer", Task.created_at >= now - timedelta(hours=settings.growth_review_interval_hours)))
+        if not growth_active and not growth_recent:
+            task = Task(
+                title=f"Growth Officer review · {now.date().isoformat()}",
+                agent_type="growth_officer",
+                status="queued",
+                priority="critical",
+                run_after=now,
+                max_attempts=3,
+                payload={"action": "billion_revenue_review", "review_at": now.isoformat(), "source": "scheduler"},
+            )
+            db.add(task); db.flush(); record_task_created(db, task, actor="scheduler", reason="recurring_billion_revenue_review")
         tenders = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "tender", BusinessRecord.deadline_at.is_not(None), BusinessRecord.deadline_at <= now + timedelta(days=3), BusinessRecord.status.not_in(["submitted", "won", "lost", "expired"]))).all()
         payments = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "payment", BusinessRecord.deadline_at.is_not(None), BusinessRecord.deadline_at < now, BusinessRecord.status.not_in(["paid", "cancelled"]))).all()
         shifts = db.scalars(select(OperatingEntity).where(OperatingEntity.entity_type == "shift", OperatingEntity.started_at.is_not(None), OperatingEntity.started_at <= now + timedelta(hours=24), OperatingEntity.status.not_in(["completed", "cancelled"]))).all()

@@ -52,21 +52,37 @@ def upgrade():
             )
         )
 
-    op.alter_column("domain_events", "event_id", nullable=False)
-    op.alter_column("domain_events", "occurred_at", nullable=False)
-    op.alter_column("domain_events", "correlation_id", server_default=None)
     inspector = sa.inspect(bind)
     unique_names = {item["name"] for item in inspector.get_unique_constraints("domain_events")}
     check_names = {item["name"] for item in inspector.get_check_constraints("domain_events")}
     index_names = {item["name"] for item in inspector.get_indexes("domain_events")}
-    if "uq_domain_event_event_id" not in unique_names:
-        op.create_unique_constraint("uq_domain_event_event_id", "domain_events", ["event_id"])
-    if "ck_domain_event_schema_version" not in check_names:
-        op.create_check_constraint("ck_domain_event_schema_version", "domain_events", "schema_version >= 1")
-    if "ck_domain_event_correlation_id" not in check_names:
-        op.create_check_constraint("ck_domain_event_correlation_id", "domain_events", "correlation_id <> ''")
-    if "ck_domain_event_actor" not in check_names:
-        op.create_check_constraint("ck_domain_event_actor", "domain_events", "actor <> ''")
+    if bind.dialect.name == "sqlite":
+        # SQLite has no ALTER COLUMN / ADD CONSTRAINT syntax. Alembic's batch
+        # mode rebuilds the table while preserving the backfilled event data.
+        with op.batch_alter_table("domain_events") as batch:
+            batch.alter_column("event_id", nullable=False)
+            batch.alter_column("occurred_at", nullable=False)
+            batch.alter_column("correlation_id", server_default=None)
+            if "uq_domain_event_event_id" not in unique_names:
+                batch.create_unique_constraint("uq_domain_event_event_id", ["event_id"])
+            if "ck_domain_event_schema_version" not in check_names:
+                batch.create_check_constraint("ck_domain_event_schema_version", "schema_version >= 1")
+            if "ck_domain_event_correlation_id" not in check_names:
+                batch.create_check_constraint("ck_domain_event_correlation_id", "correlation_id <> ''")
+            if "ck_domain_event_actor" not in check_names:
+                batch.create_check_constraint("ck_domain_event_actor", "actor <> ''")
+    else:
+        op.alter_column("domain_events", "event_id", nullable=False)
+        op.alter_column("domain_events", "occurred_at", nullable=False)
+        op.alter_column("domain_events", "correlation_id", server_default=None)
+        if "uq_domain_event_event_id" not in unique_names:
+            op.create_unique_constraint("uq_domain_event_event_id", "domain_events", ["event_id"])
+        if "ck_domain_event_schema_version" not in check_names:
+            op.create_check_constraint("ck_domain_event_schema_version", "domain_events", "schema_version >= 1")
+        if "ck_domain_event_correlation_id" not in check_names:
+            op.create_check_constraint("ck_domain_event_correlation_id", "domain_events", "correlation_id <> ''")
+        if "ck_domain_event_actor" not in check_names:
+            op.create_check_constraint("ck_domain_event_actor", "domain_events", "actor <> ''")
     for name, column in (
         ("ix_domain_events_event_id", "event_id"),
         ("ix_domain_events_correlation_id", "correlation_id"),
@@ -103,6 +119,7 @@ def upgrade():
 
 
 def downgrade():
+    bind = op.get_bind()
     op.drop_index("ix_event_consumer_receipts_status", table_name="event_consumer_receipts")
     op.drop_index("ix_event_consumer_receipts_consumer", table_name="event_consumer_receipts")
     op.drop_index("ix_event_consumer_receipts_event_id", table_name="event_consumer_receipts")
@@ -112,6 +129,15 @@ def downgrade():
     op.drop_index("ix_domain_events_causation_id", table_name="domain_events")
     op.drop_index("ix_domain_events_correlation_id", table_name="domain_events")
     op.drop_index("ix_domain_events_event_id", table_name="domain_events")
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("domain_events") as batch:
+            batch.drop_constraint("ck_domain_event_actor", type_="check")
+            batch.drop_constraint("ck_domain_event_correlation_id", type_="check")
+            batch.drop_constraint("ck_domain_event_schema_version", type_="check")
+            batch.drop_constraint("uq_domain_event_event_id", type_="unique")
+            for name in ("occurred_at", "actor", "causation_id", "correlation_id", "schema_version", "event_id"):
+                batch.drop_column(name)
+        return
     op.drop_constraint("ck_domain_event_actor", "domain_events", type_="check")
     op.drop_constraint("ck_domain_event_correlation_id", "domain_events", type_="check")
     op.drop_constraint("ck_domain_event_schema_version", "domain_events", type_="check")

@@ -1,10 +1,12 @@
 import logging
 import os
 import base64
+import hashlib
 import smtplib
 import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from pathlib import Path
 from urllib.parse import urlencode
 
 from sqlalchemy import func, select
@@ -15,6 +17,7 @@ from .orchestrator import run_next
 from .models import OutboundMessage, SenderMailbox, Suppression
 from .platform import process_next_event
 from .notifications import send_next_owner_notification
+from .inbound_mail import collect_inbound_replies
 from .security import unsubscribe_token
 
 logging.basicConfig(level=logging.INFO)
@@ -27,8 +30,39 @@ def send_next_email(db) -> bool:
     sent_day = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.sent_at >= now - timedelta(days=1))) or 0
     if sent_minute >= settings.outreach_per_minute or sent_day >= settings.outreach_per_day:
         return False
-    row = db.scalar(select(OutboundMessage).where(OutboundMessage.status.in_(["queued", "waiting_configuration"]), OutboundMessage.scheduled_at <= now).order_by(OutboundMessage.id).with_for_update(skip_locked=True))
-    if not row:
+    candidates = db.scalars(
+        select(OutboundMessage)
+        .where(
+            OutboundMessage.status.in_(["queued", "waiting_configuration"]),
+            OutboundMessage.scheduled_at <= now,
+        )
+        .order_by(OutboundMessage.id)
+        .limit(100)
+        .with_for_update(skip_locked=True)
+    ).all()
+    row = None
+    for candidate in candidates:
+        candidate_mailbox = db.get(SenderMailbox, candidate.mailbox_id) if candidate.mailbox_id else None
+        if candidate_mailbox:
+            candidate_password = os.environ.get(candidate_mailbox.secret_ref, "") if candidate_mailbox.secret_ref else ""
+            if not all([candidate_mailbox.smtp_host, candidate_mailbox.username or candidate_mailbox.address, candidate_password, candidate_mailbox.address]):
+                candidate.status = "waiting_configuration"
+                candidate.error = "SMTP credentials are not configured"
+                continue
+        elif not all([settings.smtp_host, settings.smtp_username, settings.smtp_password, settings.smtp_from_email]):
+            candidate.status = "waiting_configuration"
+            candidate.error = "SMTP credentials are not configured"
+            continue
+        if candidate_mailbox and candidate_mailbox.active:
+            mailbox_minute = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.mailbox_id == candidate_mailbox.id, OutboundMessage.sent_at >= now - timedelta(minutes=1))) or 0
+            mailbox_day = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.mailbox_id == candidate_mailbox.id, OutboundMessage.sent_at >= now - timedelta(days=1))) or 0
+            if mailbox_minute >= candidate_mailbox.per_minute or mailbox_day >= candidate_mailbox.per_day:
+                continue
+        row = candidate
+        break
+    if row is None:
+        if candidates:
+            db.commit()
         return False
     if db.get(Suppression, row.recipient):
         row.status = "suppressed"; db.commit(); return True
@@ -42,18 +76,26 @@ def send_next_email(db) -> bool:
         row.status = "failed"; row.error = "mailbox is inactive"; db.commit(); return True
     if not all([smtp_host, smtp_username, smtp_password, from_email]):
         row.status = "waiting_configuration"; row.error = "SMTP credentials are not configured"; db.commit(); return True
-    if mailbox:
-        mailbox_minute = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.mailbox_id == mailbox.id, OutboundMessage.sent_at >= now - timedelta(minutes=1))) or 0
-        mailbox_day = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.mailbox_id == mailbox.id, OutboundMessage.sent_at >= now - timedelta(days=1))) or 0
-        if mailbox_minute >= mailbox.per_minute or mailbox_day >= mailbox.per_day:
-            return False
     unsubscribe_query = urlencode({"email": row.recipient, "token": unsubscribe_token(row.recipient)})
     unsubscribe = f"{settings.public_base_url.rstrip('/')}/api/outreach/unsubscribe?{unsubscribe_query}"
     message = EmailMessage(); message["From"] = from_email; message["To"] = row.recipient; message["Subject"] = row.subject
     message.set_content(f"{row.body}\n\nОтписаться: {unsubscribe}")
     try:
         for attachment in row.attachments or []:
-            raw = base64.b64decode(str(attachment.get("content_base64", "")), validate=True)
+            storage_path = str(attachment.get("storage_path") or "")
+            if storage_path:
+                root = Path(settings.document_storage_path).resolve()
+                path = Path(storage_path).resolve()
+                try:
+                    path.relative_to(root)
+                except ValueError as exc:
+                    raise ValueError("attachment path is outside document storage") from exc
+                raw = path.read_bytes()
+                expected = str(attachment.get("sha256") or "")
+                if expected and hashlib.sha256(raw).hexdigest() != expected:
+                    raise ValueError("attachment checksum mismatch")
+            else:
+                raw = base64.b64decode(str(attachment.get("content_base64", "")), validate=True)
             if len(raw) > settings.max_attachment_bytes: raise ValueError("attachment is too large")
             content_type = str(attachment.get("content_type", "application/octet-stream"))
             maintype, subtype = content_type.split("/", 1) if "/" in content_type else ("application", "octet-stream")
@@ -70,6 +112,7 @@ def send_next_email(db) -> bool:
 
 def main() -> None:
     log.info("background worker started")
+    next_inbound_poll = 0.0
     while True:
         with SessionLocal() as db:
             try:
@@ -79,6 +122,11 @@ def main() -> None:
                 if event: log.info("published event %s", event.id)
                 send_next_email(db)
                 send_next_owner_notification(db)
+                if time.monotonic() >= next_inbound_poll:
+                    result = collect_inbound_replies(db)
+                    if result["received"] or result["failed"]:
+                        log.info("inbound mail poll: received=%s failed=%s", result["received"], result["failed"])
+                    next_inbound_poll = time.monotonic() + settings.inbound_mail_poll_seconds
             except Exception:
                 db.rollback(); log.exception("task processing failed")
         time.sleep(settings.worker_poll_seconds)

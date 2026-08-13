@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .domains import module_summary, validate_record
-from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, Decision, DomainEvent, EventConsumerReceipt, MessageTemplate, OutboundMessage, SenderMailbox, Suppression, Task, TaskTransition
+from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, ContentItem, Decision, DomainEvent, EventConsumerReceipt, MessageTemplate, OutboundMessage, SenderMailbox, Suppression, Task, TaskTransition
 from .orchestrator import audit, dispatch
 from .platform import company_brain, event_bus
 from .schemas import ApprovalDecision, ContactEventCreate, DecisionCreate, KnowledgeCreate, OutreachCreate, RecordCreate, RecordUpdate, SuppressionCreate, TaskCreate
@@ -392,6 +392,19 @@ def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db
                 }
             else:
                 resource.status = "approved" if row.status == "approved" else "rejected"
+    elif row.resource_type == "social_content_batch":
+        batch = db.get(BusinessRecord, int(row.resource_id))
+        if batch and batch.record_type == "social_content_batch":
+            item_ids = [int(value) for value in (batch.data or {}).get("content_item_ids", [])]
+            items = db.scalars(select(ContentItem).where(ContentItem.id.in_(item_ids))).all() if item_ids else []
+            batch.status = "scheduled" if row.status == "approved" else "rejected"
+            for item in items:
+                item.status = "scheduled" if row.status == "approved" else "cancelled"
+                item.metrics = {
+                    **(item.metrics or {}),
+                    "publication_status": "scheduled_waiting_channel_credentials" if row.status == "approved" else "owner_rejected",
+                    "approval_id": row.id,
+                }
     event_bus.publish(db, f"approval.{row.status}", row.resource_type, row.resource_id, {"approval_id": row.id, "action_kind": row.action_kind}, idempotency_key=f"approval:{row.id}:{row.status}")
     audit(db, actor.subject, f"approval.{row.status}", row.resource_type, row.resource_id, {"approval_id": row.id})
     db.commit()

@@ -63,7 +63,22 @@ def integration_status() -> dict[str, Any]:
             else "credentials_required",
             "telegram_ads": "credentials_present_adapter_manual"
             if settings.telegram_ads_token
+                else "credentials_required",
+        },
+        "social_publishing": {
+            "telegram": "credentials_present_adapter_required"
+            if settings.telegram_bot_token and settings.telegram_social_chat_id
             else "credentials_required",
+            "vk": "credentials_present_adapter_required"
+            if settings.vk_community_id and settings.vk_community_token
+            else "credentials_required",
+            "odnoklassniki": "credentials_present_adapter_required"
+            if settings.odnoklassniki_group_id and settings.odnoklassniki_application_key and settings.odnoklassniki_session_secret
+            else "credentials_required",
+            "instagram": "credentials_present_adapter_required"
+            if settings.instagram_business_account_id and settings.instagram_access_token
+            else "credentials_required",
+            "publication_mode": "owner_approved_scheduled_content_only",
         },
         "media_generation": {
             "image": "codex_workflow_available"

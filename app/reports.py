@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from .models import AgentRun, AgentState, ApprovalRequest, DomainEvent, ImprovementRequest, Task
 from .readiness import integration_status
+from .growth import growth_snapshot
 
 
 def _utcnow() -> datetime:
@@ -111,6 +112,7 @@ def build_activity_report(
         }
         for row in recent_completed
     ]
+    strategic_growth = growth_snapshot(db, now=generated_at)
     return {
         "outcome": "completed",
         "report_kind": "system_activity",
@@ -139,6 +141,7 @@ def build_activity_report(
             if (row.payload or {}).get("action") != "system_activity_report"
         ],
         "agent_statuses": agent_statuses,
+        "strategic_growth": strategic_growth,
         "blockers": blockers,
         "evidence": [
             {
@@ -147,6 +150,13 @@ def build_activity_report(
                 "period_hours": hours,
                 "period_minutes": minutes,
                 **summary,
+            },
+            {
+                "type": "billion_revenue_goal_snapshot",
+                "goal_id": strategic_growth.get("goal_id"),
+                "current_rub": strategic_growth["current_rub"],
+                "target_rub": strategic_growth["target_rub"],
+                "source": strategic_growth.get("source"),
             },
             *task_evidence,
         ],
@@ -167,6 +177,14 @@ def format_activity_report(result: dict[str, Any]) -> str:
         f"🛠 Улучшений в очереди: {summary.get('queued_improvements', 0)}",
         f"🔐 Ожидают подтверждения: {summary.get('pending_approvals', 0)}",
     ]
+    growth = result.get("strategic_growth") or {}
+    if growth:
+        lines.extend([
+            "\n🎯 Цель: годовой оборот 1 млрд ₽",
+            f"Факт run-rate: {growth.get('current_rub', 0):,} ₽/год".replace(",", " "),
+            f"Прогресс: {growth.get('progress_percent', 0)}% · разрыв: {growth.get('gap_to_target_rub', growth.get('gap_rub', 0)):,} ₽".replace(",", " "),
+            f"Темп: {'по плану' if growth.get('status') == 'on_track' else 'ниже плана'} · данные: активные договоры",
+        ])
     recent = result.get("recent_completed_tasks") or []
     if recent:
         lines.append("\nПоследние результаты:")
@@ -213,6 +231,7 @@ def build_system_self_check(db: Session, *, registered_agents: list[str]) -> dic
 
     internal_agents = {
         "AI CEO": "ceo",
+        "Growth Officer": "growth_officer",
         "Sales/CRM": "sales",
         "HR": "hr",
         "Finance": "finance",
