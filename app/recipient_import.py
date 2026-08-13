@@ -44,7 +44,19 @@ def _xlsx_emails(content: bytes) -> set[str]:
     cells = 0
     characters = 0
     try:
-        for sheet in workbook.worksheets:
+        canonical_sheet = next(
+            (
+                sheet
+                for sheet in workbook.worksheets
+                if " ".join(sheet.title.lower().replace("ё", "е").split())
+                in {"для импорта", "import", "import data", "данные для импорта"}
+            ),
+            None,
+        )
+        # A structured owner workbook may also contain raw/unlinked contact
+        # sheets. Those are provenance, never an implicit recipient source.
+        sheets = [canonical_sheet] if canonical_sheet is not None else workbook.worksheets
+        for sheet in sheets:
             for row in sheet.iter_rows(values_only=True):
                 for value in row:
                     cells += 1

@@ -213,10 +213,41 @@ def parse_lead_import(filename: str, content: bytes) -> list[dict[str, Any]]:
         except ImportError as exc:
             raise HTTPException(503, "XLSX import requires openpyxl") from exc
         workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-        sheet = workbook.active
-        values = list(sheet.iter_rows(values_only=True))
+        try:
+            preferred = next(
+                (
+                    sheet
+                    for sheet in workbook.worksheets
+                    if " ".join(sheet.title.lower().replace("ё", "е").split())
+                    in {"для импорта", "import", "import data", "данные для импорта"}
+                ),
+                workbook.active,
+            )
+            values = list(preferred.iter_rows(values_only=True))
+        finally:
+            workbook.close()
         if not values:
             return []
-        headers = [str(x or "").strip() for x in values[0]]
-        return [{headers[i]: value for i, value in enumerate(row) if i < len(headers) and headers[i]} for row in values[1:]]
+
+        company_headers = {"company", "name", "title", "organization", "наименование", "организация"}
+        region_headers = {"region", "регион", "subject"}
+        contact_headers = {"email", "emails", "e-mail", "phone", "phones", "телефон", "электронная почта"}
+
+        def normalized(row: tuple[Any, ...]) -> set[str]:
+            return {" ".join(str(value or "").strip().lower().replace("ё", "е").split()) for value in row}
+
+        header_index = 0
+        for index, row in enumerate(values[:25]):
+            headers = normalized(row)
+            if headers & company_headers and headers & region_headers and headers & contact_headers:
+                header_index = index
+                break
+        headers = [str(value or "").strip() for value in values[header_index]]
+        if not any(headers):
+            return []
+        return [
+            {headers[i]: value for i, value in enumerate(row) if i < len(headers) and headers[i]}
+            for row in values[header_index + 1 :]
+            if any(value not in (None, "") for value in row)
+        ]
     raise HTTPException(422, "Only CSV and XLSX files are supported")

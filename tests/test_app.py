@@ -2065,6 +2065,17 @@ def test_recipient_document_import_extracts_xlsx_docx_and_pdf():
     assert len(extracted) == 205
     assert extracted[0] == "file-000@example.com"
 
+    structured = Workbook()
+    raw = structured.active
+    raw.title = "Непривязанные контакты"
+    raw.append(["must-not-mail@example.com"])
+    canonical = structured.create_sheet("Для импорта")
+    canonical.append(["company", "email", "emails"])
+    canonical.append(["УК Каноническая", "canonical@example.com", "canonical@example.com"])
+    structured_xlsx = BytesIO()
+    structured.save(structured_xlsx)
+    assert extract_recipient_emails("structured.xlsx", structured_xlsx.getvalue()) == ["canonical@example.com"]
+
     document = Document()
     document.add_paragraph("Первый клиент: word-one@example.com")
     table = document.add_table(rows=1, cols=1)
@@ -3086,6 +3097,8 @@ def test_management_company_import_preserves_provenance_and_requires_consent(cli
     record = next(row for row in client.get("/api/records?record_type=management_company").json() if row["title"] == "УК Север Тест")
     assert record["data"]["marketing_consent_status"] == "unknown"
     assert record["data"]["provenance"][0]["source_url"] == "https://dom.gosuslugi.ru/"
+    assert record["data"]["provenance"][0]["source_filename"] == "management-companies.csv"
+    assert len(record["data"]["provenance"][0]["source_sha256"]) == 64
 
     blocked = client.post("/api/outreach/campaigns/launch", headers={"X-Role": "manager"}, json={
         "campaign_key": "uk-no-consent-test",
@@ -3095,6 +3108,55 @@ def test_management_company_import_preserves_provenance_and_requires_consent(cli
     })
     assert blocked.status_code == 422
     assert blocked.json()["detail"]["count"] == 1
+
+
+def test_management_company_xlsx_uses_canonical_import_sheet_and_never_trusts_consent(client):
+    import base64
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    summary = workbook.active
+    summary.title = "Сводка"
+    summary.append(["Показатель", "Значение"])
+    summary.append(["Уникальных email", 3])
+    source = workbook.create_sheet("Непривязанные контакты")
+    source.append(["Email"])
+    source.append(["must-not-import@example.com"])
+    import_sheet = workbook.create_sheet("Для импорта")
+    import_sheet.append(["Данные для импорта CleaningAIOS"])
+    import_sheet.append(["Согласие остаётся unknown, импорт не запускает рассылку"])
+    import_sheet.append([])
+    import_sheet.append([])
+    import_sheet.append([
+        "organization_type",
+        "company",
+        "region",
+        "email",
+        "marketing_consent_status",
+        "source_refs",
+    ])
+    import_sheet.append(["УК", "УК Канонический XLSX", "Санкт-Петербург", "canonical@example.com", "confirmed", "owner:xlsx:1"])
+    content = BytesIO()
+    workbook.save(content)
+
+    response = client.post("/api/research/management-companies/import", json={
+        "filename": "canonical-management-companies.xlsx",
+        "content_base64": base64.b64encode(content.getvalue()).decode(),
+        "source_kind": "manual_public_export",
+        "source_url": "owner-upload://canonical-management-companies",
+    })
+    assert response.status_code == 201
+    result = response.json()
+    assert result["total_rows"] == 1
+    assert len(result["source_sha256"]) == 64
+    records = client.get("/api/records?record_type=management_company").json()
+    record = next(row for row in records if row["title"] == "УК Канонический XLSX")
+    assert record["data"]["emails"] == ["canonical@example.com"]
+    assert record["data"]["marketing_consent_status"] == "unknown"
+    assert record["data"]["provenance"][0]["source_filename"] == "canonical-management-companies.xlsx"
+    assert all("must-not-import@example.com" not in (row["data"].get("emails") or []) for row in records)
 
 
 def test_management_company_import_keeps_structured_contacts_without_trusting_consent(client):

@@ -111,6 +111,7 @@ def import_management_companies(
     source_url: str,
     actor: str,
 ) -> dict:
+    source_sha256 = hashlib.sha256(content).hexdigest()
     job = ImportJob(import_type="management_companies", filename=filename, created_by=actor)
     db.add(job)
     db.flush()
@@ -150,6 +151,8 @@ def import_management_companies(
         provenance = {
             "source_kind": source_kind,
             "source_url": source_url,
+            "source_filename": filename,
+            "source_sha256": source_sha256,
             "collected_at": utcnow().isoformat(),
             "row": index,
         }
@@ -177,7 +180,12 @@ def import_management_companies(
         if record:
             previous = dict(record.data or {})
             existing_sources = list((record.data or {}).get("provenance") or [])
-            if not any(item.get("source_url") == source_url and item.get("row") == index for item in existing_sources):
+            if not any(
+                item.get("source_url") == source_url
+                and item.get("row") == index
+                and item.get("source_sha256") == source_sha256
+                for item in existing_sources
+            ):
                 existing_sources.append(provenance)
             record.data = {
                 **previous,
@@ -214,6 +222,8 @@ def import_management_companies(
         "updated": updated,
         "skipped": job.skipped_rows,
         "errors": errors,
+        "source_filename": filename,
+        "source_sha256": source_sha256,
     }
 
 
