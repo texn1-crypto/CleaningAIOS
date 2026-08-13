@@ -18,11 +18,23 @@ def _count(db: Session, model: type, *criteria: Any) -> int:
     return int(db.scalar(select(func.count()).select_from(model).where(*criteria)) or 0)
 
 
-def build_activity_report(db: Session, *, period_hours: int = 24) -> dict[str, Any]:
+def build_activity_report(
+    db: Session,
+    *,
+    period_hours: int | float = 24,
+    period_minutes: int | None = None,
+) -> dict[str, Any]:
     """Build a verifiable read-only report from the shared operational database."""
-    hours = max(1, min(int(period_hours), 168))
+    minutes = (
+        max(1, min(int(period_minutes), 7 * 24 * 60))
+        if period_minutes is not None
+        else max(60, min(int(float(period_hours) * 60), 7 * 24 * 60))
+    )
+    hours: int | float = minutes / 60
+    if float(hours).is_integer():
+        hours = int(hours)
     generated_at = _utcnow()
-    cutoff = generated_at - timedelta(hours=hours)
+    cutoff = generated_at - timedelta(minutes=minutes)
 
     running_reports = db.scalars(
         select(Task).where(Task.status == "running", Task.agent_type == "orchestrator")
@@ -97,6 +109,7 @@ def build_activity_report(db: Session, *, period_hours: int = 24) -> dict[str, A
         "outcome": "completed",
         "report_kind": "system_activity",
         "period_hours": hours,
+        "period_minutes": minutes,
         "generated_at": generated_at.isoformat(),
         "summary": summary,
         "recent_completed_tasks": [
@@ -116,11 +129,35 @@ def build_activity_report(db: Session, *, period_hours: int = 24) -> dict[str, A
                 "type": "database_snapshot",
                 "generated_at": generated_at.isoformat(),
                 "period_hours": hours,
+                "period_minutes": minutes,
                 **summary,
             },
             *task_evidence,
         ],
     }
+
+
+def format_activity_report(result: dict[str, Any]) -> str:
+    """Format the same verified report for Telegram and queued notifications."""
+    summary = result.get("summary") or {}
+    period_minutes = int(result.get("period_minutes") or float(result.get("period_hours", 24)) * 60)
+    period_label = f"{period_minutes} мин." if period_minutes < 60 else f"{period_minutes / 60:g} ч."
+    lines = [
+        f"📋 Отчёт CleaningAI OS за {period_label}",
+        f"✅ Выполнено задач: {summary.get('tasks_completed', 0)}",
+        f"🔄 В работе и очереди: {summary.get('tasks_active', 0)}",
+        f"⚠️ Ошибок: {summary.get('tasks_failed', 0)}",
+        f"⛔ Заблокировано: {summary.get('tasks_blocked', 0)}",
+        f"🛠 Улучшений в очереди: {summary.get('queued_improvements', 0)}",
+        f"🔐 Ожидают подтверждения: {summary.get('pending_approvals', 0)}",
+    ]
+    recent = result.get("recent_completed_tasks") or []
+    if recent:
+        lines.append("\nПоследние результаты:")
+        lines.extend(f"• #{row['id']} [{row['agent_type']}] {row['title']}" for row in recent[:5])
+    blockers = result.get("blockers") or []
+    lines.append("\nТребуют внимания: " + ("; ".join(blockers) if blockers else "нет."))
+    return "\n".join(lines)
 
 
 def build_system_self_check(db: Session, *, registered_agents: list[str]) -> dict[str, Any]:

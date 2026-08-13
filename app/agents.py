@@ -35,9 +35,41 @@ class OrchestratorAgent:
     name = "orchestrator"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get("action") == "system_activity_report":
-            from .reports import build_activity_report
+            from .notifications import queue_owner_notification
+            from .reports import build_activity_report, format_activity_report
 
-            return build_activity_report(db, period_hours=payload.get("period_hours", 24))
+            result = build_activity_report(
+                db,
+                period_hours=payload.get("period_hours", 24),
+                period_minutes=payload.get("period_minutes"),
+            )
+            if payload.get("notify_owner"):
+                notification = queue_owner_notification(
+                    db,
+                    idempotency_key=str(
+                        payload.get("notification_idempotency_key") or f"activity-report:{result['generated_at']}"
+                    ),
+                    channel="telegram",
+                    resource_type="activity_report",
+                    resource_id=str(payload.get("scheduled_window_start") or result["generated_at"]),
+                    subject="Регулярный отчёт CleaningAI OS",
+                    body=format_activity_report(result),
+                    data={
+                        "report_kind": result["report_kind"],
+                        "generated_at": result["generated_at"],
+                        "period_minutes": result["period_minutes"],
+                    },
+                )
+                result["owner_notification"] = notification.status
+                result["owner_notification_id"] = notification.id
+                result["evidence"].append(
+                    {
+                        "type": "owner_notification_queued",
+                        "notification_id": notification.id,
+                        "status": notification.status,
+                    }
+                )
+            return result
         if payload.get("action") == "system_self_check":
             from .reports import build_system_self_check
 

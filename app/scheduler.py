@@ -14,9 +14,41 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("cleaningai.scheduler")
 
 
+def owner_report_window(now: datetime, interval_minutes: int) -> datetime:
+    """Return a UTC-aligned window start for any supported interval."""
+    utc_now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+    minute = int(utc_now.timestamp() // 60)
+    window_minute = minute - minute % interval_minutes
+    return datetime.fromtimestamp(window_minute * 60, tz=timezone.utc).replace(tzinfo=None)
+
+
 def schedule_cycle() -> None:
     with SessionLocal() as db:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+        report_interval = max(5, min(settings.owner_activity_report_interval_minutes, 24 * 60))
+        report_window = owner_report_window(now, report_interval)
+        report_key = f"owner-activity-report:{report_window.isoformat()}"
+        report_title = f"Регулярный отчёт владельцу · {report_window.isoformat()}"
+        if not db.scalar(select(Task.id).where(Task.title == report_title)):
+            task = Task(
+                title=report_title,
+                agent_type="orchestrator",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={
+                    "action": "system_activity_report",
+                    "period_minutes": report_interval,
+                    "source": "scheduler",
+                    "notify_owner": True,
+                    "scheduled_window_start": report_window.isoformat(),
+                    "notification_idempotency_key": report_key,
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(db, task, actor="scheduler", reason="recurring_owner_activity_report")
         active = db.scalar(select(Task.id).where(Task.agent_type == "ceo", Task.status.in_(["open", "queued", "running"])))
         recent = db.scalar(select(Task.id).where(Task.agent_type == "ceo", Task.created_at >= now - timedelta(hours=settings.ceo_review_interval_hours)))
         if not active and not recent:

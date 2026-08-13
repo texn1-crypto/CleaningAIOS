@@ -977,6 +977,81 @@ def test_telegram_activity_report_returns_actual_result(monkeypatch):
     assert task_payload["max_attempts"] == 1
 
 
+def test_scheduled_activity_report_is_30_minutes_and_notification_is_idempotent(client):
+    from uuid import uuid4
+
+    from app.db import SessionLocal
+    from app.models import OwnerNotification
+    from app.reports import format_activity_report
+    from sqlalchemy import func, select
+
+    notification_key = f"scheduled-report-test:{uuid4()}"
+    payload = {
+        "action": "system_activity_report",
+        "period_minutes": 30,
+        "source": "scheduler",
+        "notify_owner": True,
+        "scheduled_window_start": "2026-08-13T00:00:00",
+        "notification_idempotency_key": notification_key,
+    }
+    first = client.post(
+        "/api/tasks",
+        json={"title": "Регулярный отчёт тест", "agent_type": "orchestrator", "payload": payload},
+    ).json()
+    first_result = client.post(f"/api/tasks/{first['id']}/run").json()["result"]
+    second = client.post(
+        "/api/tasks",
+        json={"title": "Повтор регулярного отчёта", "agent_type": "orchestrator", "payload": payload},
+    ).json()
+    second_result = client.post(f"/api/tasks/{second['id']}/run").json()["result"]
+
+    assert first_result["period_minutes"] == 30
+    assert first_result["period_hours"] == 0.5
+    assert first_result["owner_notification"] in {"queued", "waiting_configuration"}
+    assert second_result["owner_notification_id"] == first_result["owner_notification_id"]
+    assert "за 30 мин." in format_activity_report(first_result)
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(func.count()).select_from(OwnerNotification).where(
+                OwnerNotification.idempotency_key == notification_key
+            )
+        ) == 1
+
+
+def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app import scheduler
+    from app.db import Base
+    from app.models import Task
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    monkeypatch.setattr(scheduler.settings, "owner_activity_report_interval_minutes", 30)
+
+    scheduler.schedule_cycle()
+    scheduler.schedule_cycle()
+
+    with session_factory() as db:
+        reports = db.scalars(
+            select(Task).where(Task.title.like("Регулярный отчёт владельцу · %"))
+        ).all()
+        assert len(reports) == 1
+        assert reports[0].payload["period_minutes"] == 30
+        assert reports[0].payload["notify_owner"] is True
+        assert reports[0].payload["notification_idempotency_key"].startswith(
+            "owner-activity-report:"
+        )
+
+
 def test_russian_chat_routes_business_requests_to_agents():
     from app.chat import understand_russian_message
 

@@ -223,26 +223,9 @@ async def improvement_queue(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 def format_activity_report(result: dict) -> str:
-    summary = result.get("summary") or {}
-    lines = [
-        f"📋 Отчёт CleaningAI OS за {result.get('period_hours', 24)} ч.",
-        f"✅ Выполнено задач: {summary.get('tasks_completed', 0)}",
-        f"🔄 В работе и очереди: {summary.get('tasks_active', 0)}",
-        f"⚠️ Ошибок: {summary.get('tasks_failed', 0)}",
-        f"⛔ Заблокировано: {summary.get('tasks_blocked', 0)}",
-        f"🛠 Улучшений в очереди: {summary.get('queued_improvements', 0)}",
-        f"🔐 Ожидают подтверждения: {summary.get('pending_approvals', 0)}",
-    ]
-    recent = result.get("recent_completed_tasks") or []
-    if recent:
-        lines.append("\nПоследние результаты:")
-        lines.extend(
-            f"• #{row['id']} [{row['agent_type']}] {row['title']}"
-            for row in recent[:5]
-        )
-    blockers = result.get("blockers") or []
-    lines.append("\nТребуют внимания: " + ("; ".join(blockers) if blockers else "нет."))
-    return "\n".join(lines)
+    from .reports import format_activity_report as render_activity_report
+
+    return render_activity_report(result)
 
 
 async def activity_report(update: Update, intent: dict):

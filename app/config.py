@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 2.0
     scheduler_interval_seconds: int = 60
     ceo_review_interval_hours: int = 24
+    owner_activity_report_interval_minutes: int = 30
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""

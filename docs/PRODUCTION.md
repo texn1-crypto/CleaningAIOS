@@ -48,6 +48,12 @@ Set `TELEGRAM_API_IP` in the server `.env`, then recreate only the bot:
 docker compose --profile telegram up -d --force-recreate bot
 ```
 
+`OWNER_ACTIVITY_REPORT_INTERVAL_MINUTES=30` makes the scheduler create one
+idempotent operational-report task per 30-minute window. The Orchestrator builds
+the report from PostgreSQL and the worker delivers it through the persisted owner
+notification queue. Set a value from 5 to 1440 minutes; delivery requires
+`TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID`.
+
 Telegram's cloud Bot API cannot download files larger than 20 MB. For larger
 commercial-proposal attachments, operate the official local Bot API server
 separately, provide `api_id` and `api_hash` only to that server, expose it on the
