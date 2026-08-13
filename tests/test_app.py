@@ -3867,6 +3867,7 @@ def test_marketing_agent_creates_two_posts_per_social_channel_for_approval(clien
     assert all(sum(row["channel"] == channel for row in items) == 2 for channel in {"telegram", "vk", "odnoklassniki", "instagram"})
     assets = [row for row in client.get("/api/marketing/media-assets?status=queued").json() if row["id"] in result["media_asset_ids"]]
     assert len(assets) == 2
+    assert all(row["provider"] == "openai_images" for row in assets)
     assert all(row["metadata"]["visual_review_required"] is True for row in assets)
 
     first = client.patch(f"/api/marketing/media-assets/{assets[0]['id']}", json={

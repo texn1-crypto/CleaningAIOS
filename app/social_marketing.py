@@ -427,7 +427,7 @@ def _ensure_visual_workflow(db: Session, batch: BusinessRecord, items: list[Cont
             content_item_id=source.id,
             kind="image",
             title=f"Визуал {slot}: {source.title}"[:255],
-            provider="openai_images" if source_url else "imagegen",
+            provider="openai_images",
             prompt=_visual_prompt(source.title, source.body.split("\n\n", 2)[1] if "\n\n" in source.body else source.body),
             alt_text=f"Иллюстрация к публикации «{source.title}»"[:500],
             status="queued",

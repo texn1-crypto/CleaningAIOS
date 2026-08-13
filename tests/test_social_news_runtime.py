@@ -109,6 +109,30 @@ def test_image_agent_uses_original_local_photo_pool_without_paid_key(client, mon
         assert client.get(asset.public_url).status_code == 200
 
 
+def test_image_agent_consumes_legacy_imagegen_job(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "social_image_generation_enabled", False)
+    monkeypatch.setattr(settings, "image_generation_api_key", "")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    with SessionLocal() as db:
+        asset = MediaAsset(
+            kind="image",
+            title="Legacy visual",
+            provider="imagegen",
+            prompt="Legacy prompt",
+            status="queued",
+            metadata_json={"batch_id": 0, "slot": 1},
+        )
+        db.add(asset)
+        db.commit()
+
+        assert generate_next_social_visual(db) is True
+        db.refresh(asset)
+        assert asset.status == "ready"
+        assert asset.provider == "local_media_pool"
+        assert asset.metadata_json["generation_status"] == "ready_for_owner_preview"
+        assert client.get(asset.public_url).status_code == 200
+
+
 def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeypatch):
     calls = []
 

@@ -94,7 +94,10 @@ def generate_next_social_visual(db: Session) -> bool:
     asset = db.scalar(
         select(MediaAsset)
         .where(
-            MediaAsset.provider.in_(["openai_images", "local_media_pool"]),
+            # ``imagegen`` was used by the original deterministic social-plan
+            # workflow. Keep consuming those persisted jobs while all newly
+            # created jobs use the canonical ``openai_images`` provider.
+            MediaAsset.provider.in_(["imagegen", "openai_images", "local_media_pool"]),
             MediaAsset.status.in_(["queued", "credentials_required"]),
         )
         .order_by(MediaAsset.id)
