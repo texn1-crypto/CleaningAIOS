@@ -4,9 +4,11 @@ import hashlib
 import hmac
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -45,6 +47,32 @@ def _phone_digits(value: str) -> str:
 def _safe_social_url(value: str) -> str:
     parsed = urlparse(value)
     return value if parsed.scheme == "https" and parsed.netloc and not parsed.username and not parsed.password else ""
+
+
+@router.get("/social-media/{asset_id}/{filename}", include_in_schema=False)
+def public_social_media(asset_id: int, filename: str, db: Session = Depends(get_db)):
+    asset = db.get(MediaAsset, asset_id)
+    metadata = (asset.metadata_json if asset else {}) or {}
+    digest = str(metadata.get("sha256") or "")
+    expected_names = {f"{digest}.png", f"{digest}.jpg"}
+    if (
+        not asset
+        or asset.kind != "image"
+        or asset.status not in {"ready", "published"}
+        or len(digest) != 64
+        or filename not in expected_names
+        or not asset.storage_path
+    ):
+        raise HTTPException(404, "Social media image not found")
+    root = (Path(settings.document_storage_path).resolve() / "social-media").resolve()
+    path = Path(asset.storage_path).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(404, "Social media image not found") from exc
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        raise HTTPException(404, "Social media image not found")
+    return FileResponse(path, media_type="image/png" if filename.endswith(".png") else "image/jpeg")
 
 
 def _lead_score(payload: PublicLeadCreate) -> int:

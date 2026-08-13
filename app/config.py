@@ -75,8 +75,12 @@ class Settings(BaseSettings):
     avito_client_secret: str = ""
     telegram_ads_token: str = ""
     telegram_social_chat_id: str = ""
+    cleaning_news_feeds: str = "https://www.cleanlink.com/rss/cleanlink-rss.asp,https://www.cleanlink.com/rss/newsofinterest.asp"
+    cleaning_news_max_age_days: int = 14
+    cleaning_news_timeout_seconds: int = 20
     vk_community_id: str = ""
     vk_community_token: str = ""
+    vk_api_version: str = "5.199"
     odnoklassniki_group_id: str = ""
     odnoklassniki_application_key: str = ""
     odnoklassniki_session_secret: str = ""
@@ -87,6 +91,10 @@ class Settings(BaseSettings):
     social_odnoklassniki_url: str = ""
     social_instagram_url: str = ""
     image_generation_api_key: str = ""
+    image_generation_base_url: str = "https://api.openai.com/v1"
+    image_generation_model: str = "gpt-image-2"
+    image_generation_quality: str = "low"
+    social_image_generation_enabled: bool = False
     video_generation_api_key: str = ""
     tender_sources: str = ""
     tender_source_token: str = ""

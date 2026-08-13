@@ -337,6 +337,57 @@ def social_batch_preview(batch_id: int, db: Session = Depends(get_db), actor: Pr
     return build_preview(db, batch)
 
 
+@router.get("/marketing/social-summary")
+def social_summary(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "viewer")
+    counts = {
+        str(status): int(count)
+        for status, count in db.execute(
+            select(ContentItem.status, func.count(ContentItem.id))
+            .where(ContentItem.channel.in_(["telegram", "vk", "odnoklassniki", "instagram"]))
+            .group_by(ContentItem.status)
+        ).all()
+    }
+    batches = db.scalars(
+        select(BusinessRecord)
+        .where(BusinessRecord.record_type == "social_content_batch")
+        .order_by(BusinessRecord.id.desc())
+        .limit(5)
+    ).all()
+    return {
+        "content_statuses": counts,
+        "integrations": {
+            "telegram": "ready" if settings.telegram_bot_token and settings.telegram_social_chat_id else "credentials_required",
+            "vk": "ready" if settings.vk_community_id and settings.vk_community_token else "credentials_required",
+            "odnoklassniki": "adapter_required" if settings.odnoklassniki_group_id and settings.odnoklassniki_session_secret else "credentials_required",
+            "instagram": "manual_legal_review_only",
+            "images": (
+                "ready"
+                if settings.social_image_generation_enabled and settings.image_generation_api_key
+                else "owner_enablement_required"
+                if settings.image_generation_api_key
+                else "credentials_required"
+            ),
+        },
+        "latest_batches": [
+            {
+                "id": row.id,
+                "title": row.title,
+                "status": row.status,
+                "date": (row.data or {}).get("date"),
+                "approval_id": (row.data or {}).get("visual_approval_id"),
+                "source_urls": [
+                    str(value.get("source_url") or "")
+                    for value in (row.data or {}).get("source_evidence", [])
+                    if isinstance(value, dict) and value.get("source_url")
+                ],
+            }
+            for row in batches
+        ],
+        "publication_policy": "exact_owner_approved_image_caption_channel_schedule_only",
+    }
+
+
 @router.patch("/marketing/content/{content_id}")
 def update_content(content_id: int, payload: ContentItemUpdate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "operator")

@@ -318,7 +318,7 @@ async def proposal_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён."); return
-    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
+    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["📱 Новости и соцсети", "social"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
     keyboard = [[InlineKeyboardButton(label, callback_data=key)] for label, key in rows]
     await update.effective_message.reply_text("CleaningAI OS · выберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -326,6 +326,26 @@ async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
 async def dashboard(update: Update, _: ContextTypes.DEFAULT_TYPE):
     data = await api("GET", "/api/dashboard")
     await update.effective_message.reply_text(f"🏢 Здоровье: {data['company_health']}%\n🧾 Открытые задачи: {data['open_tasks']}\n✅ Решения: {data['pending_decisions']}\n🔐 Подтверждения: {data['pending_approvals']}\n⚠️ Ошибки: {data['failed_tasks']}")
+
+
+async def social_dashboard(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    data = await api("GET", "/api/marketing/social-summary")
+    status_text = ", ".join(f"{key}: {value}" for key, value in sorted((data.get("content_statuses") or {}).items())) or "постов пока нет"
+    integrations = data.get("integrations") or {}
+    lines = [
+        "📱 Новости клининга и соцсети",
+        f"Посты: {status_text}",
+        "Каналы: " + "; ".join(f"{key} — {value}" for key, value in integrations.items()),
+        "",
+        "Последние подборки:",
+    ]
+    for batch in data.get("latest_batches") or []:
+        lines.append(f"• #{batch['id']} {batch['title']} — {batch['status']} · approval {batch.get('approval_id') or 'не создан'}")
+    lines.append("\nПубликуется только точный текст и визуал, одобренные владельцем. Instagram остаётся ручным.")
+    await update.effective_message.reply_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Обновить", callback_data="social")]]),
+    )
 
 
 def format_ceo_brief(data: dict) -> str:
@@ -1372,6 +1392,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif q.data == "hr": await records(update, "candidate", "🧹 Кандидаты и HR")
         elif q.data == "finance": await module_summary(update, "finance", "💰 Финансы")
         elif q.data == "marketing": await module_summary(update, "marketing", "📊 Маркетинг")
+        elif q.data == "social": await social_dashboard(update, context)
         elif q.data == "marketing_invoices": await records(update, "marketing_invoice", "🧾 Счета рекламы · одобрение не выполняет оплату")
         elif q.data == "simulator":
             data = await api("POST", "/api/simulations", json={"payroll_change_percent": 10})
@@ -1437,6 +1458,7 @@ def build_application() -> Application:
         ("decisions", decisions, "viewer"),
         ("outreach", outreach_dashboard, "viewer"),
         ("mailing", mailing_start, "operator"),
+        ("social", social_dashboard, "viewer"),
         ("cancel", mailing_cancel, "operator"),
         ("addtask", addtask, "operator"),
     ]

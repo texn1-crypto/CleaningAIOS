@@ -224,6 +224,11 @@ class MarketingAgent:
 
             day = datetime.fromisoformat(payload["day"]) if payload.get("day") else None
             return prepare_daily_social_plan(db, day=day)
+        if payload.get("action") == "prepare_daily_cleaning_news_plan":
+            from .social_marketing import prepare_daily_cleaning_news_plan
+
+            day = datetime.fromisoformat(payload["day"]) if payload.get("day") else None
+            return prepare_daily_cleaning_news_plan(db, day=day)
         campaigns = db.scalar(select(func.count(BusinessRecord.id)).where(BusinessRecord.record_type == "campaign")) or 0
         experiments = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "marketing_experiment")).all()
         providers = db.scalar(select(func.count(BusinessRecord.id)).where(BusinessRecord.record_type == "marketing_provider")) or 0

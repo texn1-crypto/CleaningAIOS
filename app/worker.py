@@ -22,6 +22,7 @@ from .platform import process_next_event
 from .notifications import queue_owner_notification, send_next_owner_notification
 from .inbound_mail import collect_inbound_replies
 from .security import unsubscribe_token
+from .social_runtime import generate_next_social_visual, publish_next_social_post
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("cleaningai.worker")
@@ -230,6 +231,8 @@ def main() -> None:
                 event = process_next_event(db)
                 if event: log.info("published event %s", event.id)
                 send_next_email(db)
+                generate_next_social_visual(db)
+                publish_next_social_post(db)
                 send_next_owner_notification(db)
                 if time.monotonic() >= next_inbound_poll:
                     result = collect_inbound_replies(db)

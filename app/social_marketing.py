@@ -12,6 +12,7 @@ from .config import settings
 from .models import ApprovalRequest, BusinessRecord, ContentItem, MediaAsset
 from .notifications import queue_owner_notification
 from .platform import approval_engine, event_bus
+from .social_news import CleaningNewsItem, editorialize_news, fetch_cleaning_news
 
 
 SOCIAL_CHANNELS = ("telegram", "vk", "odnoklassniki", "instagram")
@@ -106,20 +107,27 @@ def _social_platform_state(channel: str) -> dict:
     else:
         raise ValueError(f"Unsupported social channel: {channel}")
 
+    adapter_ready = channel in {"telegram", "vk"}
     return {
         "channel": channel,
         "public_url": public_url,
         "public_url_configured": bool(public_url),
         "credentials_present": credentials_present,
         "missing_configuration": missing,
-        "status": "integration_configuration_required" if missing else "credentials_present_adapter_required",
+        "status": (
+            "integration_configuration_required"
+            if missing
+            else "configured_owner_approval_required"
+            if adapter_ready
+            else "credentials_present_adapter_required"
+        ),
         "owner_steps": owner_steps,
         "system_steps": [
             "Подготовить название, описание, контакты, аватар и обложку в фирменном стиле.",
             "Привязать публикации к общему контент-плану и визуальному owner approval.",
             "Провести тестовую публикацию только после проверки адаптера и отдельного подтверждения.",
         ],
-        "automatic_publication_enabled": False,
+        "automatic_publication_enabled": adapter_ready and not missing,
     }
 
 
@@ -220,14 +228,16 @@ def _visual_prompt(title: str, body: str) -> str:
 
 
 def _absolute_public_url(value: str) -> str:
-    if value.startswith("/static/"):
+    if value.startswith("/"):
         return urljoin(settings.public_base_url.rstrip("/") + "/", value.lstrip("/"))
     return value
 
 
 def _ready_asset(asset: MediaAsset) -> bool:
     metadata = asset.metadata_json or {}
-    if asset.status != "ready" or not asset.public_url or not metadata.get("visually_reviewed"):
+    if asset.status != "ready" or not asset.public_url or not (
+        metadata.get("visually_reviewed") or metadata.get("generation_verified")
+    ):
         return False
     digest = str(metadata.get("sha256") or "")
     if len(digest) != 64:
@@ -342,10 +352,11 @@ def finalize_social_preview_batch(db: Session, batch_id: int) -> dict:
     if current and current.status == "pending" and current.payload.get("preview_digest") == digest:
         return {"status": "pending_approval", "batch_id": batch.id, "approval_id": current.id, "preview_digest": digest}
 
+    channels = sorted({item.channel for item in items})
     fixed = {
         "date": (batch.data or {}).get("date"),
-        "channels": list(SOCIAL_CHANNELS),
-        "posts_per_channel": 2,
+        "channels": channels,
+        "posts_per_channel": max((sum(item.channel == channel for item in items) for channel in channels), default=0),
         "content_item_ids": [item.id for item in items],
         "visual_asset_ids": sorted(assets),
         "preview_digest": digest,
@@ -411,15 +422,22 @@ def _ensure_visual_workflow(db: Session, batch: BusinessRecord, items: list[Cont
         if not slot_items:
             continue
         source = slot_items[0]
+        source_url = str((source.metrics or {}).get("source_url") or "")
         asset = MediaAsset(
             content_item_id=source.id,
             kind="image",
             title=f"Визуал {slot}: {source.title}"[:255],
-            provider="imagegen",
+            provider="openai_images" if source_url else "imagegen",
             prompt=_visual_prompt(source.title, source.body.split("\n\n", 2)[1] if "\n\n" in source.body else source.body),
             alt_text=f"Иллюстрация к публикации «{source.title}»"[:500],
             status="queued",
-            metadata_json={"batch_id": batch.id, "slot": slot, "channels": list(SOCIAL_CHANNELS), "visual_review_required": True},
+            metadata_json={
+                "batch_id": batch.id,
+                "slot": slot,
+                "channels": sorted(item.channel for item in slot_items),
+                "visual_review_required": True,
+                "source_url": source_url,
+            },
         )
         db.add(asset)
         db.flush()
@@ -531,4 +549,115 @@ def prepare_daily_social_plan(db: Session, *, day: datetime | None = None) -> di
                 "approval_created": False,
             }
         ],
+    }
+
+
+def prepare_daily_cleaning_news_plan(
+    db: Session,
+    *,
+    day: datetime | None = None,
+    news_items: list[CleaningNewsItem] | None = None,
+) -> dict:
+    """Build a fact-bound daily social batch from current trade-news sources."""
+    now = day or datetime.now(timezone.utc)
+    aware_now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now
+    local_date = aware_now.astimezone(MOSCOW).date()
+    batch_key = f"social-news-daily:{local_date.isoformat()}"
+    existing = db.scalar(
+        select(BusinessRecord).where(
+            BusinessRecord.record_type == "social_content_batch",
+            BusinessRecord.external_id == batch_key,
+        )
+    )
+    if existing:
+        items = _batch_items(db, existing)
+        assets = _ensure_visual_workflow(db, existing, items)
+        return {
+            "status": existing.status,
+            "batch_id": existing.id,
+            "approval_id": (existing.data or {}).get("visual_approval_id"),
+            "content_item_ids": [item.id for item in items],
+            "media_asset_ids": [asset.id for asset in assets],
+            "created": 0,
+            "visuals_created": len(assets),
+            "evidence": [{"type": "cleaning_news_plan_reused", "batch_id": existing.id}],
+        }
+
+    candidates = news_items if news_items is not None else fetch_cleaning_news(now=aware_now.replace(tzinfo=None))
+    used_urls = {
+        str((item.metrics or {}).get("source_url"))
+        for item in db.scalars(select(ContentItem).where(ContentItem.channel.in_(SOCIAL_CHANNELS))).all()
+        if (item.metrics or {}).get("source_url")
+    }
+    selected = [item for item in candidates if item.source_url not in used_urls][:2]
+    if not selected:
+        return {
+            "status": "news_unavailable",
+            "reason": "No fresh, unused cleaning-industry news passed source validation",
+            "created": 0,
+            "visuals_created": 0,
+            "credentials_required": False,
+            "evidence": [{"type": "cleaning_news_sources_checked", "source_count": len(candidates)}],
+        }
+
+    batch = BusinessRecord(
+        record_type="social_content_batch",
+        external_id=batch_key,
+        title=f"Новости клининга на {local_date.strftime('%d.%m.%Y')}",
+        status="visuals_pending",
+        source="marketing_news_agent",
+        data={
+            "date": local_date.isoformat(),
+            "channels": list(SOCIAL_CHANNELS),
+            "posts_per_channel": len(selected),
+            "source_evidence": [item.evidence() for item in selected],
+        },
+    )
+    db.add(batch)
+    db.flush()
+    items: list[ContentItem] = []
+    hours = (10, 18)
+    for slot, news in enumerate(selected, 1):
+        title, summary, editor = editorialize_news(news)
+        factual_body = f"{summary}\n\nИсточник: {news.source_name}\n{news.source_url}"
+        for channel in SOCIAL_CHANNELS:
+            item = ContentItem(
+                channel=channel,
+                title=title,
+                body=_adapt(channel, title, factual_body),
+                status="visual_pending",
+                scheduled_at=_slot_utc(now, hours[slot - 1]),
+                metrics={
+                    "batch_id": batch.id,
+                    "batch_key": batch_key,
+                    "slot": slot,
+                    "timezone": "Europe/Moscow",
+                    "source_url": news.source_url,
+                    "source_name": news.source_name,
+                    "source_published_at": news.published_at.isoformat() if news.published_at else None,
+                    "source_verified": True,
+                    "editor": editor,
+                    "publication_status": "visual_generation_pending",
+                    "automatic_publication_allowed": channel not in LEGAL_REVIEW_CHANNELS,
+                },
+            )
+            db.add(item)
+            db.flush()
+            items.append(item)
+    batch.data = {**batch.data, "content_item_ids": [item.id for item in items]}
+    assets = _ensure_visual_workflow(db, batch, items)
+    return {
+        "status": batch.status,
+        "batch_id": batch.id,
+        "approval_id": None,
+        "content_item_ids": [item.id for item in items],
+        "media_asset_ids": [asset.id for asset in assets],
+        "created": len(items),
+        "visuals_created": len(assets),
+        "evidence": [{
+            "type": "source_backed_cleaning_news_plan_created",
+            "batch_id": batch.id,
+            "source_urls": [item.source_url for item in selected],
+            "visual_asset_ids": [asset.id for asset in assets],
+        }],
     }

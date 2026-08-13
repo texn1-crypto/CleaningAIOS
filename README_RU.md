@@ -21,7 +21,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - owner-approval gate for tender submissions, contracts, legal/financial commitments, final HR decisions and bulk outreach tasks;
 - key-derived production RBAC, immutable audit events, decisions, tasks and agent heartbeats;
 - CSV/XLSX lead and SPb/LO management-company import with source provenance, guarded website contact enrichment, documented consent evidence and an outreach queue with multiple mailboxes, real attachments, delivery journal, IMAP replies, suppression/unsubscribe, campaign deduplication, owner approval, per-mailbox limits and SMTP delivery;
-- daily Marketing Agent plan with two owner-reviewed posts per Telegram, VK, Odnoklassniki and Instagram channel; missing official publishing credentials are reported and never imitated;
+- daily source-backed Cleaning News Agent plan with owner-reviewed text and generated images for Telegram, VK, Odnoklassniki and Instagram; Telegram/VK use official publication APIs, while missing credentials and unsupported/manual channels are reported and never imitated;
 - a two-year 1B RUB annual revenue run-rate goal owned by Growth Officer, weekly cross-agent workstreams and a verified goal snapshot in every 30-minute owner report;
 - unified inbound message inbox, content plan, staffing/reserve view, vacancy Telegram drafts, payment calendar and complaint/SLA control;
 - public lead capture into CRM/inbox with consent, abuse protection, UTM attribution, deterministic hot-lead scoring, Sales tasks and owner-email notifications;
@@ -63,7 +63,8 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 - `COMPANY_LEGAL_NAME`, `COMPANY_INN`, company contacts/address and `PRIVACY_CONTACT_EMAIL` before enabling the public production lead form
 - `OWNER_NOTIFICATION_EMAIL` plus SMTP for hot-lead alerts; optional Russian advertising account credentials listed in `.env.example`
 - per-mailbox `SMTP_*` and `IMAP_*` environment secrets for outreach and inbound replies; secrets are referenced by name from `SenderMailbox` and are never returned by the API
-- social administrator credentials listed in `.env.example`; content preparation works without them, but real external publication remains unavailable until an official channel adapter is configured
+- social administrator credentials listed in `.env.example`; Telegram and VK publish only after exact owner approval, while Odnoklassniki remains `adapter_required` and Instagram remains manual/legal-review only
+- `IMAGE_GENERATION_API_KEY` plus the explicit `SOCIAL_IMAGE_GENERATION_ENABLED=true` owner switch for paid social-image generation; the default is disabled
 
 See [production deployment](docs/PRODUCTION.md) and [baseline failures](docs/BASELINE.md).
 
@@ -202,15 +203,22 @@ credentials и точным чек-листом владельца. Бот по�
 аккаунта системе не требуется. Ошибка адаптера сохраняется как `failed`, а не
 выдаётся за успешно начатое оформление.
 
-Scheduler ежедневно создаёт задачу Marketing Agent. Агент готовит два варианта
-контента и адаптирует каждый для Telegram, VK, Одноклассников и Instagram — всего
-восемь `ContentItem`. Сначала для двух сюжетов создаются оригинальные визуалы. Только
-после их технической и визуальной проверки бот отправляет владельцу Telegram-альбом:
+Scheduler ежедневно создаёт задачу Cleaning News Agent. Агент получает свежие
+публикации из настраиваемого списка публичных отраслевых RSS-источников, отбрасывает
+устаревшие и нерелевантные записи и не создаёт пост, если проверяемой новости нет.
+Каждый текст содержит ссылку на первоисточник и адаптируется для Telegram, VK,
+Одноклассников и Instagram. Для двух сюжетов создаются оригинальные визуалы через
+официальный Images API; платная генерация запускается только при одновременном наличии
+ключа и явного `SOCIAL_IMAGE_GENERATION_ENABLED=true`. После технической проверки
+файла и checksum бот отправляет владельцу Telegram-альбом для визуального решения:
 каждый кадр содержит финальное изображение, точный текст, площадку и время. Approval
 привязан к SHA-256 и неизменяемому digest всего набора; любая правка текста, времени
 или изображения после просмотра отклоняет решение и требует нового preview. Одобрение
-переводит разрешённые каналы в `scheduled`; отсутствие официального токена или прав администратора остаётся
-видимым `credentials_required/adapter_required`, а не фиктивной публикацией.
+переводит разрешённые каналы в `scheduled`. Worker публикует одобренный набор через
+официальные Telegram Bot API и VK API, фиксирует внешний post ID и не повторяет
+неоднозначный запрос после timeout без ручной сверки. Отсутствие официального токена
+или прав администратора остаётся видимым `credentials_required/adapter_required`,
+а не фиктивной публикацией. Кнопка `/social` показывает состояния подборок и каналов.
 Instagram-материалы остаются черновиками `legal_review_required`: автоматическая
 рекламная публикация заблокирована с учётом [72-ФЗ](https://publication.pravo.gov.ru/document/0001202504070018)
 и официального [перечня Минюста](https://minjust.gov.ru/ru/documents/7822/).

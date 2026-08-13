@@ -32,7 +32,7 @@ def schedule_cycle() -> None:
             cadence_hours=settings.ceo_development_cadence_hours,
         )
         social_day = now.date().isoformat()
-        social_title = f"Daily social content plan · {social_day}"
+        social_title = f"Daily cleaning news social plan · {social_day}"
         if not db.scalar(select(Task.id).where(Task.title == social_title)):
             task = Task(
                 title=social_title,
@@ -41,11 +41,11 @@ def schedule_cycle() -> None:
                 priority="high",
                 run_after=now,
                 max_attempts=3,
-                payload={"action": "prepare_daily_social_plan", "day": now.isoformat(), "source": "scheduler"},
+                payload={"action": "prepare_daily_cleaning_news_plan", "day": now.isoformat(), "source": "scheduler"},
             )
             db.add(task)
             db.flush()
-            record_task_created(db, task, actor="scheduler", reason="daily_social_content_plan")
+            record_task_created(db, task, actor="scheduler", reason="daily_cleaning_news_social_plan")
         report_interval = max(5, min(settings.owner_activity_report_interval_minutes, 24 * 60))
         report_window = owner_report_window(now, report_interval)
         report_key = f"owner-activity-report:{report_window.isoformat()}"

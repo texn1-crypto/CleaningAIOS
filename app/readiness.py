@@ -76,10 +76,10 @@ def integration_status() -> dict[str, Any]:
                 else "credentials_required",
         },
         "social_publishing": {
-            "telegram": "credentials_present_adapter_required"
+            "telegram": "configured_owner_approval_required"
             if settings.telegram_bot_token and settings.telegram_social_chat_id
             else "credentials_required",
-            "vk": "credentials_present_adapter_required"
+            "vk": "configured_owner_approval_required"
             if settings.vk_community_id and settings.vk_community_token
             else "credentials_required",
             "odnoklassniki": "credentials_present_adapter_required"
@@ -89,9 +89,13 @@ def integration_status() -> dict[str, Any]:
             "publication_mode": "owner_approved_scheduled_content_only",
         },
         "media_generation": {
-            "image": "codex_workflow_available"
-            if not settings.image_generation_api_key
-            else "credentials_present_adapter_required",
+            "image": (
+                "configured_owner_approval_required"
+                if settings.social_image_generation_enabled and settings.image_generation_api_key
+                else "owner_enablement_required"
+                if settings.image_generation_api_key
+                else "credentials_required"
+            ),
             "video": "credentials_present_adapter_required"
             if settings.video_generation_api_key
             else "credentials_required",
