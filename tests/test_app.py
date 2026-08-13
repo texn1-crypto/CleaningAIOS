@@ -1753,7 +1753,8 @@ def test_telegram_application_registers_natural_language_handler(monkeypatch):
     application = build_application()
     handlers = [handler for group in application.handlers.values() for handler in group]
     assert any(isinstance(handler, MessageHandler) for handler in handlers)
-    assert any(isinstance(handler, CommandHandler) and "outreach" in handler.commands for handler in handlers)
+    commands = {command for handler in handlers if isinstance(handler, CommandHandler) for command in handler.commands}
+    assert {"outreach", "mailing", "cancel"}.issubset(commands)
 
 
 def test_outreach_summary_is_owner_safe_and_manager_guarded(client):
@@ -1838,6 +1839,110 @@ def test_russian_chat_opens_outreach_panel_without_creating_a_task():
 
     assert understand_russian_message("Покажи рассылки") == {"kind": "outreach"}
     assert understand_russian_message("Рассылки") == {"kind": "outreach"}
+
+
+def test_customer_requested_campaign_records_consent_and_requires_exact_owner_approval(client, monkeypatch):
+    from app.config import settings
+
+    for field in ("smtp_host", "smtp_username", "smtp_password", "smtp_from_email"):
+        monkeypatch.setattr(settings, field, "")
+    payload = {
+        "recipients": ["requested-b@example.com", "requested-a@example.com"],
+        "consent_evidence": "12 августа 2026 клиенты передали адреса по email и попросили присылать предложения",
+        "subject": "Запрошенное предложение",
+        "body": "Добрый день! Направляем информацию по вашему запросу.",
+    }
+    draft = client.post("/api/outreach/campaigns/customer-requested/draft", json=payload)
+    assert draft.status_code == 201
+    result = draft.json()
+    assert result["status"] == "blocked"
+    assert result["recipient_count"] == 2
+    assert result["approval_id"]
+    assert result["idempotent_replay"] is False
+
+    replay = client.post("/api/outreach/campaigns/customer-requested/draft", json=payload).json()
+    assert replay["task_id"] == result["task_id"]
+    assert replay["approval_id"] == result["approval_id"]
+    assert replay["idempotent_replay"] is True
+
+    consents = client.get("/api/outreach/consents?status=verified").json()
+    addresses = {row["address"] for row in consents}
+    assert {"requested-a@example.com", "requested-b@example.com"}.issubset(addresses)
+    task = next(row for row in client.get("/api/tasks").json() if row["id"] == result["task_id"])
+    assert task["status"] == "blocked"
+    assert task["payload"]["action_kind"] == "bulk_outreach"
+    assert task["payload"]["recipients"] == ["requested-a@example.com", "requested-b@example.com"]
+    assert "consent_evidence" not in task["payload"]
+
+    approved = client.post(f"/api/approvals/{result['approval_id']}/approve", json={"note": "Проверил точный preview"}).json()
+    assert approved["status"] == "approved"
+    assert approved["action_kind"] == "bulk_outreach"
+    assert approved["execution"] == "queued"
+    assert approved["task_status"] == "queued"
+    task = next(row for row in client.get("/api/tasks").json() if row["id"] == result["task_id"])
+    assert task["status"] == "queued"
+    completed = client.post(f"/api/tasks/{result['task_id']}/run").json()
+    assert completed["status"] == "blocked"
+    assert completed["result"]["status"] == "credentials_required"
+    assert completed["result"]["queued"] == 2
+    queued = [
+        row
+        for row in client.get("/api/outreach/messages?status=waiting_configuration").json()
+        if row["campaign_key"] == result["campaign_key"]
+    ]
+    assert len(queued) == 2
+
+
+def test_telegram_mailing_wizard_keeps_customer_data_out_of_request_analysis(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {"status": "blocked", "task_id": 700, "approval_id": 701, "recipient_count": 2, "idempotent_replay": False}
+
+    class Message:
+        text = ""
+        replies = []
+        async def reply_text(self, value, **kwargs): self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    class Context:
+        args = ["one@example.com,", "two@example.com"]
+        user_data = {}
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    update, context = Update(), Context()
+    asyncio.run(bot.mailing_start(update, context))
+    assert context.user_data["mailing_draft"]["step"] == "evidence"
+
+    for value, expected_step in [
+        ("Клиенты передали адреса 12 августа и попросили присылать предложения", "subject"),
+        ("Предложение по клинингу", "body"),
+        ("Добрый день! Направляем информацию по вашему запросу.", "preview"),
+    ]:
+        update.effective_message.text = value
+        asyncio.run(bot.natural_language(update, context))
+        assert context.user_data["mailing_draft"]["step"] == expected_step
+    assert calls == []
+
+    asyncio.run(bot.mailing_create(update, context))
+    assert len(calls) == 1
+    method, path, kwargs = calls[0]
+    assert (method, path) == ("POST", "/api/outreach/campaigns/customer-requested/draft")
+    assert kwargs["json"]["recipients"] == ["one@example.com", "two@example.com"]
+    assert context.user_data.get("mailing_draft") is None
+    assert "задача #700" in update.effective_message.replies[-1][0]
+    markup = update.effective_message.replies[-1][1]["reply_markup"]
+    assert {button.callback_data for button in markup.inline_keyboard[0]} == {"approve:701", "reject:701"}
 
 
 def test_compose_telegram_route_is_configurable_without_a_secret():

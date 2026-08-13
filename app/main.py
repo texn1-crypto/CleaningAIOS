@@ -362,6 +362,8 @@ def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db
         raise HTTPException(409, "Approval already decided")
     social_batch = None
     social_items = None
+    execution = "not_executed"
+    task_status = None
     if action == "approve" and row.resource_type == "social_content_batch":
         from .social_marketing import validate_social_approval
 
@@ -384,6 +386,9 @@ def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db
                 transition_key=f"task:{task.id}:approval:{row.id}:queued",
             )
             task.run_after = datetime.now(timezone.utc).replace(tzinfo=None)
+            task_status = task.status
+            if row.action_kind == "bulk_outreach":
+                execution = "queued"
     elif row.resource_type == "decision":
         decision = db.get(Decision, int(row.resource_id))
         if decision: decision.status = row.status; decision.decided_by = actor.subject; decision.decided_at = row.decided_at
@@ -419,7 +424,14 @@ def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db
     event_bus.publish(db, f"approval.{row.status}", row.resource_type, row.resource_id, {"approval_id": row.id, "action_kind": row.action_kind}, idempotency_key=f"approval:{row.id}:{row.status}")
     audit(db, actor.subject, f"approval.{row.status}", row.resource_type, row.resource_id, {"approval_id": row.id})
     db.commit()
-    return {"id": row.id, "status": row.status, "execution": "not_executed", "automatic_commitment": False}
+    return {
+        "id": row.id,
+        "status": row.status,
+        "action_kind": row.action_kind,
+        "execution": execution,
+        "task_status": task_status,
+        "automatic_commitment": False,
+    }
 
 
 @app.post("/api/outreach/suppress", status_code=201)

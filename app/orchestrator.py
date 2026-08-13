@@ -26,7 +26,7 @@ def _event_trace(task: Task, actor: str) -> dict[str, str]:
 def _execution_gap(task: Task, result: dict) -> tuple[str, bool] | None:
     payload = task.payload or {}
     source = str(payload.get("source", ""))
-    if source not in {"telegram_natural_language", "telegram_document"}:
+    if source not in {"telegram_natural_language", "telegram_document", "telegram_mailing_wizard"}:
         return None
     status = str(result.get("status", ""))
     required = result.get("credentials_required")
@@ -172,7 +172,7 @@ def dispatch(db: Session, task: Task) -> dict:
         return result
     except Exception as exc:
         source = str((task.payload or {}).get("source", ""))
-        if source in {"telegram_natural_language", "telegram_document"}:
+        if source in {"telegram_natural_language", "telegram_document", "telegram_mailing_wizard"}:
             escalation = _escalate_execution_gap(db, task, str(exc), credentials_required=False)
             task.result = {**(task.result or {}), **escalation}
         audit(db, task.agent_type, "task.failed", "task", str(task.id), task.result)

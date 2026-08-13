@@ -22,7 +22,7 @@ from .operations import business_graph, create_ceo_actions, entity_view, goal_pr
 from .orchestrator import audit, dispatch
 from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, verified_recipients
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, ContentItemCreate, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
+from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
 from .security import Principal, principal, require_role
 from .chat import redact_sensitive_text
 
@@ -586,6 +586,122 @@ def launch_campaign(payload: CampaignLaunch, db: Session = Depends(get_db), acto
     audit(db, actor.subject, "campaign.queued", "campaign", payload.campaign_key, result)
     db.commit()
     return result
+
+
+@router.post("/outreach/campaigns/customer-requested/draft", status_code=201)
+def draft_customer_requested_campaign(
+    payload: CustomerRequestedCampaignDraft,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    """Record owner-attested opt-ins and create an approval-bound campaign task.
+
+    The endpoint never sends mail. The deterministic sales agent can only queue the
+    exact recipient/content payload after the owner approves the protected task.
+    """
+    require_role(actor, "owner")
+    recipients = sorted(set(str(address).lower() for address in payload.recipients))
+    campaign_digest = hashlib.sha256(
+        ("\n".join(recipients) + "\n" + payload.subject + "\n" + payload.body).encode()
+    ).hexdigest()
+    campaign_key = f"customer-requested-{campaign_digest[:32]}"
+
+    candidates = db.scalars(
+        select(Task)
+        .where(Task.agent_type == "sales")
+        .order_by(Task.id.desc())
+        .limit(1000)
+    ).all()
+    existing = next(
+        (row for row in candidates if (row.payload or {}).get("campaign_key") == campaign_key),
+        None,
+    )
+    if existing:
+        stored = existing.result or {}
+        return {
+            "status": existing.status,
+            "task_id": existing.id,
+            "approval_id": stored.get("approval_id") or (existing.payload or {}).get("approval_id"),
+            "recipient_count": len(recipients),
+            "campaign_key": campaign_key,
+            "idempotent_replay": True,
+        }
+
+    for address in recipients:
+        consent = upsert_consent(
+            db,
+            address=address,
+            record_id=None,
+            status="verified",
+            purpose="commercial_outreach",
+            source_url="telegram://owner-consent-attestation",
+            evidence=payload.consent_evidence,
+            actor=actor.subject,
+        )
+        audit(
+            db,
+            actor.subject,
+            "outreach.consent_verified",
+            "email",
+            consent.address,
+            {"evidence_hash": consent.evidence_hash, "source": "telegram_owner_attestation"},
+        )
+        event_bus.publish(
+            db,
+            "outreach.consent_verified",
+            "email",
+            consent.address,
+            {"evidence_hash": consent.evidence_hash, "purpose": consent.purpose},
+            actor=actor.subject,
+            idempotency_key=f"consent:{consent.address}:{consent.evidence_hash}",
+        )
+
+    task = Task(
+        title=f"Рассылка клиентам по их запросу: {payload.subject}"[:255],
+        agent_type="sales",
+        priority="high",
+        payload={
+            "action": "execute_bulk_outreach_campaign",
+            "action_kind": "bulk_outreach",
+            "source": "telegram_mailing_wizard",
+            "original_message": "Подготовить подтверждённую владельцем клиентскую email-рассылку",
+            "campaign_key": campaign_key,
+            "recipients": recipients,
+            "recipient_digest": hashlib.sha256("\n".join(recipients).encode()).hexdigest(),
+            "subject": payload.subject,
+            "body": payload.body,
+            "scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
+            "attachments": [],
+            "auto_balance_mailboxes": True,
+            "consent_evidence_digest": hashlib.sha256(payload.consent_evidence.encode()).hexdigest(),
+        },
+        max_attempts=1,
+    )
+    db.add(task)
+    db.flush()
+    result = dispatch(db, task)
+    audit(
+        db,
+        actor.subject,
+        "campaign.draft_created",
+        "task",
+        str(task.id),
+        {
+            "campaign_key": campaign_key,
+            "recipient_count": len(recipients),
+            "recipient_digest": task.payload["recipient_digest"],
+            "source": "telegram_mailing_wizard",
+        },
+    )
+    db.commit()
+    return {
+        "status": task.status,
+        "task_id": task.id,
+        "approval_id": result.get("approval_id"),
+        "recipient_count": len(recipients),
+        "campaign_key": campaign_key,
+        "idempotent_replay": False,
+    }
 
 
 @router.post("/outreach/campaigns/management-companies/draft", status_code=201)

@@ -216,6 +216,14 @@ class CampaignLaunch(BaseModel):
     auto_balance_mailboxes: bool = True
 
 
+class CustomerRequestedCampaignDraft(BaseModel):
+    recipients: list[EmailStr] = Field(min_length=1, max_length=100)
+    consent_evidence: str = Field(min_length=10, max_length=4000)
+    subject: str = Field(min_length=1, max_length=255)
+    body: str = Field(min_length=1, max_length=10000)
+    scheduled_at: Optional[datetime] = None
+
+
 class ManagementCompanyCampaignDraft(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     content_type: str = Field(default="application/octet-stream", max_length=128)

@@ -22,6 +22,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 BASE = (settings.internal_api_url or settings.public_base_url or "http://web:8000").rstrip("/")
 HEADERS = {"X-API-Key": settings.api_key, "X-Actor": "telegram-owner", "X-Role": "owner"}
+EMAIL_PATTERN = re.compile(r"(?<![\w.+-])[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?![\w.-])")
 
 
 def allowed(update: Update) -> bool:
@@ -330,11 +331,133 @@ async def outreach_help(update: Update, _: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("← К панели", callback_data="outreach")]])
     await update.effective_message.reply_text(
         "➕ Новая рассылка\n\n"
-        "1. Пришлите боту PDF, DOC/DOCX, XLS/XLSX или ODT.\n"
-        "2. Подпишите файл: «Разошли по базе УК».\n"
-        "3. Бот покажет тему, текст и точное число адресов с подтверждённым согласием.\n"
-        "4. Проверьте черновик и нажмите «Одобрить рассылку».\n\n"
+        "Если клиенты сами передали email и попросили писать им, отправьте команду:\n"
+        "`/mailing client@example.com second@example.com`\n"
+        "Бот последовательно запросит основание согласия, тему и текст, затем покажет preview.\n\n"
+        "Для рассылки документа по базе УК можно прислать PDF, Word, Excel или ODT с подписью «Разошли по базе УК».\n\n"
         "До подтверждения письма не ставятся в очередь. Отписки, suppression, дедупликация и лимиты применяются автоматически.",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
+
+
+def _mailing_addresses(text: str) -> list[str]:
+    return sorted(set(match.group(0).lower() for match in EMAIL_PATTERN.finditer(text or "")))
+
+
+async def mailing_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        await update.effective_message.reply_text("Доступ не разрешён.")
+        return
+    addresses = _mailing_addresses(" ".join(context.args))
+    if len(addresses) > 100:
+        await update.effective_message.reply_text("За один черновик можно добавить не более 100 адресов.")
+        return
+    context.user_data["mailing_draft"] = {
+        "step": "evidence" if addresses else "recipients",
+        "recipients": addresses,
+    }
+    if addresses:
+        await update.effective_message.reply_text(
+            f"Получено адресов: {len(addresses)}. Теперь опишите основание согласия: когда и каким способом клиенты передали адреса и попросили получать письма.\n\n"
+            "Пример: «12 августа 2026 года заказчики передали адреса в договорной переписке и попросили присылать предложения». Для отмены: /cancel"
+        )
+    else:
+        await update.effective_message.reply_text(
+            "Пришлите email-адреса одним сообщением, через пробел или запятую. Максимум 100. Для отмены: /cancel"
+        )
+
+
+async def mailing_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        await update.effective_message.reply_text("Доступ не разрешён.")
+        return
+    existed = bool(context.user_data.pop("mailing_draft", None))
+    await update.effective_message.reply_text("Черновик рассылки отменён." if existed else "Активного черновика рассылки нет.")
+
+
+async def mailing_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return False
+    draft = user_data.get("mailing_draft")
+    if not isinstance(draft, dict):
+        return False
+    text = " ".join((update.effective_message.text or "").split()).strip()
+    step = draft.get("step")
+    if step == "recipients":
+        addresses = _mailing_addresses(text)
+        if not addresses:
+            await update.effective_message.reply_text("Не нашёл корректных email-адресов. Пришлите их через пробел или запятую либо нажмите /cancel.")
+            return True
+        if len(addresses) > 100:
+            await update.effective_message.reply_text("За один черновик можно добавить не более 100 адресов.")
+            return True
+        draft.update({"recipients": addresses, "step": "evidence"})
+        await update.effective_message.reply_text(
+            f"Получено адресов: {len(addresses)}. Опишите, когда и каким способом клиенты попросили получать рассылку."
+        )
+        return True
+    if step == "evidence":
+        if len(text) < 10:
+            await update.effective_message.reply_text("Основание слишком короткое. Укажите дату или период, канал и просьбу клиента получать письма.")
+            return True
+        draft.update({"consent_evidence": text[:4000], "step": "subject"})
+        await update.effective_message.reply_text("Введите тему письма (до 255 символов).")
+        return True
+    if step == "subject":
+        if not text or len(text) > 255:
+            await update.effective_message.reply_text("Тема должна содержать от 1 до 255 символов.")
+            return True
+        draft.update({"subject": text, "step": "body"})
+        await update.effective_message.reply_text("Введите полный текст письма.")
+        return True
+    if step == "body":
+        if not text:
+            await update.effective_message.reply_text("Текст письма не может быть пустым.")
+            return True
+        draft.update({"body": text[:10000], "step": "preview"})
+        addresses = draft.get("recipients") or []
+        address_preview = ", ".join(addresses)
+        if len(address_preview) > 1200:
+            address_preview = address_preview[:1200] + "…"
+        body_preview = draft["body"] if len(draft["body"]) <= 1800 else draft["body"][:1800] + "…"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Создать на согласование", callback_data="mailing:create"),
+            InlineKeyboardButton("❌ Отменить", callback_data="mailing:cancel"),
+        ]])
+        await update.effective_message.reply_text(
+            f"📨 Preview рассылки\nПолучатели ({len(addresses)}): {address_preview}\n\n"
+            f"Тема: {draft['subject']}\n\n{body_preview}\n\n"
+            "Адреса и основание согласия будут сохранены только во внутренней базе. Письма пока не отправляются.",
+            reply_markup=keyboard,
+        )
+        return True
+    await update.effective_message.reply_text("Используйте кнопки под preview или /cancel.")
+    return True
+
+
+async def mailing_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    draft = context.user_data.get("mailing_draft")
+    if not isinstance(draft, dict) or draft.get("step") != "preview":
+        await update.effective_message.reply_text("Черновик устарел. Начните заново командой /mailing.")
+        return
+    result = await api("POST", "/api/outreach/campaigns/customer-requested/draft", json={
+        "recipients": draft["recipients"],
+        "consent_evidence": draft["consent_evidence"],
+        "subject": draft["subject"],
+        "body": draft["body"],
+    })
+    context.user_data.pop("mailing_draft", None)
+    approval_id = result.get("approval_id")
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Одобрить рассылку", callback_data=f"approve:{approval_id}"),
+        InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{approval_id}"),
+    ]]) if approval_id else None
+    replay = " Ранее созданный черновик найден повторно; новая копия не создавалась." if result.get("idempotent_replay") else ""
+    await update.effective_message.reply_text(
+        f"Защищённый черновик создан как задача #{result['task_id']} для {result['recipient_count']} получателей.{replay}\n"
+        "Адреса имеют зафиксированное владельцем основание согласия. До отдельного одобрения письма не ставятся в очередь.",
         reply_markup=keyboard,
     )
 
@@ -522,6 +645,8 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён.")
         return
+    if await mailing_input(update, context):
+        return
     message = update.effective_message
     replied = getattr(message, "reply_to_message", None)
     referenced_text = (getattr(replied, "text", None) or getattr(replied, "caption", None) or "") if replied else ""
@@ -693,7 +818,18 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data.startswith("approve:") or q.data.startswith("reject:"):
         action, approval_id = q.data.split(":", 1)
         result = await api("POST", f"/api/approvals/{approval_id}/{action}", json={"note": "Решение принято владельцем в Telegram"})
-        await update.effective_message.reply_text(f"Подтверждение #{approval_id}: {result['status']}. Решение записано; автоматическое подписание или списание денег не выполнялось.")
+        if result.get("action_kind") == "bulk_outreach" and result.get("execution") == "queued":
+            message = (
+                f"Подтверждение #{approval_id}: approved. Защищённая задача поставлена в очередь; "
+                "worker отправит только допустимые письма с учётом SMTP-настроек, suppression, дедупликации и лимитов."
+            )
+        elif result.get("action_kind") == "bulk_outreach":
+            message = f"Подтверждение #{approval_id}: {result['status']}. Рассылка не поставлена в очередь."
+        else:
+            message = f"Подтверждение #{approval_id}: {result['status']}. Решение записано; автоматическое подписание или списание денег не выполнялось."
+        await update.effective_message.reply_text(message)
+    elif q.data == "mailing:create": await mailing_create(update, context)
+    elif q.data == "mailing:cancel": await mailing_cancel(update, context)
     elif q.data in {"ceo", "meta_brain"}:
         data = await api("POST", "/api/tasks", json={"title": f"{q.data} on-demand review", "agent_type": q.data})
         await update.effective_message.reply_text(f"Задача #{data['id']} поставлена агенту {q.data}.")
@@ -716,7 +852,7 @@ def build_application() -> Application:
         local_base = settings.telegram_bot_api_base_url.rstrip("/")
         builder = builder.base_url(f"{local_base}/bot").base_file_url(f"{local_base}/file/bot").local_mode(True)
     application = builder.build()
-    for command, handler in [("start", start), ("dashboard", dashboard), ("tasks", tasks), ("decisions", decisions), ("outreach", outreach_dashboard), ("addtask", addtask)]: application.add_handler(CommandHandler(command, handler))
+    for command, handler in [("start", start), ("dashboard", dashboard), ("tasks", tasks), ("decisions", decisions), ("outreach", outreach_dashboard), ("mailing", mailing_start), ("cancel", mailing_cancel), ("addtask", addtask)]: application.add_handler(CommandHandler(command, handler))
     application.add_handler(CallbackQueryHandler(callback))
     application.add_handler(MessageHandler(filters.Document.ALL, proposal_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, natural_language))
