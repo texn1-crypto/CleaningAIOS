@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
@@ -288,8 +289,142 @@ def _publish_vk(item: ContentItem, asset: MediaAsset) -> str:
     return str(posted["post_id"])
 
 
+def _ok_signature(data: dict[str, object]) -> str:
+    signed = {
+        str(key): str(value)
+        for key, value in data.items()
+        if key not in {"access_token", "session_key", "sig"}
+    }
+    canonical = "".join(f"{key}={signed[key]}" for key in sorted(signed))
+    return hashlib.md5(
+        (canonical + settings.odnoklassniki_session_secret).encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()
+
+
+def _ok_call(client: httpx.Client, method: str, data: dict[str, object]) -> object:
+    payload: dict[str, object] = {
+        "method": method,
+        "application_key": settings.odnoklassniki_application_key,
+        "access_token": settings.odnoklassniki_access_token,
+        "format": "json",
+        **data,
+    }
+    payload["sig"] = _ok_signature(payload)
+    response = client.post("https://api.ok.ru/fb.do", data=payload)
+    response.raise_for_status()
+    result = response.json()
+    if isinstance(result, dict) and result.get("error_code"):
+        try:
+            code = int(result["error_code"])
+        except (TypeError, ValueError):
+            code = 0
+        raise ValueError(f"Odnoklassniki API rejected {method} (code {code})")
+    return result
+
+
+def _publish_odnoklassniki(item: ContentItem, asset: MediaAsset) -> str:
+    raw = _verified_asset_bytes(asset)
+    extension = _image_extension(raw)
+    content_type = "image/png" if extension == "png" else "image/jpeg"
+    group_id = str(settings.odnoklassniki_group_id).strip()
+    with httpx.Client(timeout=30) as client:
+        upload = _ok_call(
+            client,
+            "photosV2.getUploadUrl",
+            {"gid": group_id, "count": 1, "sizes": len(raw)},
+        )
+        if not isinstance(upload, dict):
+            raise ValueError("Odnoklassniki did not return a photo upload URL")
+        upload_url = _public_https_url(str(upload.get("upload_url") or ""))
+        uploaded_response = client.post(
+            upload_url,
+            files={"pic1": (f"social.{extension}", raw, content_type)},
+        )
+        uploaded_response.raise_for_status()
+        uploaded = uploaded_response.json()
+        photos = uploaded.get("photos") if isinstance(uploaded, dict) else None
+        first_photo = next(iter(photos.values()), None) if isinstance(photos, dict) else None
+        token = first_photo.get("token") if isinstance(first_photo, dict) else None
+        if not token:
+            raise ValueError("Odnoklassniki did not return a photo token")
+        attachment = json.dumps(
+            {
+                "media": [
+                    {"type": "photo", "list": [{"id": str(token)}]},
+                    {"type": "text", "text": item.body},
+                ],
+                "onBehalfOfGroup": "true",
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        topic_id = _ok_call(
+            client,
+            "mediatopic.post",
+            {"type": "GROUP_THEME", "gid": group_id, "attachment": attachment},
+        )
+    if not isinstance(topic_id, (str, int)) or not str(topic_id).strip():
+        raise ValueError("Odnoklassniki did not return a topic id")
+    return str(topic_id)
+
+
+def _channel_credentials_ready(channel: str) -> bool:
+    if channel == "telegram":
+        return bool(settings.telegram_bot_token and settings.telegram_social_chat_id)
+    if channel == "vk":
+        return bool(settings.vk_community_id and settings.vk_community_token)
+    if channel == "odnoklassniki":
+        return bool(
+            settings.odnoklassniki_group_id
+            and settings.odnoklassniki_application_key
+            and settings.odnoklassniki_access_token
+            and settings.odnoklassniki_session_secret
+        )
+    return False
+
+
+def _resume_approved_configured_post(db: Session, current: datetime) -> None:
+    ready_channels = [
+        channel
+        for channel in ("telegram", "vk", "odnoklassniki")
+        if _channel_credentials_ready(channel)
+    ]
+    if not ready_channels:
+        return
+    candidates = db.scalars(
+        select(ContentItem)
+        .where(
+            ContentItem.status.in_(["adapter_required", "credentials_required"]),
+            ContentItem.channel.in_(ready_channels),
+            ContentItem.scheduled_at <= current,
+        )
+        .order_by(ContentItem.scheduled_at, ContentItem.id)
+        .limit(100)
+        .with_for_update(skip_locked=True)
+    ).all()
+    item = next((candidate for candidate in candidates if _approved_item(db, candidate)), None)
+    if item is None:
+        return
+    item.status = "scheduled"
+    item.metrics = {
+        **(item.metrics or {}),
+        "publication_status": "automatically_resumed_after_integration_ready",
+    }
+    audit(
+        db,
+        "social_publisher_agent",
+        "marketing.social_post_resumed",
+        "content_item",
+        str(item.id),
+        {"channel": item.channel},
+    )
+    db.flush()
+
+
 def publish_next_social_post(db: Session, *, now: datetime | None = None) -> bool:
     current = now or now_utc()
+    _resume_approved_configured_post(db, current)
     item = db.scalar(
         select(ContentItem)
         .where(ContentItem.status == "scheduled", ContentItem.scheduled_at <= current)
@@ -315,7 +450,7 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
         item.metrics = {**(item.metrics or {}), "publication_status": "approved_visual_unavailable"}
         db.commit()
         return True
-    if item.channel not in {"telegram", "vk"}:
+    if item.channel not in {"telegram", "vk", "odnoklassniki"}:
         item.status = "adapter_required"
         item.metrics = {**(item.metrics or {}), "publication_status": f"{item.channel}_official_adapter_required"}
         db.commit()
@@ -329,6 +464,12 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
     if item.channel == "vk" and (not settings.vk_community_id or not settings.vk_community_token):
         item.status = "credentials_required"
         item.metrics = {**(item.metrics or {}), "publication_status": "vk_community_credentials_required"}
+        db.commit()
+        return True
+
+    if item.channel == "odnoklassniki" and not _channel_credentials_ready("odnoklassniki"):
+        item.status = "credentials_required"
+        item.metrics = {**(item.metrics or {}), "publication_status": "odnoklassniki_group_credentials_required"}
         db.commit()
         return True
 
@@ -353,9 +494,12 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
                 raise ValueError("Telegram rejected the social post")
             external_post_id = str(int(payload["result"]["message_id"]))
             provider = "telegram_bot_api"
-        else:
+        elif item.channel == "vk":
             external_post_id = _publish_vk(item, asset)
             provider = "vk_official_api"
+        else:
+            external_post_id = _publish_odnoklassniki(item, asset)
+            provider = "odnoklassniki_official_api"
         item.status = "published"
         item.published_at = current
         item.metrics = {

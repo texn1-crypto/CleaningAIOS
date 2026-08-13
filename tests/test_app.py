@@ -28,6 +28,32 @@ def test_task_and_agent_flow(client):
     assert client.post(f"/api/tasks/{task_id}/run").status_code == 409
 
 
+def test_agent_result_datetimes_are_serialized_before_json_persistence(client, monkeypatch):
+    from datetime import datetime
+
+    from app.agents import AGENTS
+
+    class DatetimeResultAgent:
+        name = "datetime_result_test"
+
+        def execute(self, db, payload):
+            return {
+                "status": "ok",
+                "generated_at": datetime(2042, 2, 3, 4, 5, 6),
+                "evidence": [{"type": "datetime_result_serialized"}],
+            }
+
+    monkeypatch.setitem(AGENTS, "datetime_result_test", DatetimeResultAgent())
+    created = client.post(
+        "/api/tasks",
+        json={"title": "JSON-safe agent result", "agent_type": "datetime_result_test"},
+    ).json()
+    completed = client.post(f"/api/tasks/{created['id']}/run")
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "done"
+    assert completed.json()["result"]["generated_at"] == "2042-02-03T04:05:06"
+
+
 def test_failed_task_retry_has_explicit_transition_history(client, monkeypatch):
     from app.agents import AGENTS
 
@@ -1052,6 +1078,7 @@ def test_social_account_setup_persists_real_progress_and_audits_failures(client,
     monkeypatch.setattr(settings, "social_odnoklassniki_url", "")
     monkeypatch.setattr(settings, "odnoklassniki_group_id", "")
     monkeypatch.setattr(settings, "odnoklassniki_application_key", "")
+    monkeypatch.setattr(settings, "odnoklassniki_access_token", "")
     monkeypatch.setattr(settings, "odnoklassniki_session_secret", "")
     task = client.post("/api/tasks", json={
         "title": "Начать оформление VK и Одноклассников",

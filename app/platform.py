@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -264,7 +265,10 @@ class AgentRuntime:
         heartbeat(db, task.agent_type, "running")
         db.flush()
         try:
-            result = agent.execute(db, task.payload)
+            raw_result = agent.execute(db, task.payload)
+            result = jsonable_encoder(raw_result)
+            if not isinstance(result, dict):
+                raise TypeError("Agent result must be a JSON object")
             run.output = result
             run.evidence = result.get("evidence", []) if isinstance(result.get("evidence", []), list) else []
             run.cost = float(result.get("cost", 0) or 0)

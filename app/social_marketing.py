@@ -71,6 +71,7 @@ def _social_platform_state(channel: str) -> dict:
         credentials_present = bool(
             settings.odnoklassniki_group_id
             and settings.odnoklassniki_application_key
+            and settings.odnoklassniki_access_token
             and settings.odnoklassniki_session_secret
         )
         missing = [
@@ -79,6 +80,7 @@ def _social_platform_state(channel: str) -> dict:
                 ("SOCIAL_ODNOKLASSNIKI_URL", bool(public_url)),
                 ("ODNOKLASSNIKI_GROUP_ID", bool(settings.odnoklassniki_group_id)),
                 ("ODNOKLASSNIKI_APPLICATION_KEY", bool(settings.odnoklassniki_application_key)),
+                ("ODNOKLASSNIKI_ACCESS_TOKEN", bool(settings.odnoklassniki_access_token)),
                 ("ODNOKLASSNIKI_SESSION_SECRET", bool(settings.odnoklassniki_session_secret)),
             )
             if not configured
@@ -107,7 +109,7 @@ def _social_platform_state(channel: str) -> dict:
     else:
         raise ValueError(f"Unsupported social channel: {channel}")
 
-    adapter_ready = channel in {"telegram", "vk"}
+    adapter_ready = channel in {"telegram", "vk", "odnoklassniki"}
     return {
         "channel": channel,
         "public_url": public_url,

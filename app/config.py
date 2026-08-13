@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     vk_api_version: str = "5.199"
     odnoklassniki_group_id: str = ""
     odnoklassniki_application_key: str = ""
+    odnoklassniki_access_token: str = ""
     odnoklassniki_session_secret: str = ""
     instagram_business_account_id: str = ""
     instagram_access_token: str = ""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from app.db import SessionLocal
 from app.models import ApprovalRequest, BusinessRecord, ContentItem, MediaAsset, OwnerNotification
 from app.social_marketing import prepare_daily_cleaning_news_plan
 from app.social_news import CleaningNewsItem, parse_cleaning_news_feed
-from app.social_runtime import _https_endpoint, _safe_provider_failure, generate_next_social_visual, publish_next_social_post
+from app.social_runtime import _https_endpoint, _ok_signature, _safe_provider_failure, generate_next_social_visual, publish_next_social_post
 
 
 def test_cleaning_news_feed_keeps_only_fresh_relevant_https_items(monkeypatch):
@@ -265,6 +266,67 @@ def test_vk_publisher_uses_official_upload_and_wall_apis_after_approval(client, 
     wall_payload = calls[-1][1]["data"]
     assert wall_payload["message"] == "Exact approved VK text"
     assert wall_payload["guid"].startswith("cleaningaios-content-")
+
+
+def test_odnoklassniki_publisher_resumes_approved_post_and_uses_official_api(client, monkeypatch, tmp_path):
+    calls = []
+    raw = b"\x89PNG\r\n\x1a\n" + b"odnoklassniki-image"
+    digest = hashlib.sha256(raw).hexdigest()
+    image_path = tmp_path / "odnoklassniki.png"
+    image_path.write_bytes(raw)
+
+    class Response:
+        def __init__(self, payload): self.payload = payload
+        def raise_for_status(self): return None
+        def json(self): return self.payload
+
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            if url == "https://api.ok.ru/fb.do":
+                method = kwargs["data"]["method"]
+                if method == "photosV2.getUploadUrl":
+                    return Response({"upload_url": "https://upload.ok.example/photo", "photo_ids": ["future-photo"]})
+                if method == "mediatopic.post":
+                    return Response("topic-812")
+            if url == "https://upload.ok.example/photo":
+                return Response({"photos": {"future-photo": {"token": "approved-photo-token"}}})
+            raise AssertionError(url)
+
+    monkeypatch.setattr("app.social_runtime.httpx.Client", Client)
+    monkeypatch.setattr(settings, "odnoklassniki_group_id", "812345")
+    monkeypatch.setattr(settings, "odnoklassniki_application_key", "public-key")
+    monkeypatch.setattr(settings, "odnoklassniki_access_token", "access-token")
+    monkeypatch.setattr(settings, "odnoklassniki_session_secret", "session-secret")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    with SessionLocal() as db:
+        batch = BusinessRecord(record_type="social_content_batch", external_id="ok-publisher-test-2042", title="OK Publisher", status="scheduled", data={})
+        db.add(batch); db.flush()
+        approval = ApprovalRequest(action_kind="social_publication", resource_type="social_content_batch", resource_id=str(batch.id), status="approved")
+        db.add(approval); db.flush()
+        asset = MediaAsset(kind="image", title="OK image", provider="local_media_pool", public_url="/ok.png", storage_path=str(image_path), status="ready", metadata_json={"sha256": digest})
+        db.add(asset); db.flush()
+        item = ContentItem(channel="odnoklassniki", title="OK news", body="Точный одобренный текст ОК", status="adapter_required", scheduled_at=datetime(1998, 1, 1), metrics={"batch_id": batch.id, "approval_id": approval.id, "visual_asset_id": asset.id})
+        db.add(item); db.commit()
+        assert publish_next_social_post(db, now=datetime(2042, 1, 1)) is True
+        db.refresh(item)
+        assert item.status == "published"
+        assert item.metrics["external_post_id"] == "topic-812"
+        assert item.metrics["provider"] == "odnoklassniki_official_api"
+
+    api_calls = [kwargs["data"] for url, kwargs in calls if url == "https://api.ok.ru/fb.do"]
+    assert [payload["method"] for payload in api_calls] == ["photosV2.getUploadUrl", "mediatopic.post"]
+    assert all(payload["sig"] == _ok_signature(payload) for payload in api_calls)
+    assert calls[1][1]["files"]["pic1"] == ("social.png", raw, "image/png")
+    attachment = json.loads(api_calls[-1]["attachment"])
+    assert attachment["media"] == [
+        {"type": "photo", "list": [{"id": "approved-photo-token"}]},
+        {"type": "text", "text": "Точный одобренный текст ОК"},
+    ]
+    assert attachment["onBehalfOfGroup"] == "true"
 
 
 def test_social_summary_does_not_expose_credentials(client, monkeypatch):

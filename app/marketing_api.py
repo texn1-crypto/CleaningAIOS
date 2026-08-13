@@ -359,7 +359,14 @@ def social_summary(db: Session = Depends(get_db), actor: Principal = Depends(pri
         "integrations": {
             "telegram": "ready" if settings.telegram_bot_token and settings.telegram_social_chat_id else "credentials_required",
             "vk": "ready" if settings.vk_community_id and settings.vk_community_token else "credentials_required",
-            "odnoklassniki": "adapter_required" if settings.odnoklassniki_group_id and settings.odnoklassniki_session_secret else "credentials_required",
+            "odnoklassniki": (
+                "ready"
+                if settings.odnoklassniki_group_id
+                and settings.odnoklassniki_application_key
+                and settings.odnoklassniki_access_token
+                and settings.odnoklassniki_session_secret
+                else "credentials_required"
+            ),
             "instagram": "manual_legal_review_only",
             "images": (
                 "ready"

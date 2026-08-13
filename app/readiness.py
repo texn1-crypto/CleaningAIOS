@@ -82,8 +82,11 @@ def integration_status() -> dict[str, Any]:
             "vk": "configured_owner_approval_required"
             if settings.vk_community_id and settings.vk_community_token
             else "credentials_required",
-            "odnoklassniki": "credentials_present_adapter_required"
-            if settings.odnoklassniki_group_id and settings.odnoklassniki_application_key and settings.odnoklassniki_session_secret
+            "odnoklassniki": "configured_owner_approval_required"
+            if settings.odnoklassniki_group_id
+            and settings.odnoklassniki_application_key
+            and settings.odnoklassniki_access_token
+            and settings.odnoklassniki_session_secret
             else "credentials_required",
             "instagram": "legal_review_required_no_automatic_publication",
             "publication_mode": "owner_approved_scheduled_content_only",

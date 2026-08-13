@@ -39,6 +39,8 @@ In production the public lead form stays disabled until `COMPANY_LEGAL_NAME` and
 
 For hot-lead email delivery, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` and `OWNER_NOTIFICATION_EMAIL`. For invoice approvals, configure `TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID`.
 
+For owner-approved scheduled social posts, VK needs `VK_COMMUNITY_ID` and an official community token in `VK_COMMUNITY_TOKEN`. Odnoklassniki needs `ODNOKLASSNIKI_GROUP_ID`, `ODNOKLASSNIKI_APPLICATION_KEY`, `ODNOKLASSNIKI_ACCESS_TOKEN` and `ODNOKLASSNIKI_SESSION_SECRET` with `GROUP_CONTENT` and `PHOTO_CONTENT`. Store all four values only in the production secret store. After the integration becomes ready, the worker automatically resumes already approved items that were waiting in `credentials_required` or `adapter_required`; it never resumes a changed, rejected or unapproved post.
+
 ## Russian marketing channels
 
 The provider registry supports Yandex Direct/Business, VK Ads, 2GIS, Avito, Telegram Ads, agencies and manual channels. Creating providers and hypotheses works without platform credentials. Automatic external activation is intentionally disabled until a reviewed executor exists; record the platform campaign ID after manual launch.
