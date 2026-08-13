@@ -33,7 +33,10 @@ def now_utc() -> datetime:
 
 
 def _https_endpoint(base: str, path: str) -> str:
-    endpoint = urljoin(base.rstrip("/") + "/", path.lstrip("/"))
+    # Concatenation preserves a provider base path (for example ``/v1``) and
+    # keeps token-like path segments containing ``:`` inside the URL path.
+    # ``urljoin`` would interpret ``bot123:secret`` as a new URI scheme.
+    endpoint = f"{base.rstrip('/')}/{path.lstrip('/')}"
     return _public_https_url(endpoint)
 
 

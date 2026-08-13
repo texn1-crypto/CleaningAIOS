@@ -13,7 +13,7 @@ from app.db import SessionLocal
 from app.models import ApprovalRequest, BusinessRecord, ContentItem, MediaAsset, OwnerNotification
 from app.social_marketing import prepare_daily_cleaning_news_plan
 from app.social_news import CleaningNewsItem, parse_cleaning_news_feed
-from app.social_runtime import _safe_provider_failure, generate_next_social_visual, publish_next_social_post
+from app.social_runtime import _https_endpoint, _safe_provider_failure, generate_next_social_visual, publish_next_social_post
 
 
 def test_cleaning_news_feed_keeps_only_fresh_relevant_https_items(monkeypatch):
@@ -31,6 +31,15 @@ def test_cleaning_news_feed_keeps_only_fresh_relevant_https_items(monkeypatch):
     items = parse_cleaning_news_feed(raw, feed_url="https://example.org/rss", now=datetime(2026, 8, 13))
     assert [item.source_url for item in items] == ["https://example.org/floor-care"]
     assert items[0].source_name == "example.org"
+
+
+def test_provider_endpoint_keeps_base_path_and_token_colon_in_path():
+    assert _https_endpoint("https://api.example.test/v1", "/images/generations") == (
+        "https://api.example.test/v1/images/generations"
+    )
+    assert _https_endpoint("https://api.telegram.org", "/bot123456:secret/sendPhoto") == (
+        "https://api.telegram.org/bot123456:secret/sendPhoto"
+    )
 
 
 def test_news_agent_creates_source_bound_posts_and_image_jobs(client, monkeypatch):
