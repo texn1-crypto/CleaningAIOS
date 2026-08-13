@@ -11,8 +11,10 @@ class TaskCreate(BaseModel):
     description: str = ""
     priority: str = Field(default="normal", pattern="^(low|normal|high|critical)$")
     agent_type: str = "orchestrator"
+    assigned_to: str = Field(default="", max_length=128)
     payload: dict[str, Any] = Field(default_factory=dict)
     run_after: Optional[datetime] = None
+    due_at: Optional[datetime] = None
     max_attempts: int = Field(default=3, ge=1, le=20)
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
 
@@ -108,6 +110,17 @@ class TelegramAlertCallback(BaseModel):
     user_id: int
     chat_id: int
     callback_token: str = Field(min_length=20, max_length=64)
+
+
+class TelegramTaskQuery(BaseModel):
+    user_id: int
+    chat_id: int
+    view: str = Field(
+        default="all",
+        pattern="^(all|mine|overdue|critical|critical_events)$",
+    )
+    page: int = Field(default=1, ge=1, le=10000)
+    page_size: int = Field(default=10, ge=1, le=20)
 
 
 class OperatingEntityCreate(BaseModel):

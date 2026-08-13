@@ -70,3 +70,6 @@ is intentionally not created.
 - CEO Brief: a read-only shared service returns fresh source-linked database facts
   separately from recommendations; Telegram can refresh it or create a safe analysis
   task, never execute the recommendation directly.
+- Tasks/navigation: assigned and due tasks support server-side pagination for all,
+  mine, overdue and critical views; critical alerts are a separate view and every row
+  carries workflow/source correlation rather than relying on Telegram-local state.

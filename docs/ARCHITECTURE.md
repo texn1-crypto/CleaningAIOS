@@ -105,6 +105,13 @@ renders the same response. Its only write option creates a normal analytical CEO
 task through the shared Tasks API, and the payload explicitly forbids an automatic
 critical action.
 
+Tasks can carry an exact internal assignee and due date. Telegram-created tasks are
+assigned to the already-authorized pseudonymous identity. The Control Center queries
+the server for paginated `all`, `mine`, `overdue`, `critical`, and
+`critical_events` views; callbacks contain only a validated view/page cursor. Task
+rows expose the latest workflow transition and correlation ID, while critical-event
+rows link back to their source resource. Navigation never infers task state locally.
+
 ## External integrations
 
 - Telegram polling starts only when bot token and owner ID are provided. The bot

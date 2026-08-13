@@ -31,6 +31,7 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(32), default="open", index=True)
     priority: Mapped[str] = mapped_column(String(32), default="normal")
     agent_type: Mapped[str] = mapped_column(String(64), default="orchestrator", index=True)
+    assigned_to: Mapped[str] = mapped_column(String(128), default="", index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -38,6 +39,7 @@ class Task(Base):
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=120)
     next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     run_after: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    due_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 

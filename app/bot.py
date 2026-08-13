@@ -52,6 +52,13 @@ def allowed(update: Update) -> bool:
 
 
 async def api(method: str, path: str, **kwargs):
+    if method.upper() == "POST" and path == "/api/tasks" and isinstance(kwargs.get("json"), dict):
+        identity = _telegram_identity.get()
+        if identity and not kwargs["json"].get("assigned_to"):
+            kwargs = {
+                **kwargs,
+                "json": {**kwargs["json"], "assigned_to": identity["subject"]},
+            }
     async with httpx.AsyncClient(timeout=15, headers=HEADERS) as client:
         response = await client.request(method, f"{BASE}{path}", **kwargs)
         response.raise_for_status()
@@ -367,10 +374,70 @@ async def ceo_brief(update: Update, _: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def tasks(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    rows = await api("GET", "/api/tasks")
-    text = "🧾 Задачи:\n" + "\n".join(f"#{x['id']} [{x['agent_type']}] {x['title']} — {x['status']}" for x in rows[:20]) if rows else "Задач пока нет."
-    await update.effective_message.reply_text(text)
+async def tasks(
+    update: Update,
+    _: ContextTypes.DEFAULT_TYPE,
+    *,
+    view: str = "all",
+    page: int = 1,
+):
+    data = await api(
+        "POST",
+        "/api/telegram/control/tasks/query",
+        json={**_identity_payload(update), "view": view, "page": page, "page_size": 10},
+    )
+    items = data.get("items") or []
+    view_labels = {
+        "all": "Все задачи",
+        "mine": "Мои задачи",
+        "overdue": "Просроченные",
+        "critical": "Критические задачи",
+        "critical_events": "Критические события",
+    }
+    lines = [
+        f"🧾 {view_labels.get(view, view)} · стр. {data['page']}/{data['total_pages']} · всего {data['total']}"
+    ]
+    for item in items:
+        if item["item_type"] == "critical_event":
+            acknowledgement = "принято" if item.get("acknowledged_at") else "не подтверждено"
+            lines.append(
+                f"#{item['id']} [{item['priority']}] {item['title']} — {item['status']}, {acknowledgement}\n"
+                f"  source {item['source']['resource_type']} #{item['source']['resource_id']} · corr {item.get('correlation_id') or '—'}"
+            )
+        else:
+            due = f" · срок {item['due_at']}" if item.get("due_at") else ""
+            lines.append(
+                f"#{item['id']} [{item['agent_type']}/{item['priority']}] {item['title']} — {item['status']}{due}\n"
+                f"  workflow corr {item.get('correlation_id') or '—'}"
+            )
+    if not items:
+        lines.append("Записей в этом представлении нет.")
+    keyboard = [
+        [
+            InlineKeyboardButton("Все", callback_data="tasks:all:1"),
+            InlineKeyboardButton("Мои", callback_data="tasks:mine:1"),
+        ],
+        [
+            InlineKeyboardButton("Просроченные", callback_data="tasks:overdue:1"),
+            InlineKeyboardButton("Критические", callback_data="tasks:critical:1"),
+        ],
+        [InlineKeyboardButton("События", callback_data="tasks:critical_events:1")],
+    ]
+    navigation = []
+    if data.get("has_previous"):
+        navigation.append(
+            InlineKeyboardButton("←", callback_data=f"tasks:{view}:{data['page'] - 1}")
+        )
+    if data.get("has_next"):
+        navigation.append(
+            InlineKeyboardButton("→", callback_data=f"tasks:{view}:{data['page'] + 1}")
+        )
+    if navigation:
+        keyboard.append(navigation)
+    keyboard.append([InlineKeyboardButton("🏢 Mission Control", callback_data="dashboard")])
+    await update.effective_message.reply_text(
+        "\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 async def decisions(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -1224,6 +1291,15 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if q.data.startswith("intent:"): await confirmed_action(update, context)
         elif q.data == "dashboard": await dashboard(update, context)
         elif q.data == "tasks": await tasks(update, context)
+        elif q.data.startswith("tasks:"):
+            match = re.fullmatch(
+                r"tasks:(all|mine|overdue|critical|critical_events):([1-9][0-9]{0,3})",
+                q.data,
+            )
+            if not match:
+                await update.effective_message.reply_text("Навигационная кнопка недействительна.")
+            else:
+                await tasks(update, context, view=match.group(1), page=int(match.group(2)))
         elif q.data == "decisions": await decisions(update, context)
         elif q.data == "approvals": await approvals(update, context)
         elif q.data == "crm": await records(update, "lead", "👥 CRM и продажи")

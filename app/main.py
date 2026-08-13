@@ -65,7 +65,7 @@ def get_db():
 
 
 def as_task(row: Task) -> dict:
-    return {"id": row.id, "title": row.title, "status": row.status, "priority": row.priority, "agent_type": row.agent_type, "payload": row.payload, "result": row.result, "attempts": row.attempts, "max_attempts": row.max_attempts, "timeout_seconds": row.timeout_seconds, "run_after": row.run_after, "next_retry_at": row.next_retry_at}
+    return {"id": row.id, "title": row.title, "status": row.status, "priority": row.priority, "agent_type": row.agent_type, "assigned_to": row.assigned_to, "payload": row.payload, "result": row.result, "attempts": row.attempts, "max_attempts": row.max_attempts, "timeout_seconds": row.timeout_seconds, "run_after": row.run_after, "due_at": row.due_at, "next_retry_at": row.next_retry_at}
 
 
 @app.get("/health")

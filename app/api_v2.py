@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, SenderMailbox, Suppression, Task, TenderDocument
+from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SenderMailbox, Suppression, Task, TaskTransition, TenderDocument
 from .integrations import collect_tenders, download_tender_document
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -49,7 +49,7 @@ from .notifications import (
     NotificationNotFound,
     acknowledge_owner_notification,
 )
-from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest
+from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest, TelegramTaskQuery
 
 router = APIRouter(prefix="/api")
 
@@ -109,20 +109,28 @@ def bind_telegram_control_identity(
     return {"subject": binding.subject, "role": binding.role, "active": binding.active}
 
 
-def _require_telegram_owner(
+def _require_telegram_identity(
     db: Session,
-    payload: TelegramIdentityRequest | TelegramApprovalCallback | TelegramAlertCallback,
+    payload: TelegramIdentityRequest | TelegramApprovalCallback | TelegramAlertCallback | TelegramTaskQuery,
+    minimum_role: str,
 ):
     identity, reason = authorize_identity(
         db,
         user_id=payload.user_id,
         chat_id=payload.chat_id,
-        minimum_role="owner",
+        minimum_role=minimum_role,
     )
     if identity is None:
         db.commit()
-        raise HTTPException(403, f"Telegram owner authorization failed: {reason}")
+        raise HTTPException(403, f"Telegram authorization failed: {reason}")
     return identity
+
+
+def _require_telegram_owner(
+    db: Session,
+    payload: TelegramIdentityRequest | TelegramApprovalCallback | TelegramAlertCallback,
+):
+    return _require_telegram_identity(db, payload, "owner")
 
 
 @router.post("/telegram/control/approvals")
@@ -257,6 +265,125 @@ def telegram_alert_acknowledgement(
         raise HTTPException(409, str(exc)) from exc
     db.commit()
     return result
+
+
+@router.post("/telegram/control/tasks/query")
+def telegram_task_query(
+    payload: TelegramTaskQuery,
+    db: Session = Depends(get_db),
+    channel: Principal = Depends(principal),
+):
+    require_role(channel, "owner")
+    identity = _require_telegram_identity(db, payload, "viewer")
+    offset = (payload.page - 1) * payload.page_size
+    if payload.view == "critical_events":
+        criteria = OwnerNotification.severity.in_(["high", "critical"])
+        total = int(
+            db.scalar(
+                select(func.count()).select_from(OwnerNotification).where(criteria)
+            )
+            or 0
+        )
+        rows = db.scalars(
+            select(OwnerNotification)
+            .where(criteria)
+            .order_by(OwnerNotification.id.desc())
+            .offset(offset)
+            .limit(payload.page_size)
+        ).all()
+        items = [
+            {
+                "item_type": "critical_event",
+                "id": row.id,
+                "title": row.subject,
+                "status": row.status,
+                "priority": row.severity,
+                "assigned_to": "owner",
+                "due_at": None,
+                "correlation_id": row.correlation_id,
+                "source": {
+                    "resource_type": row.resource_type,
+                    "resource_id": row.resource_id,
+                },
+                "acknowledged_at": row.acknowledged_at,
+            }
+            for row in rows
+        ]
+    else:
+        criteria = []
+        if payload.view == "mine":
+            criteria.append(Task.assigned_to == identity.subject)
+        elif payload.view == "overdue":
+            criteria.extend(
+                [
+                    Task.due_at.is_not(None),
+                    Task.due_at < datetime.now(timezone.utc).replace(tzinfo=None),
+                    Task.status.in_(["open", "queued", "running", "blocked"]),
+                ]
+            )
+        elif payload.view == "critical":
+            criteria.append(
+                or_(Task.priority == "critical", Task.status.in_(["failed", "blocked"]))
+            )
+        count_query = select(func.count()).select_from(Task)
+        query = select(Task)
+        if criteria:
+            count_query = count_query.where(*criteria)
+            query = query.where(*criteria)
+        total = int(db.scalar(count_query) or 0)
+        rows = db.scalars(
+            query.order_by(Task.due_at.asc().nulls_last(), Task.id.desc())
+            .offset(offset)
+            .limit(payload.page_size)
+        ).all()
+        task_ids = [row.id for row in rows]
+        transitions = (
+            db.scalars(
+                select(TaskTransition)
+                .where(TaskTransition.task_id.in_(task_ids))
+                .order_by(TaskTransition.task_id, TaskTransition.id.desc())
+            ).all()
+            if task_ids
+            else []
+        )
+        latest_transition = {}
+        for transition in transitions:
+            latest_transition.setdefault(transition.task_id, transition)
+        items = []
+        for row in rows:
+            transition = latest_transition.get(row.id)
+            items.append(
+                {
+                    "item_type": "task",
+                    "id": row.id,
+                    "title": row.title,
+                    "status": row.status,
+                    "priority": row.priority,
+                    "agent_type": row.agent_type,
+                    "assigned_to": row.assigned_to,
+                    "due_at": row.due_at,
+                    "correlation_id": transition.correlation_id if transition else "",
+                    "last_transition": {
+                        "id": transition.id,
+                        "from_status": transition.from_status,
+                        "to_status": transition.to_status,
+                        "reason": transition.reason,
+                    }
+                    if transition
+                    else None,
+                }
+            )
+    total_pages = max(1, (total + payload.page_size - 1) // payload.page_size)
+    return {
+        "view": payload.view,
+        "page": payload.page,
+        "page_size": payload.page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "has_previous": payload.page > 1,
+        "has_next": payload.page < total_pages,
+        "items": items,
+    }
 
 
 def _previous_request_text(db: Session, *, source_channel: str, source_user: str, current_message: str) -> str:
