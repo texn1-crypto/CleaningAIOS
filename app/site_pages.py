@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from html import escape
 from math import ceil
 
@@ -203,12 +204,15 @@ def about_html() -> str:
 
 
 def contacts_html() -> str:
-    phone = escape(settings.company_phone or "Телефон добавляется")
+    raw_phone = settings.company_phone.strip()
+    phone = escape(raw_phone or "Телефон добавляется")
+    phone_href = escape(re.sub(r"[^+\d]", "", raw_phone), quote=True)
+    phone_value = f'<a href="tel:{phone_href}"><strong>{phone}</strong></a>' if phone_href else f"<strong>{phone}</strong>"
     email = escape(settings.company_email or "cleaningai@mail.ru")
     area = escape(settings.company_service_area or "Санкт-Петербург и Ленинградская область")
     social = _social_links() or "<span>Ссылки появятся после завершения регистрации официальных страниц.</span>"
     body = f"""<section class="page-hero"><p class="eyebrow"><span></span> Контакты</p><h1>Обсудим ваш объект.</h1><p>Для расчёта достаточно типа объекта, примерной площади, графика и желаемой даты старта.</p></section>
-<section class="section contact-grid"><article><span>Телефон</span><strong>{phone}</strong></article><article><span>Email</span><a href="mailto:{email}"><strong>{email}</strong></a></article><article><span>Регион</span><strong>{area}</strong></article><article><span>Социальные сети</span><div class="social-links">{social}</div></article></section>
+<section class="section contact-grid"><article><span>Телефон</span>{phone_value}</article><article><span>Email</span><a href="mailto:{email}"><strong>{email}</strong></a></article><article><span>Регион</span><strong>{area}</strong></article><article><span>Социальные сети</span><div class="social-links">{social}</div></article></section>
 <section class="page-cta"><h2>Получить предварительный расчёт</h2><p>Заявка попадёт в CRM, а параметры объекта сохранятся в истории обращения.</p><a class="button primary" href="/#request">Заполнить форму</a></section>"""
     return _layout(title="Контакты", description="Контакты CleaningAIOS для расчёта клининга в Санкт-Петербурге и Ленинградской области.", body=body, active="contacts")
 

@@ -493,6 +493,16 @@ def test_public_site_has_real_multipage_catalog_prices_and_sitemap(client):
     assert "/prices" in sitemap.text
 
 
+def test_contacts_page_exposes_configured_click_to_call_phone(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "company_phone", "+7 995 599-60-95")
+    response = client.get("/contacts")
+    assert response.status_code == 200
+    assert "+7 995 599-60-95" in response.text
+    assert 'href="tel:+79955996095"' in response.text
+
+
 def test_public_site_exposes_only_safe_social_profile_urls(client, monkeypatch):
     from app.config import settings
 
