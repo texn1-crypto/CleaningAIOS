@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     public_lead_rate_limit_per_hour: int = 5
     public_lead_rate_secret: str = ""
     yandex_direct_token: str = ""
+    yandex_search_api_key: str = ""
+    yandex_cloud_folder_id: str = ""
     vk_ads_token: str = ""
     twogis_business_token: str = ""
     avito_client_id: str = ""

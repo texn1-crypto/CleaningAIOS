@@ -2027,6 +2027,107 @@ def test_management_company_import_preserves_provenance_and_requires_consent(cli
     assert blocked.json()["detail"]["count"] == 1
 
 
+def test_management_company_import_keeps_structured_contacts_without_trusting_consent(client):
+    import base64
+
+    csv = (
+        "organization_type,company,region,scope_status,address,phone,phones,email,emails,website,"
+        "candidate_website,vk_url,contact_person,managed_objects,managed_area_m2,marketing_consent_status,"
+        "internet_verification_status,source_refs\n"
+        "УК,УК Структура Альфа,Санкт-Петербург,in_scope,Невский проспект 1,+7 812 100-00-01,"
+        "+7 812 100-00-01 | +7 812 100-00-02,shared-uk@example.com,"
+        "shared-uk@example.com | director-alpha@example.com,,https://alpha.example,https://vk.com/alpha,"
+        "Иван Иванов,4,12345.5,confirmed,not_checked,docx:table:1:row:2\n"
+        "ТСЖ,ТСЖ Структура Бета,Ленинградская область,in_scope,,,+7 812 200-00-01,"
+        "shared-uk@example.com,shared-uk@example.com,,,,,1,,confirmed,not_checked,docx:table:2:row:4\n"
+        "ТСЖ,ТСЖ Структура Без Email,Санкт-Петербург,in_scope,,+7 812 300-00-01,,,,,,,,,,unknown,"
+        "not_checked,docx:table:3:row:6\n"
+    ).encode()
+    response = client.post("/api/research/management-companies/import", json={
+        "filename": "structured-management-companies.csv",
+        "content_base64": base64.b64encode(csv).decode(),
+        "source_kind": "manual_public_export",
+        "source_url": "owner-upload://structured-management-companies",
+    })
+    assert response.status_code == 201
+    assert response.json()["created"] == 3
+    records = {
+        row["title"]: row
+        for row in client.get("/api/records?record_type=management_company").json()
+        if row["title"].startswith(("УК Структура", "ТСЖ Структура"))
+    }
+    assert set(records) == {"УК Структура Альфа", "ТСЖ Структура Бета", "ТСЖ Структура Без Email"}
+    alpha = records["УК Структура Альфа"]["data"]
+    assert alpha["emails"] == ["director-alpha@example.com", "shared-uk@example.com"]
+    assert alpha["phones"] == ["+78121000001", "+78121000002"]
+    assert alpha["organization_type"] == "УК"
+    assert alpha["managed_objects"] == 4
+    assert alpha["candidate_website"] == "https://alpha.example"
+    assert alpha["source_refs"] == ["docx:table:1:row:2"]
+    assert alpha["marketing_consent_status"] == "unknown"
+    assert records["ТСЖ Структура Бета"]["id"] != records["УК Структура Альфа"]["id"]
+
+
+def test_research_and_sales_agents_audit_management_company_base_without_sending(client):
+    from app.db import SessionLocal
+    from app.models import OutboundMessage
+    from sqlalchemy import func, select
+
+    with SessionLocal() as db:
+        messages_before = db.scalar(select(func.count(OutboundMessage.id))) or 0
+
+    research = client.post("/api/tasks", json={
+        "title": "Проверить полноту контактов УК и ТСЖ",
+        "agent_type": "research",
+        "payload": {
+            "collection": "management_company_contacts",
+            "batch_limit": 5,
+            "enrich_verified_websites": False,
+        },
+        "max_attempts": 1,
+    }).json()
+    research_done = client.post(f"/api/tasks/{research['id']}/run").json()
+    assert research_done["status"] == "done"
+    coverage = research_done["result"]
+    assert coverage["organizations_missing_email"] >= 1
+    assert coverage["search_adapter_required"] is True
+    assert coverage["send_eligible_addresses"] == 0
+    assert coverage["evidence"][0]["type"] == "management_company_contact_coverage"
+
+    sales = client.post("/api/tasks", json={
+        "title": "Сегментировать базу УК и ТСЖ без запуска рассылки",
+        "agent_type": "sales",
+        "payload": {"action": "prepare_management_company_outreach"},
+        "max_attempts": 1,
+    }).json()
+    sales_done = client.post(f"/api/tasks/{sales['id']}/run").json()
+    assert sales_done["status"] == "done"
+    summary = sales_done["result"]
+    assert summary["segments_by_type"]["УК"] >= 1
+    assert summary["segments_by_type"]["ТСЖ"] >= 2
+    assert summary["send_eligible_addresses"] == 0
+    assert summary["messages_queued"] == 0
+    assert summary["owner_approval_required_before_campaign"] is True
+    with SessionLocal() as db:
+        assert (db.scalar(select(func.count(OutboundMessage.id))) or 0) == messages_before
+
+
+def test_management_company_internet_discovery_reports_real_adapter_blocker(client):
+    task = client.post("/api/tasks", json={
+        "title": "Проверить границу интернет-поиска УК",
+        "agent_type": "research",
+        "payload": {"collection": "management_company_internet_discovery"},
+        "max_attempts": 1,
+    }).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    assert completed["status"] == "done"
+    result = completed["result"]
+    assert result["status"] == "adapter_required"
+    assert result["configured"] is False
+    assert result["credentials_required"] == ["YANDEX_SEARCH_API_KEY", "YANDEX_CLOUD_FOLDER_ID"]
+    assert result["evidence"] == []
+
+
 def test_campaign_attachment_balances_only_consented_recipients(client, monkeypatch, tmp_path):
     import base64
 

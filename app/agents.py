@@ -22,6 +22,26 @@ class Agent(Protocol):
 class DataCollectorAgent:
     name = "research"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("collection") == "management_company_contacts":
+            from .management_companies import audit_management_company_contacts
+
+            return audit_management_company_contacts(
+                db,
+                batch_limit=int(payload.get("batch_limit") or 20),
+                enrich_verified_websites=bool(payload.get("enrich_verified_websites")),
+            )
+        if payload.get("collection") == "management_company_internet_discovery":
+            return {
+                "status": "adapter_required",
+                "collection": "management_company_internet_discovery",
+                "configured": False,
+                "credentials_required": ["YANDEX_SEARCH_API_KEY", "YANDEX_CLOUD_FOLDER_ID"],
+                "reason": (
+                    "Не настроен официальный поисковый адаптер. До его подключения нельзя выдавать "
+                    "угаданный домен или найденный каталог как официальный сайт организации."
+                ),
+                "evidence": [],
+            }
         sources = payload.get("sources") or [x.strip() for x in settings.tender_sources.split(",") if x.strip()]
         query = payload.get("query", "")
         if payload.get("collection", "tenders") == "tenders":
@@ -152,6 +172,10 @@ class SalesAgent:
         if payload.get("action") == "generate_proposal":
             from .proposals import generate_proposal
             return generate_proposal(db, payload)
+        if payload.get("action") == "prepare_management_company_outreach":
+            from .management_companies import management_company_outreach_summary
+
+            return management_company_outreach_summary(db)
         if payload.get("action") == "execute_bulk_outreach_campaign":
             from .outreach import queue_campaign
 
