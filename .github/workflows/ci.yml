@@ -13,6 +13,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pytest --cov=app --cov-report=term-missing
       - run: cp .env.example .env
+      - run: python scripts/bootstrap_secrets.py .env
       - run: docker compose --env-file .env.example config
       - name: Compose production smoke test
         run: |
@@ -26,7 +27,9 @@ jobs:
           curl --fail http://127.0.0.1:8000/health
           curl --fail http://127.0.0.1:8000/
           curl --fail http://127.0.0.1:8000/static/og-cleaningaios.png
-          test "$(docker compose exec -T db psql -U cleaningai -d cleaningai -Atc 'select version_num from alembic_version')" = "0011"
+          current_revision="$(docker compose exec -T db psql -U cleaningai -d cleaningai -Atc 'select version_num from alembic_version')"
+          head_revision="$(docker compose run --rm migrate alembic heads | awk '{print $1}')"
+          test "$current_revision" = "$head_revision"
           docker compose run --rm migrate alembic check
       - name: Compose logs
         if: always()
