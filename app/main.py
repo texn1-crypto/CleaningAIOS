@@ -31,6 +31,14 @@ from .agents import AGENTS
 from .llm import llm_advisor
 from .readiness import integration_status
 from .task_state import InvalidTaskTransition, record_task_created, transition_task
+from .approval_service import (
+    ApprovalConflict,
+    ApprovalError,
+    ApprovalExpired,
+    ApprovalNotFound,
+    ApprovalStale,
+    decide_approval as decide_approval_service,
+)
 
 
 @asynccontextmanager
@@ -347,91 +355,43 @@ def agent_runs(db: Session = Depends(get_db), actor: Principal = Depends(princip
 @app.get("/api/approvals")
 def approvals(db: Session = Depends(get_db), _: Principal = Depends(principal)):
     rows = db.scalars(select(ApprovalRequest).order_by(ApprovalRequest.id.desc())).all()
-    return [{"id": x.id, "action_kind": x.action_kind, "resource_type": x.resource_type, "resource_id": x.resource_id, "status": x.status, "rationale": x.rationale, "payload": x.payload} for x in rows]
+    return [{
+        "id": x.id,
+        "action_kind": x.action_kind,
+        "resource_type": x.resource_type,
+        "resource_id": x.resource_id,
+        "status": x.status,
+        "rationale": x.rationale,
+        "payload": x.payload,
+        "requested_by": x.requested_by,
+        "decision_version": x.decision_version,
+        "expires_at": x.expires_at,
+        "created_at": x.created_at,
+    } for x in rows]
 
 
 @app.post("/api/approvals/{approval_id}/{action}")
 def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "owner")
-    if action not in {"approve", "reject"}:
-        raise HTTPException(400, "Unsupported action")
-    row = db.get(ApprovalRequest, approval_id)
-    if not row:
-        raise HTTPException(404, "Approval not found")
-    if row.status != "pending":
-        raise HTTPException(409, "Approval already decided")
-    social_batch = None
-    social_items = None
-    execution = "not_executed"
-    task_status = None
-    if action == "approve" and row.resource_type == "social_content_batch":
-        from .social_marketing import validate_social_approval
-
-        try:
-            social_batch, social_items = validate_social_approval(db, row)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(409, str(exc)) from exc
-    row.status = "approved" if action == "approve" else "rejected"
-    row.decided_by = actor.subject; row.decision_note = payload.note; row.decided_at = datetime.now(timezone.utc).replace(tzinfo=None)
-    if row.resource_type == "task":
-        task = db.get(Task, int(row.resource_id))
-        if task and task.status == "blocked" and row.status == "approved":
-            task.payload = {**task.payload, "approval_id": row.id}
-            transition_task(
-                db,
-                task,
-                "queued",
-                actor=actor.subject,
-                reason="owner_approval_granted",
-                transition_key=f"task:{task.id}:approval:{row.id}:queued",
-            )
-            task.run_after = datetime.now(timezone.utc).replace(tzinfo=None)
-            task_status = task.status
-            if row.action_kind == "bulk_outreach":
-                execution = "queued"
-    elif row.resource_type == "decision":
-        decision = db.get(Decision, int(row.resource_id))
-        if decision: decision.status = row.status; decision.decided_by = actor.subject; decision.decided_at = row.decided_at
-    elif row.resource_type in {"marketing_invoice", "marketing_experiment", "proposal_revision"}:
-        resource = db.get(BusinessRecord, int(row.resource_id))
-        if resource and resource.record_type == row.resource_type:
-            if row.resource_type == "marketing_invoice":
-                resource.status = "approved_for_manual_payment" if row.status == "approved" else "rejected"
-            elif row.resource_type == "proposal_revision":
-                resource.status = "approved" if row.status == "approved" else "rejected"
-                resource.data = {
-                    **resource.data,
-                    "owner_approved": row.status == "approved",
-                    "sent_to_client": False,
-                    "approval_decision_at": row.decided_at.isoformat() if row.decided_at else None,
-                }
-            else:
-                resource.status = "approved" if row.status == "approved" else "rejected"
-    elif row.resource_type == "social_content_batch":
-        batch = social_batch or db.get(BusinessRecord, int(row.resource_id))
-        if batch and batch.record_type == "social_content_batch":
-            item_ids = [int(value) for value in (batch.data or {}).get("content_item_ids", [])]
-            items = social_items or (db.scalars(select(ContentItem).where(ContentItem.id.in_(item_ids))).all() if item_ids else [])
-            batch.status = "scheduled" if row.status == "approved" else "rejected"
-            for item in items:
-                legal_review = item.channel == "instagram"
-                item.status = "approval" if row.status == "approved" and legal_review else "scheduled" if row.status == "approved" else "cancelled"
-                item.metrics = {
-                    **(item.metrics or {}),
-                    "publication_status": "legal_review_required" if row.status == "approved" and legal_review else "scheduled_waiting_channel_credentials" if row.status == "approved" else "owner_rejected",
-                    "approval_id": row.id,
-                }
-    event_bus.publish(db, f"approval.{row.status}", row.resource_type, row.resource_id, {"approval_id": row.id, "action_kind": row.action_kind}, idempotency_key=f"approval:{row.id}:{row.status}")
-    audit(db, actor.subject, f"approval.{row.status}", row.resource_type, row.resource_id, {"approval_id": row.id})
+    try:
+        result = decide_approval_service(
+            db,
+            approval_id=approval_id,
+            action=action,
+            note=payload.note,
+            actor=actor,
+        )
+    except ApprovalNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ApprovalExpired as exc:
+        db.commit()
+        raise HTTPException(409, str(exc)) from exc
+    except (ApprovalConflict, ApprovalStale) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ApprovalError as exc:
+        raise HTTPException(400, str(exc)) from exc
     db.commit()
-    return {
-        "id": row.id,
-        "status": row.status,
-        "action_kind": row.action_kind,
-        "execution": execution,
-        "task_status": task_status,
-        "automatic_commitment": False,
-    }
+    return result
 
 
 @app.post("/api/outreach/suppress", status_code=201)

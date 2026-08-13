@@ -50,7 +50,12 @@ trigger; APIs expose history but no mutation endpoint.
 Decision Engine is deterministic. Financial, legal, contractual, final HR, tender
 submission and bulk outreach actions create a separate owner approval. An approval
 is bound to its exact action and resource, so it cannot authorize another task or
-campaign. Task approval automatically returns the blocked task to the queue.
+campaign. Pending approvals are versioned and expire after a configured TTL. A
+terminal decision is claimed atomically, stored once in an append-only decision
+ledger, and published as a domain event. Task approval automatically returns the
+blocked task to the queue through an idempotent transition key, so concurrent or
+duplicate decisions cannot resume the workflow twice. “Request changes” records a
+terminal review outcome without resuming execution.
 
 Marketing invoices and paid experiments use the same financial approval class.
 Approval only records the owner's decision. Invoice state becomes

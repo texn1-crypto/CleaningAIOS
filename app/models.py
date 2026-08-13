@@ -275,10 +275,36 @@ class ApprovalRequest(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     rationale: Mapped[str] = mapped_column(Text, default="")
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    decision_version: Mapped[int] = mapped_column(Integer, default=1)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     decided_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     decision_note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class ApprovalDecisionRecord(Base):
+    """Append-only terminal decision for an approval request."""
+
+    __tablename__ = "approval_decision_records"
+    __table_args__ = (
+        UniqueConstraint("approval_id", name="uq_approval_decision_record_approval"),
+        CheckConstraint(
+            "action IN ('approve', 'reject', 'request_changes', 'expire')",
+            name="ck_approval_decision_record_action",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    approval_id: Mapped[int] = mapped_column(
+        ForeignKey("approval_requests.id", ondelete="CASCADE"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(32))
+    result_status: Mapped[str] = mapped_column(String(32), index=True)
+    actor: Mapped[str] = mapped_column(String(128), index=True)
+    channel: Mapped[str] = mapped_column(String(32), default="api", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    request_version: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class OperatingEntity(Base):

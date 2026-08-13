@@ -5,10 +5,11 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .agents import AGENTS, heartbeat
+from .config import settings
 from .models import AgentRun, ApprovalRequest, CompanyKnowledge, DomainEvent, EventConsumerReceipt, Task
 from .task_state import record_task_created, transition_task
 
@@ -193,15 +194,25 @@ class ApprovalEngine:
     protected_actions = {"financial", "legal", "contract", "hr_final", "tender_submission", "bulk_outreach", "social_publication"}
 
     def request(self, db: Session, action_kind: str, resource_type: str, resource_id: str, requested_by: str, payload: dict[str, Any], rationale: str = "") -> ApprovalRequest:
+        now = now_utc()
         existing = db.scalar(select(ApprovalRequest).where(
             ApprovalRequest.action_kind == action_kind,
             ApprovalRequest.resource_type == resource_type,
             ApprovalRequest.resource_id == resource_id,
             ApprovalRequest.status == "pending",
+            or_(ApprovalRequest.expires_at.is_(None), ApprovalRequest.expires_at > now),
         ))
         if existing:
             return existing
-        row = ApprovalRequest(action_kind=action_kind, resource_type=resource_type, resource_id=resource_id, requested_by=requested_by, payload=payload, rationale=rationale)
+        row = ApprovalRequest(
+            action_kind=action_kind,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            requested_by=requested_by,
+            payload=payload,
+            rationale=rationale,
+            expires_at=now + timedelta(hours=max(1, settings.approval_ttl_hours)),
+        )
         db.add(row)
         db.flush()
         return row

@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_bot_api_base_url: str = ""
     telegram_cloud_download_limit_bytes: int = 20_000_000
+    telegram_callback_secret: str = ""
+    approval_ttl_hours: int = 24
     public_base_url: str = "http://localhost:8000"
     internal_api_url: str = ""
     worker_poll_seconds: float = 2.0

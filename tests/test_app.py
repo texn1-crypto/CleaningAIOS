@@ -3617,3 +3617,127 @@ def test_worker_skips_rate_limited_mailbox_without_starving_pool(monkeypatch):
         assert db.scalar(select(OutboundMessage.status).where(OutboundMessage.campaign_key == "limited-queue")) == "queued"
         assert db.scalar(select(OutboundMessage.status).where(OutboundMessage.campaign_key == "available-queue")) == "sent"
     assert sent == ["send@example.com"]
+
+
+def test_expired_approval_is_persistently_rejected(client):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import ApprovalDecisionRecord, ApprovalRequest, Task
+
+    task = client.post("/api/tasks", json={
+        "title": "Expired approval test",
+        "agent_type": "tender",
+        "payload": {"action_kind": "tender_submission"},
+    }).json()
+    blocked = client.post(f"/api/tasks/{task['id']}/run").json()
+    approval_id = blocked["result"]["approval_id"]
+    with SessionLocal() as db:
+        approval = db.get(ApprovalRequest, approval_id)
+        approval.expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
+        db.commit()
+
+    response = client.post(
+        f"/api/approvals/{approval_id}/approve",
+        json={"note": "Too late"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Approval expired"
+    with SessionLocal() as db:
+        approval = db.get(ApprovalRequest, approval_id)
+        decision = db.scalar(
+            select(ApprovalDecisionRecord).where(
+                ApprovalDecisionRecord.approval_id == approval_id
+            )
+        )
+        assert approval.status == "expired"
+        assert approval.decision_version == 2
+        assert decision.action == "expire"
+        assert decision.actor == "system"
+        assert db.get(Task, task["id"]).status == "blocked"
+
+
+def test_approval_decision_record_and_workflow_resume_are_exactly_once(client):
+    from sqlalchemy import func, select
+
+    from app.db import SessionLocal
+    from app.models import ApprovalDecisionRecord, TaskTransition
+
+    task = client.post("/api/tasks", json={
+        "title": "Exactly once approval test",
+        "agent_type": "tender",
+        "payload": {"action_kind": "tender_submission"},
+    }).json()
+    blocked = client.post(f"/api/tasks/{task['id']}/run").json()
+    approval_id = blocked["result"]["approval_id"]
+    approved = client.post(
+        f"/api/approvals/{approval_id}/approve",
+        json={"note": "Exact owner decision"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["decision_version"] == 2
+    duplicate = client.post(
+        f"/api/approvals/{approval_id}/approve",
+        json={"note": "Duplicate click"},
+    )
+    assert duplicate.status_code == 409
+
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(func.count()).select_from(ApprovalDecisionRecord).where(
+                ApprovalDecisionRecord.approval_id == approval_id
+            )
+        ) == 1
+        assert db.scalar(
+            select(func.count()).select_from(TaskTransition).where(
+                TaskTransition.transition_key == f"task:{task['id']}:approval:{approval_id}:queued"
+            )
+        ) == 1
+
+
+def test_request_changes_records_decision_without_resuming_workflow(client):
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import ApprovalDecisionRecord, Task
+
+    task = client.post("/api/tasks", json={
+        "title": "Request changes approval test",
+        "agent_type": "tender",
+        "payload": {"action_kind": "tender_submission"},
+    }).json()
+    blocked = client.post(f"/api/tasks/{task['id']}/run").json()
+    approval_id = blocked["result"]["approval_id"]
+    response = client.post(
+        f"/api/approvals/{approval_id}/request_changes",
+        json={"note": "Уточнить сумму и срок действия"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "changes_requested"
+    assert response.json()["execution"] == "not_executed"
+    with SessionLocal() as db:
+        decision = db.scalar(
+            select(ApprovalDecisionRecord).where(
+                ApprovalDecisionRecord.approval_id == approval_id
+            )
+        )
+        assert decision.action == "request_changes"
+        assert decision.reason == "Уточнить сумму и срок действия"
+        assert db.get(Task, task["id"]).status == "blocked"
+
+
+def test_non_owner_role_cannot_decide_protected_approval(client):
+    task = client.post("/api/tasks", json={
+        "title": "Manager approval denial test",
+        "agent_type": "tender",
+        "payload": {"action_kind": "tender_submission"},
+    }).json()
+    blocked = client.post(f"/api/tasks/{task['id']}/run").json()
+    response = client.post(
+        f"/api/approvals/{blocked['result']['approval_id']}/approve",
+        headers={"X-Role": "manager"},
+        json={"note": "Manager must not approve"},
+    )
+    assert response.status_code == 403
