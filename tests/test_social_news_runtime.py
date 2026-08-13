@@ -9,7 +9,7 @@ from sqlalchemy import update
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import ApprovalRequest, BusinessRecord, ContentItem, MediaAsset
+from app.models import ApprovalRequest, BusinessRecord, ContentItem, MediaAsset, OwnerNotification
 from app.social_marketing import prepare_daily_cleaning_news_plan
 from app.social_news import CleaningNewsItem, parse_cleaning_news_feed
 from app.social_runtime import generate_next_social_visual, publish_next_social_post
@@ -211,3 +211,58 @@ def test_social_summary_does_not_expose_credentials(client, monkeypatch):
     assert response.status_code == 200
     assert response.json()["integrations"]["telegram"] == "ready"
     assert "super-secret" not in response.text
+
+
+def test_owner_preview_uploads_checksum_verified_local_photo_and_redacts_token(monkeypatch, tmp_path):
+    from app import notifications
+
+    raw = b"\x89PNG\r\n\x1a\n" + b"owner-preview"
+    digest = hashlib.sha256(raw).hexdigest()
+    image_path = tmp_path / "preview.png"
+    image_path.write_bytes(raw)
+    approval = ApprovalRequest(
+        id=991,
+        action_kind="social_publication",
+        resource_type="social_content_batch",
+        resource_id="991",
+        status="pending",
+        decision_version=1,
+        payload={},
+    )
+    asset = MediaAsset(id=992, kind="image", title="Preview", storage_path=str(image_path), status="ready", metadata_json={"sha256": digest})
+    captured = []
+
+    class Response:
+        def raise_for_status(self): return None
+
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, **kwargs): captured.append((url, kwargs)); return Response()
+
+    class Db:
+        def get(self, model, identity):
+            return approval if model is ApprovalRequest else asset if model is MediaAsset else None
+
+    monkeypatch.setattr(notifications.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "telegram_bot_token", "991:super-secret-token")
+    monkeypatch.setattr(settings, "telegram_callback_secret", "callback-secret")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    row = OwnerNotification(
+        idempotency_key="local-preview-upload-test",
+        channel="telegram",
+        recipient="999",
+        subject="Preview",
+        body="Review",
+        data={"approval_id": approval.id, "preview_posts": [{
+            "channel": "telegram", "scheduled_at": "2042-01-01T07:00:00", "body": "Exact text",
+            "image_url": "https://example.test/preview.png", "visual_asset_id": asset.id,
+        }]},
+    )
+    notifications._send_telegram(Db(), row)
+    assert captured[0][1]["files"][0][0] == f"asset_{asset.id}"
+    assert f"attach://asset_{asset.id}" in captured[0][1]["data"]["media"]
+    error = notifications._safe_delivery_error(Exception("https://api.telegram.org/bot991:super-secret-token/sendMediaGroup"))
+    assert "super-secret-token" not in error
+    assert "<redacted>" in error

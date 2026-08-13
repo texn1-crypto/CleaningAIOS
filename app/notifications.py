@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import os
+import re
 import smtplib
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -18,6 +22,7 @@ from .models import (
     AuditLog,
     DomainEvent,
     InboxMessage,
+    MediaAsset,
     OwnerNotification,
     SenderMailbox,
 )
@@ -27,6 +32,14 @@ from .telegram_control import approval_card, issue_alert_ack_token
 log = logging.getLogger("cleaningai.notifications")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _safe_delivery_error(exc: Exception) -> str:
+    value = str(exc)
+    if settings.telegram_bot_token:
+        value = value.replace(settings.telegram_bot_token, "<redacted>")
+    value = re.sub(r"(https://api\.telegram\.org/bot)[^/\s]+", r"\1<redacted>", value)
+    return value[:4000]
 
 ALERT_SEVERITY = {
     "approval.requested": "high",
@@ -312,6 +325,8 @@ def _send_telegram(db: Session, row: OwnerNotification) -> None:
     with httpx.Client(timeout=30) as client:
         if isinstance(preview_posts, list) and preview_posts:
             media: list[dict[str, str]] = []
+            files: list[tuple[str, tuple[str, bytes, str]]] = []
+            attached: set[str] = set()
             for post in preview_posts[:10]:
                 image_url = str(post.get("image_url") or "")
                 if image_url.startswith("/static/"):
@@ -325,11 +340,37 @@ def _send_telegram(db: Session, row: OwnerNotification) -> None:
                 caption = f"{channel} · {schedule} UTC\n\n{body}"
                 if len(caption) > 1024:
                     raise RuntimeError("Social preview caption exceeds Telegram limit")
-                media.append({"type": "photo", "media": image_url, "caption": caption})
-            response = client.post(
-                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMediaGroup",
-                json={"chat_id": row.recipient, "media": media},
-            )
+                media_value = image_url
+                asset_id = int(post.get("visual_asset_id") or 0)
+                asset = db.get(MediaAsset, asset_id) if asset_id else None
+                if asset and asset.storage_path:
+                    root = Path(settings.document_storage_path).resolve()
+                    path = Path(asset.storage_path).resolve()
+                    try:
+                        path.relative_to(root)
+                    except ValueError as exc:
+                        raise RuntimeError("Social preview image is outside document storage") from exc
+                    raw = path.read_bytes()
+                    digest = str((asset.metadata_json or {}).get("sha256") or "")
+                    if len(digest) != 64 or hashlib.sha256(raw).hexdigest() != digest:
+                        raise RuntimeError("Social preview image checksum mismatch")
+                    attach_name = f"asset_{asset.id}"
+                    media_value = f"attach://{attach_name}"
+                    if attach_name not in attached:
+                        suffix = path.suffix.lower()
+                        content_type = "image/png" if suffix == ".png" else "image/jpeg"
+                        files.append((attach_name, (f"social{suffix}", raw, content_type)))
+                        attached.add(attach_name)
+                media.append({"type": "photo", "media": media_value, "caption": caption})
+            endpoint = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMediaGroup"
+            if files:
+                response = client.post(
+                    endpoint,
+                    data={"chat_id": row.recipient, "media": json.dumps(media, ensure_ascii=False)},
+                    files=files,
+                )
+            else:
+                response = client.post(endpoint, json={"chat_id": row.recipient, "media": media})
             response.raise_for_status()
         response = client.post(f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage", json=payload)
         response.raise_for_status()
@@ -369,11 +410,11 @@ def send_next_owner_notification(db: Session) -> bool:
                 }
     except RuntimeError as exc:
         row.status = "waiting_configuration"
-        row.last_error = str(exc)
+        row.last_error = _safe_delivery_error(exc)
         row.available_at = now + timedelta(minutes=5)
     except Exception as exc:
         row.attempts += 1
-        row.last_error = str(exc)
+        row.last_error = _safe_delivery_error(exc)
         row.status = "dead_letter" if row.attempts >= 5 else "retry"
         row.dead_lettered_at = now if row.status == "dead_letter" else None
         row.available_at = now + timedelta(seconds=min(300, 2 ** row.attempts))
