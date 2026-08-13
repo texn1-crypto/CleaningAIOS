@@ -217,10 +217,12 @@ class CampaignLaunch(BaseModel):
 
 
 class CustomerRequestedCampaignDraft(BaseModel):
-    recipients: list[EmailStr] = Field(min_length=1, max_length=100)
+    recipients: list[EmailStr] = Field(min_length=1, max_length=1000)
     consent_evidence: str = Field(min_length=10, max_length=4000)
     subject: str = Field(min_length=1, max_length=255)
     body: str = Field(min_length=1, max_length=10000)
+    source_filename: Optional[str] = Field(default=None, max_length=255)
+    source_sha256: Optional[str] = Field(default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     scheduled_at: Optional[datetime] = None
 
 

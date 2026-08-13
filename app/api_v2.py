@@ -601,6 +601,9 @@ def draft_customer_requested_campaign(
     """
     require_role(actor, "owner")
     recipients = sorted(set(str(address).lower() for address in payload.recipients))
+    batch_size = 100
+    recipient_batches = [recipients[index:index + batch_size] for index in range(0, len(recipients), batch_size)]
+    source_filename = os.path.basename(payload.source_filename or "")[:255] or None
     campaign_digest = hashlib.sha256(
         ("\n".join(recipients) + "\n" + payload.subject + "\n" + payload.body).encode()
     ).hexdigest()
@@ -623,6 +626,8 @@ def draft_customer_requested_campaign(
             "task_id": existing.id,
             "approval_id": stored.get("approval_id") or (existing.payload or {}).get("approval_id"),
             "recipient_count": len(recipients),
+            "batch_size": int((existing.payload or {}).get("batch_size") or batch_size),
+            "batch_count": int((existing.payload or {}).get("batch_count") or len(recipient_batches)),
             "campaign_key": campaign_key,
             "idempotent_replay": True,
         }
@@ -667,6 +672,9 @@ def draft_customer_requested_campaign(
             "original_message": "Подготовить подтверждённую владельцем клиентскую email-рассылку",
             "campaign_key": campaign_key,
             "recipients": recipients,
+            "recipient_batches": recipient_batches,
+            "batch_size": batch_size,
+            "batch_count": len(recipient_batches),
             "recipient_digest": hashlib.sha256("\n".join(recipients).encode()).hexdigest(),
             "subject": payload.subject,
             "body": payload.body,
@@ -674,6 +682,8 @@ def draft_customer_requested_campaign(
             "attachments": [],
             "auto_balance_mailboxes": True,
             "consent_evidence_digest": hashlib.sha256(payload.consent_evidence.encode()).hexdigest(),
+            "recipient_source_filename": source_filename,
+            "recipient_source_sha256": payload.source_sha256,
         },
         max_attempts=1,
     )
@@ -689,8 +699,12 @@ def draft_customer_requested_campaign(
         {
             "campaign_key": campaign_key,
             "recipient_count": len(recipients),
+            "batch_size": batch_size,
+            "batch_count": len(recipient_batches),
             "recipient_digest": task.payload["recipient_digest"],
             "source": "telegram_mailing_wizard",
+            "recipient_source_filename": source_filename,
+            "recipient_source_sha256": payload.source_sha256,
         },
     )
     db.commit()
@@ -699,6 +713,8 @@ def draft_customer_requested_campaign(
         "task_id": task.id,
         "approval_id": result.get("approval_id"),
         "recipient_count": len(recipients),
+        "batch_size": batch_size,
+        "batch_count": len(recipient_batches),
         "campaign_key": campaign_key,
         "idempotent_replay": False,
     }

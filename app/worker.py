@@ -9,7 +9,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import urlencode
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from .config import settings
 from .db import SessionLocal
@@ -36,7 +36,7 @@ def send_next_email(db) -> bool:
             OutboundMessage.status.in_(["queued", "waiting_configuration"]),
             OutboundMessage.scheduled_at <= now,
         )
-        .order_by(OutboundMessage.id)
+        .order_by(case((OutboundMessage.status == "queued", 0), else_=1), OutboundMessage.id)
         .limit(100)
         .with_for_update(skip_locked=True)
     ).all()

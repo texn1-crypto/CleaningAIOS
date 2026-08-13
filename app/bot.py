@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 from difflib import SequenceMatcher
+import hashlib
 import io
 import logging
 import re
 import secrets
+import tempfile
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -17,6 +19,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 from .chat import understand_russian_message
 from .config import settings
+from .recipient_import import EMAIL_PATTERN, SUPPORTED_RECIPIENT_SUFFIXES, extract_recipient_emails
 
 logging.basicConfig(level=logging.INFO)
 # httpx logs full request URLs at INFO. Telegram embeds the bot token in those
@@ -25,7 +28,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 BASE = (settings.internal_api_url or settings.public_base_url or "http://web:8000").rstrip("/")
 HEADERS = {"X-API-Key": settings.api_key, "X-Actor": "telegram-owner", "X-Role": "owner"}
-EMAIL_PATTERN = re.compile(r"(?<![\w.+-])[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?![\w.-])")
+MAILING_MAX_RECIPIENTS = 1000
+MAILING_BATCH_SIZE = 100
 
 
 def allowed(update: Update) -> bool:
@@ -93,6 +97,8 @@ async def _create_revision_task(update: Update, *, source_path: str = "", filena
 async def proposal_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён.")
+        return
+    if await mailing_document(update, context):
         return
     message = update.effective_message
     document = message.document
@@ -334,9 +340,10 @@ async def outreach_help(update: Update, _: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("← К панели", callback_data="outreach")]])
     await update.effective_message.reply_text(
         "➕ Новая рассылка\n\n"
-        "Если клиенты сами передали email и попросили писать им, отправьте команду:\n"
-        "`/mailing client@example.com second@example.com`\n"
-        "Бот последовательно запросит основание согласия, тему и текст, затем покажет preview.\n\n"
+        "Если клиенты сами передали email и попросили писать им, отправьте команду `/mailing`.\n"
+        "Бот попросит XLSX/XLSM, DOCX или текстовый PDF, локально извлечёт до 1000 уникальных адресов, "
+        "разобьёт их на партии по 100 и последовательно запросит основание согласия, тему и текст, затем покажет preview.\n"
+        "Адреса также можно передать прямо в команде для обратной совместимости.\n\n"
         "Для рассылки документа по базе УК можно прислать PDF, Word, Excel или ODT с подписью «Разошли по базе УК».\n\n"
         "До подтверждения письма не ставятся в очередь. Отписки, suppression, дедупликация и лимиты применяются автоматически.",
         reply_markup=keyboard,
@@ -392,21 +399,27 @@ async def _offer_action_confirmation(update: Update, context: ContextTypes.DEFAU
 
 
 async def _begin_mailing(update: Update, context: ContextTypes.DEFAULT_TYPE, addresses: list[str]):
-    if len(addresses) > 100:
-        await update.effective_message.reply_text("За один черновик можно добавить не более 100 адресов.")
+    if len(addresses) > MAILING_MAX_RECIPIENTS:
+        await update.effective_message.reply_text(
+            f"За один запрос можно добавить не более {MAILING_MAX_RECIPIENTS} уникальных адресов. Разделите исходный файл."
+        )
         return
     context.user_data["mailing_draft"] = {
-        "step": "evidence" if addresses else "recipients",
+        "step": "evidence" if addresses else "document",
         "recipients": addresses,
     }
     if addresses:
+        batch_count = (len(addresses) + MAILING_BATCH_SIZE - 1) // MAILING_BATCH_SIZE
         await update.effective_message.reply_text(
-            f"Получено адресов: {len(addresses)}. Теперь опишите основание согласия: когда и каким способом клиенты передали адреса и попросили получать письма.\n\n"
+            f"Получено адресов: {len(addresses)}. Внутренних партий по {MAILING_BATCH_SIZE}: {batch_count}. "
+            "Теперь опишите основание согласия: когда и каким способом клиенты передали адреса и попросили получать письма.\n\n"
             "Пример: «12 августа 2026 года заказчики передали адреса в договорной переписке и попросили присылать предложения». Для отмены: /cancel"
         )
     else:
         await update.effective_message.reply_text(
-            "Пришлите email-адреса одним сообщением, через пробел или запятую. Максимум 100. Для отмены: /cancel"
+            "Пришлите одним файлом базу получателей: Excel XLSX/XLSM, Word DOCX или текстовый PDF. "
+            f"Бот локально найдёт до {MAILING_MAX_RECIPIENTS} уникальных email и разобьёт их на партии по {MAILING_BATCH_SIZE}. "
+            "Сканированный PDF без текстового слоя не подойдёт. Для отмены: /cancel"
         )
 
 
@@ -415,6 +428,66 @@ async def mailing_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Доступ не разрешён.")
         return
     await _begin_mailing(update, context, _mailing_addresses(" ".join(getattr(context, "args", ()) or ())))
+
+
+async def mailing_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user_data = getattr(context, "user_data", None)
+    draft = user_data.get("mailing_draft") if isinstance(user_data, dict) else None
+    if not isinstance(draft, dict):
+        return False
+    if draft.get("step") != "document":
+        await update.effective_message.reply_text("Файл получен, но сейчас мастер ожидает текстовый ответ. Для отмены: /cancel")
+        return True
+    document = update.effective_message.document
+    filename = _safe_document_filename(document.file_name or "recipients.xlsx")
+    if Path(filename).suffix.lower() not in SUPPORTED_RECIPIENT_SUFFIXES:
+        await update.effective_message.reply_text(
+            "Не могу разобрать этот формат. Пришлите Excel XLSX/XLSM, Word DOCX или PDF с текстовым слоем."
+        )
+        return True
+    if int(document.file_size or 0) > settings.max_attachment_bytes:
+        await update.effective_message.reply_text(
+            f"Файл больше безопасного лимита {settings.max_attachment_bytes // 1_000_000} МБ. Уменьшите его и пришлите повторно."
+        )
+        return True
+    try:
+        with tempfile.TemporaryDirectory(prefix="cleaningai-mailing-") as directory:
+            path = Path(directory) / filename
+            telegram_file = await context.bot.get_file(document.file_id)
+            await telegram_file.download_to_drive(custom_path=str(path))
+            content = path.read_bytes()
+        if not content or len(content) > settings.max_attachment_bytes:
+            raise ValueError("Файл пуст или превышает безопасный лимит")
+        recipients = extract_recipient_emails(filename, content)
+    except (TelegramError, OSError, ValueError) as exc:
+        await update.effective_message.reply_text(
+            f"Не удалось извлечь адреса: {str(exc)[:300]}. Пришлите исправленный XLSX/XLSM, DOCX или текстовый PDF."
+        )
+        return True
+    if not recipients:
+        await update.effective_message.reply_text(
+            "В файле не найдено ни одного корректного email. Проверьте файл; для PDF нужен доступный для выделения текст."
+        )
+        return True
+    if len(recipients) > MAILING_MAX_RECIPIENTS:
+        await update.effective_message.reply_text(
+            f"Найдено {len(recipients)} уникальных адресов — больше лимита {MAILING_MAX_RECIPIENTS} на один запрос. "
+            "Разделите файл; адреса не были добавлены и рассылка не создана."
+        )
+        return True
+    draft.update({
+        "step": "evidence",
+        "recipients": recipients,
+        "source_filename": filename,
+        "source_sha256": hashlib.sha256(content).hexdigest(),
+        "batch_size": MAILING_BATCH_SIZE,
+    })
+    batch_count = (len(recipients) + MAILING_BATCH_SIZE - 1) // MAILING_BATCH_SIZE
+    await update.effective_message.reply_text(
+        f"Из файла найдено {len(recipients)} уникальных email. Будет {batch_count} внутренних партий по максимум {MAILING_BATCH_SIZE}.\n\n"
+        "Теперь опишите, когда и каким способом эти клиенты передали адреса и попросили получать рассылку. Для отмены: /cancel"
+    )
+    return True
 
 
 async def mailing_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -434,17 +507,24 @@ async def mailing_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
         return False
     text = " ".join((update.effective_message.text or "").split()).strip()
     step = draft.get("step")
-    if step == "recipients":
+    if step in {"document", "recipients"}:
         addresses = _mailing_addresses(text)
         if not addresses:
-            await update.effective_message.reply_text("Не нашёл корректных email-адресов. Пришлите их через пробел или запятую либо нажмите /cancel.")
+            await update.effective_message.reply_text(
+                "Сейчас нужен файл получателей: XLSX/XLSM, DOCX или текстовый PDF. "
+                "Для обратной совместимости можно также прислать адреса текстом. Для отмены: /cancel"
+            )
             return True
-        if len(addresses) > 100:
-            await update.effective_message.reply_text("За один черновик можно добавить не более 100 адресов.")
+        if len(addresses) > MAILING_MAX_RECIPIENTS:
+            await update.effective_message.reply_text(
+                f"За один запрос можно добавить не более {MAILING_MAX_RECIPIENTS} уникальных адресов."
+            )
             return True
         draft.update({"recipients": addresses, "step": "evidence"})
+        batch_count = (len(addresses) + MAILING_BATCH_SIZE - 1) // MAILING_BATCH_SIZE
         await update.effective_message.reply_text(
-            f"Получено адресов: {len(addresses)}. Опишите, когда и каким способом клиенты попросили получать рассылку."
+            f"Получено адресов: {len(addresses)}; партий по {MAILING_BATCH_SIZE}: {batch_count}. "
+            "Опишите, когда и каким способом клиенты попросили получать рассылку."
         )
         return True
     if step == "evidence":
@@ -471,12 +551,15 @@ async def mailing_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
         if len(address_preview) > 1200:
             address_preview = address_preview[:1200] + "…"
         body_preview = draft["body"] if len(draft["body"]) <= 1800 else draft["body"][:1800] + "…"
+        batch_count = (len(addresses) + MAILING_BATCH_SIZE - 1) // MAILING_BATCH_SIZE
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Создать на согласование", callback_data="mailing:create"),
             InlineKeyboardButton("❌ Отменить", callback_data="mailing:cancel"),
         ]])
         await update.effective_message.reply_text(
-            f"📨 Preview рассылки\nПолучатели ({len(addresses)}): {address_preview}\n\n"
+            f"📨 Preview рассылки\nПолучатели: {len(addresses)} · партии по {MAILING_BATCH_SIZE}: {batch_count}\n"
+            f"Файл: {draft.get('source_filename', 'адреса введены текстом')}\n"
+            f"Адреса: {address_preview}\n\n"
             f"Тема: {draft['subject']}\n\n{body_preview}\n\n"
             "Адреса и основание согласия будут сохранены только во внутренней базе. Письма пока не отправляются.",
             reply_markup=keyboard,
@@ -496,6 +579,8 @@ async def mailing_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "consent_evidence": draft["consent_evidence"],
         "subject": draft["subject"],
         "body": draft["body"],
+        "source_filename": draft.get("source_filename"),
+        "source_sha256": draft.get("source_sha256"),
     })
     context.user_data.pop("mailing_draft", None)
     approval_id = result.get("approval_id")
@@ -505,7 +590,8 @@ async def mailing_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]]) if approval_id else None
     replay = " Ранее созданный черновик найден повторно; новая копия не создавалась." if result.get("idempotent_replay") else ""
     await update.effective_message.reply_text(
-        f"Защищённый черновик создан как задача #{result['task_id']} для {result['recipient_count']} получателей.{replay}\n"
+        f"Защищённый черновик создан как задача #{result['task_id']} для {result['recipient_count']} получателей "
+        f"в {result.get('batch_count', 1)} партиях по максимум {result.get('batch_size', MAILING_BATCH_SIZE)}.{replay}\n"
         "Адреса имеют зафиксированное владельцем основание согласия. До отдельного одобрения письма не ставятся в очередь.",
         reply_markup=keyboard,
     )

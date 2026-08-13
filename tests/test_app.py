@@ -1893,6 +1893,59 @@ def test_customer_requested_campaign_records_consent_and_requires_exact_owner_ap
     assert len(queued) == 2
 
 
+def test_customer_requested_campaign_queues_up_to_one_thousand_in_hundred_recipient_batches(client, monkeypatch):
+    from app.config import settings
+
+    for field in ("smtp_host", "smtp_username", "smtp_password", "smtp_from_email"):
+        monkeypatch.setattr(settings, field, "")
+    recipients = [f"batch-{index:03d}@example.com" for index in range(205)]
+    payload = {
+        "recipients": recipients,
+        "consent_evidence": "Клиенты передали список адресов владельцу и попросили получать эту рассылку",
+        "subject": "Проверка пакетной очереди 205",
+        "body": "Добрый день! Это проверка защищённой пакетной очереди без реальной отправки.",
+    }
+    result = client.post("/api/outreach/campaigns/customer-requested/draft", json=payload).json()
+    assert result["recipient_count"] == 205
+    assert result["batch_size"] == 100
+    assert result["batch_count"] == 3
+
+    task = next(row for row in client.get("/api/tasks").json() if row["id"] == result["task_id"])
+    assert [len(batch) for batch in task["payload"]["recipient_batches"]] == [100, 100, 5]
+    assert task["status"] == "blocked"
+
+    approved = client.post(
+        f"/api/approvals/{result['approval_id']}/approve",
+        json={"note": "Проверен точный список из 205 адресов, тема и текст"},
+    ).json()
+    assert approved["execution"] == "queued"
+    completed = client.post(f"/api/tasks/{result['task_id']}/run").json()
+    assert completed["status"] == "blocked"
+    assert completed["result"]["status"] == "credentials_required"
+    assert completed["result"]["queued"] == 205
+    assert completed["result"]["waiting_configuration"] == 205
+    assert completed["result"]["batch_size"] == 100
+    assert completed["result"]["batch_count"] == 3
+    assert [row["recipient_count"] for row in completed["result"]["batches"]] == [100, 100, 5]
+
+    at_limit = client.post("/api/outreach/campaigns/customer-requested/draft", json={
+        **payload,
+        "subject": "Проверка предельной пакетной очереди 1000",
+        "recipients": [f"limit-{index:04d}@example.com" for index in range(1000)],
+    })
+    assert at_limit.status_code == 201
+    assert at_limit.json()["recipient_count"] == 1000
+    assert at_limit.json()["batch_count"] == 10
+    limit_task = next(row for row in client.get("/api/tasks").json() if row["id"] == at_limit.json()["task_id"])
+    assert [len(batch) for batch in limit_task["payload"]["recipient_batches"]] == [100] * 10
+
+    too_many = client.post("/api/outreach/campaigns/customer-requested/draft", json={
+        **payload,
+        "recipients": [f"over-{index:04d}@example.com" for index in range(1001)],
+    })
+    assert too_many.status_code == 422
+
+
 def test_telegram_mailing_wizard_keeps_customer_data_out_of_request_analysis(monkeypatch):
     from app import bot
 
@@ -1943,6 +1996,109 @@ def test_telegram_mailing_wizard_keeps_customer_data_out_of_request_analysis(mon
     assert "задача #700" in update.effective_message.replies[-1][0]
     markup = update.effective_message.replies[-1][1]["reply_markup"]
     assert {button.callback_data for button in markup.inline_keyboard[0]} == {"approve:701", "reject:701"}
+
+
+def test_recipient_document_import_extracts_xlsx_docx_and_pdf():
+    from io import BytesIO
+
+    from docx import Document
+    from openpyxl import Workbook
+    from reportlab.pdfgen.canvas import Canvas
+
+    from app.recipient_import import extract_recipient_emails
+
+    workbook = Workbook()
+    sheet = workbook.active
+    for index in range(205):
+        sheet.append([f"Клиент {index}", f"FILE-{index:03d}@example.com"])
+    sheet.append(["Дубликат", "file-001@example.com"])
+    xlsx = BytesIO()
+    workbook.save(xlsx)
+    extracted = extract_recipient_emails("recipients.xlsx", xlsx.getvalue())
+    assert len(extracted) == 205
+    assert extracted[0] == "file-000@example.com"
+
+    document = Document()
+    document.add_paragraph("Первый клиент: word-one@example.com")
+    table = document.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "word-two@example.com"
+    docx = BytesIO()
+    document.save(docx)
+    assert extract_recipient_emails("recipients.docx", docx.getvalue()) == [
+        "word-one@example.com",
+        "word-two@example.com",
+    ]
+
+    pdf = BytesIO()
+    canvas = Canvas(pdf)
+    canvas.drawString(50, 800, "PDF client: pdf-client@example.com")
+    canvas.save()
+    assert extract_recipient_emails("recipients.pdf", pdf.getvalue()) == ["pdf-client@example.com"]
+
+
+def test_telegram_mailing_accepts_recipient_file_and_reports_batches(monkeypatch, tmp_path):
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    from app import bot
+
+    workbook = Workbook()
+    sheet = workbook.active
+    for index in range(205):
+        sheet.append([f"upload-{index:03d}@example.com"])
+    content = BytesIO()
+    workbook.save(content)
+
+    class TelegramFile:
+        async def download_to_drive(self, custom_path):
+            Path(custom_path).write_bytes(content.getvalue())
+
+    class Bot:
+        async def get_file(self, file_id):
+            assert file_id == "recipient-file"
+            return TelegramFile()
+
+    class Document:
+        file_name = "customers.xlsx"
+        file_size = len(content.getvalue())
+        file_id = "recipient-file"
+
+    class Message:
+        text = ""
+        document = Document()
+
+        def __init__(self): self.replies = []
+        async def reply_text(self, value, **kwargs): self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Update:
+        def __init__(self):
+            self.effective_message = Message()
+            self.effective_user = User()
+
+    class Context:
+        def __init__(self):
+            self.args = []
+            self.user_data = {}
+            self.bot = Bot()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    update, context = Update(), Context()
+    asyncio.run(bot.mailing_start(update, context))
+    assert context.user_data["mailing_draft"]["step"] == "document"
+    assert "Excel XLSX/XLSM" in update.effective_message.replies[-1][0]
+
+    asyncio.run(bot.proposal_document(update, context))
+    draft = context.user_data["mailing_draft"]
+    assert draft["step"] == "evidence"
+    assert len(draft["recipients"]) == 205
+    assert draft["source_filename"] == "customers.xlsx"
+    assert len(draft["source_sha256"]) == 64
+    assert draft["batch_size"] == 100
+    assert "3 внутренних партий" in update.effective_message.replies[-1][0]
 
 
 def test_telegram_ambiguous_mailing_confirmation_executes_wizard(monkeypatch):

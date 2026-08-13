@@ -177,9 +177,9 @@ class SalesAgent:
 
             return management_company_outreach_summary(db)
         if payload.get("action") == "execute_bulk_outreach_campaign":
-            from .outreach import queue_campaign
+            from .outreach import queue_campaign_in_batches
 
-            result = queue_campaign(
+            result = queue_campaign_in_batches(
                 db,
                 campaign_key=payload["campaign_key"],
                 recipients=payload["recipients"],
@@ -194,6 +194,7 @@ class SalesAgent:
                 ),
                 attachments=payload.get("attachments") or [],
                 auto_balance_mailboxes=payload.get("auto_balance_mailboxes", True),
+                batch_size=min(100, max(1, int(payload.get("batch_size") or 100))),
             )
             return {
                 **result,
@@ -202,6 +203,7 @@ class SalesAgent:
                 "evidence": [{
                     "type": "outreach_campaign_queued",
                     "queued": result["queued"],
+                    "batch_count": result["batch_count"],
                     "mailbox_distribution": result["mailbox_distribution"],
                 }],
             }

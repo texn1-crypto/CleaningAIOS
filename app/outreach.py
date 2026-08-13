@@ -307,3 +307,77 @@ def queue_campaign(
         "without_verified_consent": len(without_consent),
         "mailbox_distribution": mailbox_distribution,
     }
+
+
+def queue_campaign_in_batches(
+    db: Session,
+    *,
+    campaign_key: str,
+    recipients: list[str],
+    subject: str,
+    body: str,
+    mailbox_id: int | None,
+    template_id: int | None,
+    scheduled_at: datetime | None,
+    attachments: list[dict],
+    auto_balance_mailboxes: bool,
+    batch_size: int = 100,
+) -> dict:
+    """Queue a large approved campaign in bounded deterministic batches."""
+    if batch_size < 1 or batch_size > 100:
+        raise ValueError("Campaign batch size must be between 1 and 100")
+    batches = [recipients[index:index + batch_size] for index in range(0, len(recipients), batch_size)]
+    totals = {
+        "queued": 0,
+        "waiting_configuration": 0,
+        "suppressed": 0,
+        "duplicate": 0,
+        "without_verified_consent": 0,
+    }
+    required_credentials: set[str] = set()
+    mailbox_distribution: dict[str, int] = {}
+    batch_results: list[dict] = []
+    for number, batch in enumerate(batches, start=1):
+        result = queue_campaign(
+            db,
+            campaign_key=campaign_key,
+            recipients=batch,
+            subject=subject,
+            body=body,
+            mailbox_id=mailbox_id,
+            template_id=template_id,
+            scheduled_at=scheduled_at,
+            attachments=attachments,
+            auto_balance_mailboxes=auto_balance_mailboxes,
+        )
+        for key in totals:
+            totals[key] += int(result.get(key) or 0)
+        required_credentials.update(result.get("credentials_required") or [])
+        for key, count in (result.get("mailbox_distribution") or {}).items():
+            mailbox_distribution[key] = mailbox_distribution.get(key, 0) + int(count)
+        batch_results.append({
+            "batch_number": number,
+            "recipient_count": len(batch),
+            "queued": int(result.get("queued") or 0),
+            "waiting_configuration": int(result.get("waiting_configuration") or 0),
+            "suppressed": int(result.get("suppressed") or 0),
+            "duplicate": int(result.get("duplicate") or 0),
+            "without_verified_consent": int(result.get("without_verified_consent") or 0),
+        })
+    queued = totals["queued"]
+    waiting = totals["waiting_configuration"]
+    return {
+        "status": (
+            "credentials_required"
+            if queued and waiting == queued
+            else "queued"
+            if queued
+            else "blocked_no_eligible_recipients"
+        ),
+        **totals,
+        "credentials_required": sorted(required_credentials),
+        "mailbox_distribution": mailbox_distribution,
+        "batch_size": batch_size,
+        "batch_count": len(batches),
+        "batches": batch_results,
+    }
