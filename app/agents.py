@@ -317,7 +317,7 @@ class CEOAgent:
             {"id": x.id, "title": x.title, "agent_type": x.agent_type, "source": "llm_advisory"}
             for x in llm_tasks
         ]
-        return {"business_health": health, "open_tasks": open_tasks, "pending_owner_decisions": pending, "goals": goals, "site_economics": economics, "recommendations": recommendations, "llm_advice": llm_advice, "tasks_created": tasks_created, "evidence": [{"type": "database_snapshot", "tasks": open_tasks, "pending": pending, "failed": failed}, {"type": "llm_advisory", "status": llm_advice.get("status"), "model": llm_advice.get("model")} ]}
+        return {"business_health": health, "open_tasks": open_tasks, "pending_owner_decisions": pending, "goals": goals, "site_economics": economics, "recommendations": recommendations, "llm_advice": llm_advice, "tasks_created": tasks_created, "evidence": [{"type": "database_snapshot", "tasks": open_tasks, "pending": pending, "failed": failed}, {"type": "llm_advisory", "status": llm_advice.get("status"), "provider": llm_advice.get("provider"), "model": llm_advice.get("model")} ]}
 
 
 class MetaBrainAgent:

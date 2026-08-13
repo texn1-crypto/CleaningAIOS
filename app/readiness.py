@@ -32,8 +32,18 @@ def integration_status() -> dict[str, Any]:
         },
         "llm": {
             "status": llm_advisor.configuration_status(),
-            "provider": "openai_compatible_responses",
-            "model": settings.llm_model or None,
+            "provider": "multi_provider_advisory_router",
+            "routing": settings.llm_provider,
+            "providers": {
+                "openai_responses": {
+                    "status": llm_advisor.provider_statuses()["openai_responses"],
+                    "model": settings.llm_model or None,
+                },
+                "anthropic_messages": {
+                    "status": llm_advisor.provider_statuses()["anthropic_messages"],
+                    "model": settings.anthropic_model or None,
+                },
+            },
         },
         "workspace_agent_handoff": {
             "status": workspace_agent_configuration_status(),

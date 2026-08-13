@@ -37,9 +37,15 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-5.6-terra"
+    llm_provider: str = "auto"
     llm_reasoning_effort: str = "low"
     llm_timeout_seconds: int = 60
     llm_max_output_tokens: int = 1200
+    anthropic_api_key: str = ""
+    anthropic_base_url: str = "https://api.anthropic.com"
+    anthropic_model: str = "claude-sonnet-4-6"
+    anthropic_version: str = "2023-06-01"
+    anthropic_timeout_seconds: int = 60
     workspace_agent_trigger_id: str = ""
     workspace_agent_access_token: str = ""
     workspace_agent_timeout_seconds: int = 20

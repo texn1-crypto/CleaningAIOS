@@ -279,7 +279,7 @@ def build_system_self_check(db: Session, *, registered_agents: list[str]) -> dic
         "AI-провайдер настроен."
         if llm_ready
         else "Детерминированные функции работают; расширенный AI-анализ отключён.",
-        credentials=[] if llm_ready else ["LLM_API_KEY"],
+        credentials=[] if llm_ready else ["LLM_API_KEY or ANTHROPIC_API_KEY"],
     )
 
     marketing_credentials = {

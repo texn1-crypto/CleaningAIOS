@@ -36,7 +36,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - Request Analyst Agent that records real capability gaps and prepares a redacted Codex prompt with acceptance criteria and a mandatory test plan;
 - Alembic migration, Docker Compose, CI, tests and rollback guide.
 
-Agents produce operational analysis from the shared database. The core remains deterministic without an LLM. When `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` are configured, AI CEO also requests a structured advisory review and may create only analysis/planning tasks. LLM recommendations that declare an owner decision are not queued, and the policy layer remains authoritative for every protected action. Tender collection similarly reports missing sources instead of inventing results.
+Agents produce operational analysis from the shared database. The core remains deterministic without an LLM. OpenAI Responses and native Claude Messages adapters can be configured independently. In `LLM_PROVIDER=auto`, Claude performs aggregate business synthesis, OpenAI evaluates request/capability gaps, and either can safely fall back to the other. Both receive only the minimum redacted/aggregate context, return schema-validated advisory output, have no application tools and may create only analysis/planning tasks. Recommendations that declare an owner decision are not queued, and the policy layer remains authoritative for every protected action. Tender collection similarly reports missing sources instead of inventing results.
 
 ## Local development
 
@@ -57,7 +57,7 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 - optional `TELEGRAM_BOT_API_BASE_URL` for Telegram documents over 20 MB; without it the bot records a visible `credentials_required` blocker instead of ignoring the file
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` for delivery
 - `UNSUBSCRIBE_SECRET` for independently rotatable signed unsubscribe links (falls back to `API_KEY`)
-- `LLM_API_KEY`; optionally override `LLM_BASE_URL` and `LLM_MODEL` (default: OpenAI Responses API and `gpt-5.6-terra`)
+- `LLM_API_KEY` for OpenAI and/or `ANTHROPIC_API_KEY` for native Claude Messages API; `LLM_PROVIDER=auto` safely routes between them
 - optional `WORKSPACE_AGENT_TRIGGER_ID` and `WORKSPACE_AGENT_ACCESS_TOKEN` for server-side handoff to a published ChatGPT Workspace Agent
 - `TENDER_SOURCES` and per-source credentials/API keys for external tender ingestion
 - `COMPANY_LEGAL_NAME`, `COMPANY_INN`, company contacts/address and `PRIVACY_CONTACT_EMAIL` before enabling the public production lead form

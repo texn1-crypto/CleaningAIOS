@@ -87,11 +87,15 @@ decisions whose outcomes have been recorded.
   `deadline_at`, scoring data and `documents`. `TENDER_SOURCE_TOKEN` supplies an
   optional bearer token. Portal-specific authentication or non-JSON formats still
   require a legal provider adapter. No fabricated tenders are used.
-- `LLM_BASE_URL` targets an OpenAI-compatible Responses API; the default is OpenAI.
-  `LLM_API_KEY` is sent only in the Authorization header, `store=false` is requested,
-  and the response must match the configured JSON schema. The adapter has no tools
-  and cannot perform business actions. Decisions, scoring, approvals and simulations
-  remain deterministic and auditable.
+- The advisory router supports two native contracts. `LLM_BASE_URL` targets the
+  OpenAI Responses API and sends `LLM_API_KEY` only in the Authorization header with
+  `store=false`. `ANTHROPIC_BASE_URL` targets Claude Messages API and sends
+  `ANTHROPIC_API_KEY` only as `x-api-key`, with an explicit `anthropic-version`.
+  Both adapters require JSON-schema structured output and have no application tools.
+  With `LLM_PROVIDER=auto`, Claude is preferred for aggregate business synthesis,
+  OpenAI for product/request capability analysis, and a transient provider failure
+  falls back to the other configured provider. Decisions, scoring, approvals and
+  simulations remain deterministic and auditable.
 - The provider router exposes task-specific, least-privilege scopes. Public content
   may reach image/video providers; CRM personal data, banking credentials and secrets
   are forbidden. Image/video adapter gaps are reported rather than simulated.

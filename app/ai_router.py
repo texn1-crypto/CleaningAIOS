@@ -34,9 +34,18 @@ def provider_catalog() -> list[dict[str, Any]]:
         {
             "capability": "business_reasoning",
             "provider": "openai_compatible_responses",
-            "status": llm_advisor.configuration_status(),
+            "status": llm_advisor.provider_statuses()["openai_responses"],
+            "routing": "request_analysis_primary",
             "scopes": ["aggregate_metrics", "redacted_business_context"],
             "forbidden": ["banking_credentials", "unapproved_commitments"],
+        },
+        {
+            "capability": "business_reasoning",
+            "provider": "anthropic_messages",
+            "status": llm_advisor.provider_statuses()["anthropic_messages"],
+            "routing": "business_review_primary",
+            "scopes": ["aggregate_metrics", "redacted_business_context"],
+            "forbidden": ["raw_personal_data", "banking_credentials", "unapproved_commitments", "application_tools"],
         },
         {
             "capability": "product_improvement",

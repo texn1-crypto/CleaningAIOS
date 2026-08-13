@@ -354,8 +354,15 @@ def test_structured_decision_creates_bound_approval(client):
 def test_integration_status_is_truthful(client):
     status = client.get("/api/integrations").json()
     assert status["tender_sources"]["status"] in {"configured", "source_configuration_required"}
-    assert status["llm"]["status"] in {"configured", "credentials_required", "model_configuration_required"}
-    assert status["llm"]["provider"] == "openai_compatible_responses"
+    assert status["llm"]["status"] in {
+        "configured",
+        "credentials_required",
+        "model_configuration_required",
+        "provider_configuration_required",
+        "version_configuration_required",
+    }
+    assert status["llm"]["provider"] == "multi_provider_advisory_router"
+    assert set(status["llm"]["providers"]) == {"openai_responses", "anthropic_messages"}
 
 
 def test_llm_adapter_uses_structured_responses_contract(monkeypatch):
@@ -393,6 +400,92 @@ def test_llm_adapter_uses_structured_responses_contract(monkeypatch):
     assert captured["payload"]["text"]["format"]["strict"] is True
     assert captured["payload"]["store"] is False
     assert captured["headers"]["Authorization"] == "Bearer test-secret"
+
+
+def test_anthropic_adapter_uses_native_messages_structured_output(monkeypatch):
+    import json
+    from app.config import settings
+    from app import llm
+
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+        def json(self):
+            output = {
+                "summary": "Claude: устойчивое состояние",
+                "risks": [],
+                "data_gaps": ["Нет данных о марже"],
+                "recommendations": [{
+                    "title": "Проверить экономику объекта",
+                    "agent_type": "finance",
+                    "rationale": "Маржа не рассчитана",
+                    "priority": "high",
+                    "needs_owner_decision": False,
+                }],
+            }
+            return {
+                "model": "claude-test",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": json.dumps(output)}],
+                "usage": {"input_tokens": 40, "output_tokens": 20},
+            }
+
+    class Client:
+        def __init__(self, *args, **kwargs): captured["headers"] = kwargs["headers"]
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, url, json): captured.update({"url": url, "payload": json}); return Response()
+
+    monkeypatch.setattr(llm.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "anthropic_api_key", "anthropic-test-secret")
+    monkeypatch.setattr(settings, "anthropic_base_url", "https://api.anthropic.example")
+    monkeypatch.setattr(settings, "anthropic_model", "claude-test")
+    result = llm.AnthropicMessagesAdvisor().review({"business_health": 88})
+    assert result["status"] == "succeeded"
+    assert result["provider"] == "anthropic_messages"
+    assert result["recommendations"][0]["agent_type"] == "finance"
+    assert captured["url"] == "https://api.anthropic.example/v1/messages"
+    assert captured["payload"]["output_config"]["format"]["type"] == "json_schema"
+    portable_schema = captured["payload"]["output_config"]["format"]["schema"]
+    assert "maxItems" not in json.dumps(portable_schema)
+    assert portable_schema["additionalProperties"] is False
+    assert captured["payload"]["system"] == llm.SYSTEM_PROMPT
+    assert captured["headers"]["x-api-key"] == "anthropic-test-secret"
+    assert captured["headers"]["anthropic-version"] == "2023-06-01"
+    assert "Authorization" not in captured["headers"]
+
+
+def test_multi_provider_router_assigns_tasks_and_falls_back(monkeypatch):
+    from app.config import settings
+    from app import llm
+
+    monkeypatch.setattr(settings, "llm_provider", "auto")
+    monkeypatch.setattr(settings, "llm_api_key", "openai-secret")
+    monkeypatch.setattr(settings, "anthropic_api_key", "anthropic-secret")
+    router = llm.LLMAdvisor()
+    monkeypatch.setattr(router.anthropic, "review", lambda snapshot: {
+        "status": "succeeded", "provider": "anthropic_messages", "model": "claude-test", "recommendations": [],
+    })
+    monkeypatch.setattr(router.openai, "analyze_request", lambda *args: {
+        "status": "succeeded", "provider": "openai_responses", "model": "gpt-test", "should_create_improvement": False,
+    })
+    business = router.review({"business_health": 90})
+    request = router.analyze_request("проверь", {"kind": "task"}, {"classification": "capability_gap"})
+    assert business["provider"] == "anthropic_messages"
+    assert business["attempted_providers"] == ["anthropic_messages"]
+    assert request["provider"] == "openai_responses"
+    assert request["attempted_providers"] == ["openai_responses"]
+
+    monkeypatch.setattr(router.anthropic, "review", lambda snapshot: {
+        "status": "unavailable", "provider": "anthropic_messages", "model": "claude-test", "recommendations": [],
+    })
+    monkeypatch.setattr(router.openai, "review", lambda snapshot: {
+        "status": "succeeded", "provider": "openai_responses", "model": "gpt-test", "recommendations": [],
+    })
+    fallback = router.review({"business_health": 90})
+    assert fallback["provider"] == "openai_responses"
+    assert fallback["attempted_providers"] == ["anthropic_messages", "openai_responses"]
 
 
 def test_ai_ceo_falls_back_without_llm_credentials(client, monkeypatch):

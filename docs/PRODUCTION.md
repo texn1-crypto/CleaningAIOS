@@ -81,12 +81,17 @@ Set `UNSUBSCRIBE_SECRET` to a separate random value to sign unsubscribe links. I
 is omitted, `API_KEY` is used as the signing secret. Changing the effective secret
 invalidates links that have already been sent.
 
-Set `LLM_API_KEY` to enable the advisory AI CEO review. The defaults use
-`https://api.openai.com/v1`, model `gpt-5.6-terra`, low reasoning effort and
-`store=false`; override `LLM_BASE_URL`, `LLM_MODEL`, `LLM_REASONING_EFFORT`,
-`LLM_TIMEOUT_SECONDS` or `LLM_MAX_OUTPUT_TOKENS` when needed. Production rejects an
-unencrypted HTTP LLM endpoint. The application works deterministically when the key
-is absent or the provider is unavailable.
+Set `LLM_API_KEY` for OpenAI and/or `ANTHROPIC_API_KEY` for Claude. The default
+`LLM_PROVIDER=auto` assigns aggregate CEO/business synthesis to Claude, request and
+product capability analysis to OpenAI, and falls back to the other configured
+provider on a transient provider error. Pin `LLM_PROVIDER=openai` or `anthropic` if
+needed. OpenAI defaults to `https://api.openai.com/v1` and `gpt-5.6-terra`; Claude
+uses the native `https://api.anthropic.com/v1/messages` contract and defaults to
+`claude-sonnet-4-6`. Override the corresponding base URL, model and timeout settings
+only for a reviewed provider or gateway. Production rejects unencrypted HTTP
+endpoints. Neither provider receives tools, secrets, banking credentials or authority
+to execute protected actions. The application remains deterministic when both keys
+are absent or providers are unavailable.
 
 Optionally set `WORKSPACE_AGENT_TRIGGER_ID` and `WORKSPACE_AGENT_ACCESS_TOKEN`
 to hand capability gaps to a published ChatGPT Workspace Agent API channel. Without
