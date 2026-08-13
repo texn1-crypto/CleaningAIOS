@@ -317,6 +317,56 @@ async def dashboard(update: Update, _: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(f"🏢 Здоровье: {data['company_health']}%\n🧾 Открытые задачи: {data['open_tasks']}\n✅ Решения: {data['pending_decisions']}\n🔐 Подтверждения: {data['pending_approvals']}\n⚠️ Ошибки: {data['failed_tasks']}")
 
 
+def format_ceo_brief(data: dict) -> str:
+    facts = data.get("facts") or {}
+    task_facts = facts.get("tasks") or {}
+    approval_facts = facts.get("approvals") or {}
+    alert_facts = facts.get("critical_alerts") or {}
+    finance = facts.get("finance") or {}
+    recommendations = data.get("recommendations") or []
+    lines = [
+        "🤖 AI CEO · Brief",
+        f"Актуально на: {data.get('generated_at')}",
+        "",
+        "ФАКТЫ ИЗ БД",
+        (
+            f"• Задачи: active {task_facts.get('active', 0)}, "
+            f"failed {task_facts.get('failed', 0)}, blocked {task_facts.get('blocked', 0)}"
+        ),
+        f"  source task IDs: {(task_facts.get('failed_ids') or []) + (task_facts.get('blocked_ids') or [])}",
+        f"• Ожидают owner approval: {approval_facts.get('pending', 0)} · IDs {approval_facts.get('ids') or []}",
+        (
+            f"• Неподтверждённые alerts: {alert_facts.get('unacknowledged', 0)} "
+            f"· dead-letter {alert_facts.get('dead_letter', 0)} · IDs {alert_facts.get('ids') or []}"
+        ),
+        (
+            f"• Просроченные платежи: {finance.get('overdue_payments', 0)} "
+            f"на {finance.get('overdue_amount', 0)} ₽ · IDs {finance.get('payment_ids') or []}"
+        ),
+        "",
+        "РЕКОМЕНДАЦИИ (НЕ ВЫПОЛНЕНЫ)",
+    ]
+    lines.extend(
+        f"• [{item.get('priority', 'normal')}] {item.get('text')} · source IDs {item.get('source_ids') or []}"
+        for item in recommendations
+    )
+    if not recommendations:
+        lines.append("• Срочных рекомендаций по текущему snapshot нет.")
+    lines.append("\nКритические действия автоматически не выполнялись.")
+    return "\n".join(lines)
+
+
+async def ceo_brief(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    data = await api("GET", "/api/ceo/brief")
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Обновить brief", callback_data="ceo:refresh")],
+        [InlineKeyboardButton("🧾 Создать задачу на разбор", callback_data="ceo:create_review_task")],
+    ])
+    await update.effective_message.reply_text(
+        format_ceo_brief(data), reply_markup=keyboard
+    )
+
+
 async def tasks(update: Update, _: ContextTypes.DEFAULT_TYPE):
     rows = await api("GET", "/api/tasks")
     text = "🧾 Задачи:\n" + "\n".join(f"#{x['id']} [{x['agent_type']}] {x['title']} — {x['status']}" for x in rows[:20]) if rows else "Задач пока нет."
@@ -1159,7 +1209,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "owner"
         if q.data == "approvals"
         else "manager"
-        if q.data in {"ceo", "meta_brain", "simulator", "marketing_invoices", "improvements"}
+        if q.data in {"meta_brain", "simulator", "marketing_invoices", "improvements"}
+        or q.data == "ceo"
+        or q.data.startswith("ceo:")
         else "operator"
         if q.data.startswith("intent:") or q.data.startswith("mailing:")
         else "viewer"
@@ -1185,7 +1237,24 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(f"🧪 Сценарий +10% к фонду оплаты\nТекущая прибыль: {data['current']['profit']} ₽\nБазовый прогноз: {data['base']['profit']} ₽\nОптимистичный: {data['optimistic']['profit']} ₽")
         elif q.data == "mailing:create": await mailing_create(update, context)
         elif q.data == "mailing:cancel": await mailing_cancel(update, context)
-        elif q.data in {"ceo", "meta_brain"}:
+        elif q.data in {"ceo", "ceo:refresh"}:
+            await ceo_brief(update, context)
+        elif q.data == "ceo:create_review_task":
+            data = await api("POST", "/api/tasks", json={
+                "title": "AI CEO · Разобрать текущий brief и назначить следующие безопасные действия",
+                "agent_type": "ceo",
+                "priority": "high",
+                "payload": {
+                    "action": "ceo_brief_review",
+                    "source": "telegram_control_center",
+                    "automatic_critical_action": False,
+                },
+                "max_attempts": 1,
+            })
+            await update.effective_message.reply_text(
+                f"Создана аналитическая задача #{data['id']}. Критические действия не запускались."
+            )
+        elif q.data == "meta_brain":
             data = await api("POST", "/api/tasks", json={"title": f"{q.data} on-demand review", "agent_type": q.data})
             await update.effective_message.reply_text(f"Задача #{data['id']} поставлена агенту {q.data}.")
         elif q.data == "agents": await dashboard(update, context)
@@ -1212,6 +1281,7 @@ def build_application() -> Application:
     commands = [
         ("start", start, "viewer"),
         ("dashboard", dashboard, "viewer"),
+        ("ceo", ceo_brief, "manager"),
         ("tasks", tasks, "viewer"),
         ("decisions", decisions, "viewer"),
         ("outreach", outreach_dashboard, "viewer"),

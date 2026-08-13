@@ -19,6 +19,7 @@ from .integrations import collect_tenders, download_tender_document
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
 from .operations import business_graph, create_ceo_actions, entity_view, goal_progress, parse_lead_import, score_tender, simulate_site, site_economics, validate_entity
+from .reports import build_ceo_brief
 from .orchestrator import audit, dispatch
 from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, verified_recipients
 from .platform import approval_engine, event_bus
@@ -480,6 +481,12 @@ def ceo_review(db: Session = Depends(get_db), actor: Principal = Depends(princip
     audit(db, actor.subject, "ceo.review_completed", "company", "1", {"tasks_created": len(tasks)})
     db.commit()
     return {"tasks_created": [{"id": x.id, "title": x.title, "agent_type": x.agent_type} for x in tasks]}
+
+
+@router.get("/ceo/brief")
+def ceo_brief(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    return build_ceo_brief(db)
 
 
 @router.post("/structured-decisions", status_code=201)

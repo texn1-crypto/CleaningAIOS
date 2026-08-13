@@ -98,6 +98,13 @@ advisory and require the owner's normal approval path. LLM failures fall back to
 deterministic review. Meta Brain measures telemetry gaps and the success rate of
 decisions whose outcomes have been recorded.
 
+`GET /api/ceo/brief` is a read-only primary-database snapshot with one freshness
+timestamp and explicit source endpoints/record IDs. Facts and deterministic
+recommendations are separate fields; facts are never attributed to an LLM. Telegram
+renders the same response. Its only write option creates a normal analytical CEO
+task through the shared Tasks API, and the payload explicitly forbids an automatic
+critical action.
+
 ## External integrations
 
 - Telegram polling starts only when bot token and owner ID are provided. The bot

@@ -67,3 +67,6 @@ is intentionally not created.
 - Event-driven alerts: a dedicated outbox consumer creates deduplicated correlated
   high/critical notifications; delivery has retry/backoff/dead-letter handling,
   signed acknowledgement, audit and metrics.
+- CEO Brief: a read-only shared service returns fresh source-linked database facts
+  separately from recommendations; Telegram can refresh it or create a safe analysis
+  task, never execute the recommendation directly.

@@ -6,7 +6,18 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from .models import AgentRun, AgentState, ApprovalRequest, DomainEvent, ImprovementRequest, Task
+from .models import (
+    AgentRun,
+    AgentState,
+    ApprovalRequest,
+    BusinessGoal,
+    BusinessRecord,
+    DomainEvent,
+    ImprovementRequest,
+    OwnerNotification,
+    Task,
+)
+from .operations import goal_progress
 from .readiness import integration_status
 from .growth import growth_snapshot
 
@@ -17,6 +28,146 @@ def _utcnow() -> datetime:
 
 def _count(db: Session, model: type, *criteria: Any) -> int:
     return int(db.scalar(select(func.count()).select_from(model).where(*criteria)) or 0)
+
+
+def build_ceo_brief(db: Session) -> dict[str, Any]:
+    """Build a read-only, source-linked brief without using an LLM as a fact source."""
+    generated_at = _utcnow()
+    active_tasks = db.scalars(
+        select(Task)
+        .where(Task.status.in_(["open", "queued", "running"]))
+        .order_by(Task.priority.desc(), Task.id.desc())
+        .limit(20)
+    ).all()
+    failed_tasks = db.scalars(
+        select(Task).where(Task.status == "failed").order_by(Task.id.desc()).limit(20)
+    ).all()
+    blocked_tasks = db.scalars(
+        select(Task).where(Task.status == "blocked").order_by(Task.id.desc()).limit(20)
+    ).all()
+    approvals = db.scalars(
+        select(ApprovalRequest)
+        .where(ApprovalRequest.status == "pending")
+        .order_by(ApprovalRequest.id.desc())
+        .limit(20)
+    ).all()
+    alerts = db.scalars(
+        select(OwnerNotification)
+        .where(
+            OwnerNotification.severity.in_(["high", "critical"]),
+            OwnerNotification.acknowledged_at.is_(None),
+        )
+        .order_by(OwnerNotification.id.desc())
+        .limit(20)
+    ).all()
+    goals = db.scalars(
+        select(BusinessGoal)
+        .where(BusinessGoal.status == "active")
+        .order_by(BusinessGoal.id.desc())
+        .limit(20)
+    ).all()
+    overdue_payments = db.scalars(
+        select(BusinessRecord)
+        .where(
+            BusinessRecord.record_type == "payment",
+            BusinessRecord.status == "overdue",
+        )
+        .order_by(BusinessRecord.id.desc())
+        .limit(20)
+    ).all()
+
+    facts = {
+        "tasks": {
+            "active": len(active_tasks),
+            "failed": len(failed_tasks),
+            "blocked": len(blocked_tasks),
+            "active_ids": [row.id for row in active_tasks],
+            "failed_ids": [row.id for row in failed_tasks],
+            "blocked_ids": [row.id for row in blocked_tasks],
+        },
+        "approvals": {
+            "pending": len(approvals),
+            "ids": [row.id for row in approvals],
+        },
+        "critical_alerts": {
+            "unacknowledged": len(alerts),
+            "ids": [row.id for row in alerts],
+            "dead_letter": _count(
+                db, OwnerNotification, OwnerNotification.status == "dead_letter"
+            ),
+        },
+        "goals": {
+            "active": len(goals),
+            "items": [
+                {
+                    "id": row.id,
+                    "title": row.title,
+                    "progress_percent": goal_progress(row)["progress_percent"],
+                }
+                for row in goals
+            ],
+        },
+        "finance": {
+            "overdue_payments": len(overdue_payments),
+            "payment_ids": [row.id for row in overdue_payments],
+            "overdue_amount": round(
+                sum(float((row.data or {}).get("amount", 0) or 0) for row in overdue_payments),
+                2,
+            ),
+        },
+    }
+    recommendations: list[dict[str, Any]] = []
+    if failed_tasks or blocked_tasks:
+        recommendations.append(
+            {
+                "kind": "create_review_task",
+                "priority": "high",
+                "text": "Разобрать failed/blocked задачи и назначить ответственных.",
+                "source_ids": [row.id for row in (failed_tasks + blocked_tasks)],
+            }
+        )
+    if approvals:
+        recommendations.append(
+            {
+                "kind": "review_approvals",
+                "priority": "critical",
+                "text": "Проверить ожидающие решения; никаких действий без owner approval.",
+                "source_ids": [row.id for row in approvals],
+            }
+        )
+    if alerts:
+        recommendations.append(
+            {
+                "kind": "acknowledge_alerts",
+                "priority": "critical",
+                "text": "Проверить и подтвердить получение критических оповещений.",
+                "source_ids": [row.id for row in alerts],
+            }
+        )
+    if overdue_payments:
+        recommendations.append(
+            {
+                "kind": "create_review_task",
+                "priority": "high",
+                "text": "Создать безопасную задачу Finance на разбор просроченной дебиторки.",
+                "source_ids": [row.id for row in overdue_payments],
+            }
+        )
+    return {
+        "generated_at": generated_at.isoformat(),
+        "freshness": {"as_of": generated_at.isoformat(), "source": "primary_database"},
+        "facts": facts,
+        "recommendations": recommendations,
+        "sources": [
+            {"resource": "tasks", "endpoint": "/api/tasks"},
+            {"resource": "approvals", "endpoint": "/api/approvals"},
+            {"resource": "alerts", "endpoint": "/api/owner-notifications"},
+            {"resource": "goals", "endpoint": "/api/goals"},
+            {"resource": "payments", "endpoint": "/api/finance/payment-calendar"},
+        ],
+        "ai_generated_facts": False,
+        "automatic_critical_action": False,
+    }
 
 
 def build_activity_report(
