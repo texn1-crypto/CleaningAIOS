@@ -702,7 +702,7 @@ def test_worker_sends_real_attachment(client, monkeypatch):
         def send_message(self, message): sent.append(message)
 
     monkeypatch.setattr(worker.smtplib, "SMTP", SMTP)
-    for field, value in {"smtp_host": "smtp.example", "smtp_username": "user", "smtp_password": "secret", "smtp_from_email": "sender@example.com"}.items(): monkeypatch.setattr(settings, field, value)
+    for field, value in {"smtp_host": "smtp.example", "smtp_port": 587, "smtp_username": "user", "smtp_password": "secret", "smtp_from_email": "sender@example.com"}.items(): monkeypatch.setattr(settings, field, value)
     with SessionLocal() as db:
         db.execute(update(OutboundMessage).where(OutboundMessage.status.in_(["queued", "waiting_configuration"])).values(status="sent"))
         row = OutboundMessage(campaign_key="attachment-test", recipient="attach@example.com", subject="Документ", body="Смотрите вложение", attachments=[{"filename": "offer.txt", "content_type": "text/plain", "content_base64": base64.b64encode(b"offer").decode()}])
