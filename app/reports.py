@@ -49,6 +49,12 @@ def build_activity_report(
         .order_by(Task.updated_at.desc(), Task.id.desc())
     ).all()
     recent_completed = [row for row in completed if row.agent_type != "request_analyst"][:5]
+    upcoming = db.scalars(
+        select(Task)
+        .where(Task.status.in_(["open", "queued"]))
+        .order_by(Task.run_after, Task.id)
+        .limit(5)
+    ).all()
 
     active_total = _count(db, Task, Task.status.in_(["open", "queued", "running"]))
     summary = {
@@ -122,6 +128,16 @@ def build_activity_report(
             }
             for row in recent_completed
         ],
+        "upcoming_tasks": [
+            {
+                "id": row.id,
+                "title": row.title,
+                "agent_type": row.agent_type,
+                "run_after": row.run_after.isoformat(),
+            }
+            for row in upcoming
+            if (row.payload or {}).get("action") != "system_activity_report"
+        ],
         "agent_statuses": agent_statuses,
         "blockers": blockers,
         "evidence": [
@@ -155,6 +171,10 @@ def format_activity_report(result: dict[str, Any]) -> str:
     if recent:
         lines.append("\nПоследние результаты:")
         lines.extend(f"• #{row['id']} [{row['agent_type']}] {row['title']}" for row in recent[:5])
+    upcoming = result.get("upcoming_tasks") or []
+    if upcoming:
+        lines.append("\nЗапланировано AI CEO:")
+        lines.extend(f"• #{row['id']} [{row['agent_type']}] {row['title']}" for row in upcoming[:5])
     blockers = result.get("blockers") or []
     lines.append("\nТребуют внимания: " + ("; ".join(blockers) if blockers else "нет."))
     return "\n".join(lines)

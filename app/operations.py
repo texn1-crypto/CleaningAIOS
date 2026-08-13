@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
@@ -131,6 +131,75 @@ def create_ceo_actions(db: Session) -> list[Task]:
     for task in unique:
         record_task_created(db, task, actor="ceo", reason="deterministic_ceo_action")
     return unique
+
+
+CEO_DEVELOPMENT_BACKLOG = (
+    {
+        "title": "CEO · Развитие сайта: аудит конверсии и контента",
+        "agent_type": "marketing",
+        "action": "website_growth_review",
+        "scope": "website",
+    },
+    {
+        "title": "CEO · Продажи: анализ воронки и следующих действий",
+        "agent_type": "sales",
+        "action": "sales_pipeline_review",
+        "scope": "sales",
+    },
+    {
+        "title": "CEO · Реклама: анализ каналов и маркетинговых гипотез",
+        "agent_type": "marketing",
+        "action": "marketing_channel_review",
+        "scope": "marketing",
+    },
+    {
+        "title": "CEO · Система: анализ качества агентов и процессов",
+        "agent_type": "meta_brain",
+        "action": "agent_quality_review",
+        "scope": "system",
+    },
+)
+
+
+def maintain_ceo_development_backlog(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    cadence_hours: int = 24,
+) -> list[Task]:
+    """Keep a safe, finite and recurring CEO development backlog."""
+    current_time = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    cadence = max(1, min(int(cadence_hours), 7 * 24))
+    created: list[Task] = []
+    for template in CEO_DEVELOPMENT_BACKLOG:
+        latest = db.scalar(
+            select(Task).where(Task.title == template["title"]).order_by(Task.id.desc())
+        )
+        if latest and latest.status in {"open", "queued", "running", "blocked", "failed"}:
+            continue
+        run_after = current_time
+        if latest:
+            run_after = max(current_time, latest.run_after + timedelta(hours=cadence))
+        task = Task(
+            title=template["title"],
+            agent_type=template["agent_type"],
+            status="queued",
+            priority="normal",
+            run_after=run_after,
+            max_attempts=3,
+            payload={
+                "action": template["action"],
+                "scope": template["scope"],
+                "origin": "ceo_continuous_backlog",
+                "advisory_only": True,
+                "external_actions_require_owner_approval": True,
+            },
+        )
+        db.add(task)
+        db.flush()
+        record_task_created(db, task, actor="ceo", reason="recurring_development_backlog")
+        created.append(task)
+    return created
 
 
 def parse_lead_import(filename: str, content: bytes) -> list[dict[str, Any]]:

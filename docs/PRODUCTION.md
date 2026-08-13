@@ -54,6 +54,11 @@ the report from PostgreSQL and the worker delivers it through the persisted owne
 notification queue. Set a value from 5 to 1440 minutes; delivery requires
 `TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID`.
 
+`CEO_DEVELOPMENT_CADENCE_HOURS=24` keeps a finite, deduplicated backlog for
+website growth, sales, marketing channels and system quality. These recurring
+tasks only analyse data and prepare recommendations. Publication, outreach,
+spending and contractual actions still require the existing owner approvals.
+
 Telegram's cloud Bot API cannot download files larger than 20 MB. For larger
 commercial-proposal attachments, operate the official local Bot API server
 separately, provide `api_id` and `api_hash` only to that server, expose it on the

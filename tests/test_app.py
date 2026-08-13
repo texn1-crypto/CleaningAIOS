@@ -1041,15 +1041,75 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
     scheduler.schedule_cycle()
 
     with session_factory() as db:
+        all_tasks = db.scalars(select(Task)).all()
         reports = db.scalars(
             select(Task).where(Task.title.like("Регулярный отчёт владельцу · %"))
         ).all()
+        development = [
+            row for row in all_tasks if row.payload.get("origin") == "ceo_continuous_backlog"
+        ]
         assert len(reports) == 1
+        assert len(development) == 4
+        assert {row.payload["scope"] for row in development} == {
+            "website",
+            "sales",
+            "marketing",
+            "system",
+        }
         assert reports[0].payload["period_minutes"] == 30
         assert reports[0].payload["notify_owner"] is True
         assert reports[0].payload["notification_idempotency_key"].startswith(
             "owner-activity-report:"
         )
+
+
+def test_ceo_keeps_safe_deduplicated_development_backlog():
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.db import Base
+    from app.models import Task
+    from app.operations import maintain_ceo_development_backlog
+    from app.task_state import transition_task
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    now = datetime(2026, 8, 13, 0, 0)
+
+    with session_factory() as db:
+        first = maintain_ceo_development_backlog(db, now=now, cadence_hours=24)
+        duplicate = maintain_ceo_development_backlog(db, now=now, cadence_hours=24)
+        db.commit()
+
+        assert len(first) == 4
+        assert duplicate == []
+        assert {row.payload["scope"] for row in first} == {
+            "website",
+            "sales",
+            "marketing",
+            "system",
+        }
+        assert all(row.payload["advisory_only"] is True for row in first)
+        assert all(row.payload["external_actions_require_owner_approval"] is True for row in first)
+
+        for row in first:
+            transition_task(db, row, "running", actor=row.agent_type, reason="test_execution")
+            transition_task(db, row, "done", actor="orchestrator", reason="test_completed")
+        second = maintain_ceo_development_backlog(db, now=now, cadence_hours=24)
+        db.commit()
+
+        assert len(second) == 4
+        assert all(row.status == "queued" for row in second)
+        assert all(row.run_after == now + timedelta(hours=24) for row in second)
+        assert len(db.scalars(select(Task)).all()) == 8
 
 
 def test_russian_chat_routes_business_requests_to_agents():

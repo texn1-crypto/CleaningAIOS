@@ -7,6 +7,7 @@ from sqlalchemy import select
 from .config import settings
 from .db import SessionLocal
 from .models import BusinessRecord, OperatingEntity, Task
+from .operations import maintain_ceo_development_backlog
 from .platform import event_bus
 from .task_state import record_task_created
 
@@ -25,6 +26,11 @@ def owner_report_window(now: datetime, interval_minutes: int) -> datetime:
 def schedule_cycle() -> None:
     with SessionLocal() as db:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+        maintain_ceo_development_backlog(
+            db,
+            now=now,
+            cadence_hours=settings.ceo_development_cadence_hours,
+        )
         report_interval = max(5, min(settings.owner_activity_report_interval_minutes, 24 * 60))
         report_window = owner_report_window(now, report_interval)
         report_key = f"owner-activity-report:{report_window.isoformat()}"

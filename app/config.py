@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     scheduler_interval_seconds: int = 60
     ceo_review_interval_hours: int = 24
     owner_activity_report_interval_minutes: int = 30
+    ceo_development_cadence_hours: int = 24
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
