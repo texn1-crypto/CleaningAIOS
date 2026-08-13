@@ -65,6 +65,7 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 - per-mailbox `SMTP_*` and `IMAP_*` environment secrets for outreach and inbound replies; secrets are referenced by name from `SenderMailbox` and are never returned by the API
 - social administrator credentials listed in `.env.example`; Telegram and VK publish only after exact owner approval, while Odnoklassniki remains `adapter_required` and Instagram remains manual/legal-review only
 - `IMAGE_GENERATION_API_KEY` plus the explicit `SOCIAL_IMAGE_GENERATION_ENABLED=true` owner switch for paid social-image generation; the default is disabled
+- without a paid image key the worker uses the repository's original cleaning-photo pool, still checksum-binds every selected file to the owner preview
 
 See [production deployment](docs/PRODUCTION.md) and [baseline failures](docs/BASELINE.md).
 
@@ -210,7 +211,9 @@ Scheduler ежедневно создаёт задачу Cleaning News Agent. А
 Одноклассников и Instagram. Для двух сюжетов создаются оригинальные визуалы через
 официальный Images API; платная генерация запускается только при одновременном наличии
 ключа и явного `SOCIAL_IMAGE_GENERATION_ENABLED=true`. После технической проверки
-файла и checksum бот отправляет владельцу Telegram-альбом для визуального решения:
+файла и checksum бот отправляет владельцу Telegram-альбом для визуального решения.
+Если платный ключ отсутствует, используется собственная библиотека клининговых
+фотографий проекта; происхождение выбранного файла сохраняется в metadata:
 каждый кадр содержит финальное изображение, точный текст, площадку и время. Approval
 привязан к SHA-256 и неизменяемому digest всего набора; любая правка текста, времени
 или изображения после просмотра отклоняет решение и требует нового preview. Одобрение

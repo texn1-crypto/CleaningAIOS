@@ -364,9 +364,7 @@ def social_summary(db: Session = Depends(get_db), actor: Principal = Depends(pri
             "images": (
                 "ready"
                 if settings.social_image_generation_enabled and settings.image_generation_api_key
-                else "owner_enablement_required"
-                if settings.image_generation_api_key
-                else "credentials_required"
+                else "local_media_pool_ready"
             ),
         },
         "latest_batches": [

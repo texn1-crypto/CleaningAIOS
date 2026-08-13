@@ -17,6 +17,16 @@ from .platform import event_bus
 from .social_marketing import finalize_social_preview_batch
 
 
+LOCAL_SOCIAL_MEDIA_POOL = (
+    "services/business-center-lobby-v1.jpg",
+    "services/residential-lobby-v1.jpg",
+    "services/warehouse-machine-v1.jpg",
+    "services/facade-territory-v1.jpg",
+    "social/2026-08-13-business-center.png",
+    "social/2026-08-13-checklist-quality.png",
+)
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -41,10 +51,52 @@ def _image_extension(raw: bytes) -> str:
     raise ValueError("Image provider returned an unsupported file type")
 
 
+def _store_verified_image(asset: MediaAsset, raw: bytes, *, provider: str, metadata: dict) -> None:
+    if not raw or len(raw) > settings.max_attachment_bytes:
+        raise ValueError("Generated image is empty or exceeds the configured size limit")
+    extension = _image_extension(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    root = Path(settings.document_storage_path).resolve()
+    directory = root / "social-media"
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / f"{asset.id}-{digest[:16]}.{extension}"
+    temporary = directory / f".{asset.id}-{digest[:16]}.tmp"
+    temporary.write_bytes(raw)
+    temporary.replace(destination)
+    asset.provider = provider
+    asset.storage_path = str(destination)
+    asset.public_url = f"/api/public/social-media/{asset.id}/{digest}.{extension}"
+    asset.status = "ready"
+    asset.metadata_json = {
+        **metadata,
+        "sha256": digest,
+        "generation_verified": True,
+        "generation_status": "ready_for_owner_preview",
+        "generated_at": now_utc().isoformat(),
+    }
+
+
+def _use_local_media_pool(asset: MediaAsset, metadata: dict) -> None:
+    slot = int(metadata.get("slot") or 1)
+    batch_id = int(metadata.get("batch_id") or 0)
+    relative_path = LOCAL_SOCIAL_MEDIA_POOL[(batch_id + slot - 1) % len(LOCAL_SOCIAL_MEDIA_POOL)]
+    source = (Path(__file__).resolve().parent / "static" / relative_path).resolve()
+    raw = source.read_bytes()
+    _store_verified_image(asset, raw, provider="local_media_pool", metadata={
+        **metadata,
+        "media_pool_source": relative_path,
+        "rights_basis": "original_project_asset",
+        "model": None,
+    })
+
+
 def generate_next_social_visual(db: Session) -> bool:
     asset = db.scalar(
         select(MediaAsset)
-        .where(MediaAsset.provider == "openai_images", MediaAsset.status == "queued")
+        .where(
+            MediaAsset.provider.in_(["openai_images", "local_media_pool"]),
+            MediaAsset.status.in_(["queued", "credentials_required"]),
+        )
         .order_by(MediaAsset.id)
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -52,14 +104,26 @@ def generate_next_social_visual(db: Session) -> bool:
     if asset is None:
         return False
     metadata = dict(asset.metadata_json or {})
-    if not settings.social_image_generation_enabled:
-        asset.status = "credentials_required"
-        asset.metadata_json = {**metadata, "generation_status": "owner_enablement_required"}
-        db.commit()
-        return True
-    if not settings.image_generation_api_key:
-        asset.status = "credentials_required"
-        asset.metadata_json = {**metadata, "generation_status": "api_key_required"}
+    if asset.provider == "local_media_pool" or not (
+        settings.social_image_generation_enabled and settings.image_generation_api_key
+    ):
+        try:
+            _use_local_media_pool(asset, metadata)
+            batch_id = int(metadata.get("batch_id") or 0)
+            if batch_id:
+                finalize_social_preview_batch(db, batch_id)
+            event_bus.publish(
+                db,
+                "marketing.social_visual_generated",
+                "media_asset",
+                str(asset.id),
+                {"batch_id": batch_id, "provider": "local_media_pool", "sha256": asset.metadata_json["sha256"]},
+                idempotency_key=f"social-visual-generated:{asset.id}:{asset.metadata_json['sha256']}",
+            )
+            audit(db, "social_image_agent", "marketing.social_visual_generated", "media_asset", str(asset.id), {"provider": "local_media_pool", "sha256": asset.metadata_json["sha256"]})
+        except (OSError, ValueError) as exc:
+            asset.status = "generation_failed"
+            asset.metadata_json = {**metadata, "generation_status": "generation_failed", "error_type": type(exc).__name__}
         db.commit()
         return True
 
@@ -83,28 +147,11 @@ def generate_next_social_visual(db: Session) -> bool:
             response.raise_for_status()
         encoded = str(response.json()["data"][0]["b64_json"])
         raw = base64.b64decode(encoded, validate=True)
-        if not raw or len(raw) > settings.max_attachment_bytes:
-            raise ValueError("Generated image is empty or exceeds the configured size limit")
-        extension = _image_extension(raw)
-        digest = hashlib.sha256(raw).hexdigest()
-        root = Path(settings.document_storage_path).resolve()
-        directory = root / "social-media"
-        directory.mkdir(parents=True, exist_ok=True)
-        destination = directory / f"{asset.id}-{digest[:16]}.{extension}"
-        temporary = directory / f".{asset.id}-{digest[:16]}.tmp"
-        temporary.write_bytes(raw)
-        temporary.replace(destination)
-        asset.storage_path = str(destination)
-        asset.public_url = f"/api/public/social-media/{asset.id}/{digest}.{extension}"
-        asset.status = "ready"
-        asset.metadata_json = {
+        _store_verified_image(asset, raw, provider="openai_images", metadata={
             **metadata,
-            "sha256": digest,
-            "generation_verified": True,
-            "generation_status": "ready_for_owner_preview",
-            "generated_at": now_utc().isoformat(),
             "model": settings.image_generation_model,
-        }
+        })
+        digest = str(asset.metadata_json["sha256"])
         batch_id = int(metadata.get("batch_id") or 0)
         if batch_id:
             finalize_social_preview_batch(db, batch_id)

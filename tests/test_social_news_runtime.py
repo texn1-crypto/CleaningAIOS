@@ -91,17 +91,22 @@ def test_image_agent_generates_checksum_bound_public_asset(client, monkeypatch, 
     assert response.content == raw
 
 
-def test_image_agent_requires_explicit_owner_enablement(client, monkeypatch):
+def test_image_agent_uses_original_local_photo_pool_without_paid_key(client, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "social_image_generation_enabled", False)
-    monkeypatch.setattr(settings, "image_generation_api_key", "present-but-disabled")
+    monkeypatch.setattr(settings, "image_generation_api_key", "")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
     with SessionLocal() as db:
         db.execute(update(MediaAsset).where(MediaAsset.provider == "openai_images", MediaAsset.status == "queued").values(status="test_skipped"))
         asset = MediaAsset(kind="image", title="Disabled", provider="openai_images", prompt="Prompt", status="queued", metadata_json={})
         db.add(asset); db.commit()
         assert generate_next_social_visual(db) is True
         db.refresh(asset)
-        assert asset.status == "credentials_required"
-        assert asset.metadata_json["generation_status"] == "owner_enablement_required"
+        assert asset.status == "ready"
+        assert asset.provider == "local_media_pool"
+        assert asset.metadata_json["generation_status"] == "ready_for_owner_preview"
+        assert asset.metadata_json["rights_basis"] == "original_project_asset"
+        assert len(asset.metadata_json["sha256"]) == 64
+        assert client.get(asset.public_url).status_code == 200
 
 
 def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeypatch):
