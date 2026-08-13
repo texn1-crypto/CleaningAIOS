@@ -13,6 +13,7 @@ from .platform import approval_engine, event_bus
 
 
 SOCIAL_CHANNELS = ("telegram", "vk", "odnoklassniki", "instagram")
+LEGAL_REVIEW_CHANNELS = {"instagram"}
 MOSCOW = ZoneInfo("Europe/Moscow")
 
 TOPICS = (
@@ -105,7 +106,8 @@ def prepare_daily_social_plan(db: Session, *, day: datetime | None = None) -> di
                     "batch_key": batch_key,
                     "slot": slot,
                     "timezone": "Europe/Moscow",
-                    "publication_status": "waiting_owner_approval",
+                    "publication_status": "legal_review_required" if channel in LEGAL_REVIEW_CHANNELS else "waiting_owner_approval",
+                    "automatic_publication_allowed": channel not in LEGAL_REVIEW_CHANNELS,
                 },
             )
             db.add(item)
@@ -138,7 +140,8 @@ def prepare_daily_social_plan(db: Session, *, day: datetime | None = None) -> di
         subject=f"📱 Контент-план на {local_date.strftime('%d.%m')}",
         body=(
             "Подготовлено по 2 поста для Telegram, VK, Одноклассников и Instagram. "
-            "Одобрение разрешает только постановку в график; публикация без credentials не имитируется."
+            "Одобрение ставит в график только разрешённые каналы; Instagram остаётся черновиком до юридической проверки. "
+            "Публикация без credentials не имитируется."
         ),
         data={"approval_id": approval.id, "batch_id": batch.id},
     )

@@ -2070,7 +2070,12 @@ def test_marketing_agent_creates_two_posts_per_social_channel_for_approval(clien
     approved = client.post(f"/api/approvals/{result['approval_id']}/approve", json={"note": "Content reviewed"})
     assert approved.status_code == 200
     scheduled = client.get("/api/marketing/content?status=scheduled").json()
-    assert set(result["content_item_ids"]).issubset({row["id"] for row in scheduled})
+    scheduled_items = [row for row in scheduled if row["id"] in result["content_item_ids"]]
+    assert len(scheduled_items) == 6
+    assert {row["channel"] for row in scheduled_items} == {"telegram", "vk", "odnoklassniki"}
+    instagram_drafts = [row for row in client.get("/api/marketing/content?status=approval").json() if row["id"] in result["content_item_ids"]]
+    assert len(instagram_drafts) == 2
+    assert all(row["metrics"]["publication_status"] == "legal_review_required" for row in instagram_drafts)
 
 
 def test_telegram_document_creates_guarded_outreach_draft(monkeypatch, tmp_path):

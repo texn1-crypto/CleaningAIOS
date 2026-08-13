@@ -75,9 +75,7 @@ def integration_status() -> dict[str, Any]:
             "odnoklassniki": "credentials_present_adapter_required"
             if settings.odnoklassniki_group_id and settings.odnoklassniki_application_key and settings.odnoklassniki_session_secret
             else "credentials_required",
-            "instagram": "credentials_present_adapter_required"
-            if settings.instagram_business_account_id and settings.instagram_access_token
-            else "credentials_required",
+            "instagram": "legal_review_required_no_automatic_publication",
             "publication_mode": "owner_approved_scheduled_content_only",
         },
         "media_generation": {

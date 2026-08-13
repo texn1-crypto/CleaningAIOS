@@ -399,10 +399,11 @@ def decide_approval(approval_id: int, action: str, payload: ApprovalDecision, db
             items = db.scalars(select(ContentItem).where(ContentItem.id.in_(item_ids))).all() if item_ids else []
             batch.status = "scheduled" if row.status == "approved" else "rejected"
             for item in items:
-                item.status = "scheduled" if row.status == "approved" else "cancelled"
+                legal_review = item.channel == "instagram"
+                item.status = "approval" if row.status == "approved" and legal_review else "scheduled" if row.status == "approved" else "cancelled"
                 item.metrics = {
                     **(item.metrics or {}),
-                    "publication_status": "scheduled_waiting_channel_credentials" if row.status == "approved" else "owner_rejected",
+                    "publication_status": "legal_review_required" if row.status == "approved" and legal_review else "scheduled_waiting_channel_credentials" if row.status == "approved" else "owner_rejected",
                     "approval_id": row.id,
                 }
     event_bus.publish(db, f"approval.{row.status}", row.resource_type, row.resource_id, {"approval_id": row.id, "action_kind": row.action_kind}, idempotency_key=f"approval:{row.id}:{row.status}")
