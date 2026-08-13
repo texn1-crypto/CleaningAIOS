@@ -21,7 +21,7 @@ from .management_companies import enrich_management_company, import_management_c
 from .operations import business_graph, create_ceo_actions, entity_view, goal_progress, parse_lead_import, score_tender, simulate_site, site_economics, validate_entity
 from .reports import build_ceo_brief
 from .orchestrator import audit, dispatch
-from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, verified_recipients
+from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, validate_attachments, verified_recipients
 from .platform import approval_engine, event_bus
 from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
 from .security import Principal, principal, require_role
@@ -993,10 +993,22 @@ def draft_customer_requested_campaign(
     batch_size = 100
     recipient_batches = [recipients[index:index + batch_size] for index in range(0, len(recipients), batch_size)]
     source_filename = os.path.basename(payload.source_filename or "")[:255] or None
-    campaign_digest = hashlib.sha256(
-        ("\n".join(recipients) + "\n" + payload.subject + "\n" + payload.body).encode()
+    try:
+        checked_attachments = validate_attachments(payload.attachments)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    attachment_digest = hashlib.sha256(
+        "\n".join(item["sha256"] for item in checked_attachments).encode()
     ).hexdigest()
+    campaign_identity = "\n".join(recipients) + "\n" + payload.subject + "\n" + payload.body
+    if checked_attachments:
+        campaign_identity += "\n" + attachment_digest
+    campaign_digest = hashlib.sha256(campaign_identity.encode()).hexdigest()
     campaign_key = f"customer-requested-{campaign_digest[:32]}"
+    try:
+        attachments = persist_campaign_attachments(campaign_key, payload.attachments)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
     candidates = db.scalars(
         select(Task)
@@ -1017,6 +1029,7 @@ def draft_customer_requested_campaign(
             "recipient_count": len(recipients),
             "batch_size": int((existing.payload or {}).get("batch_size") or batch_size),
             "batch_count": int((existing.payload or {}).get("batch_count") or len(recipient_batches)),
+            "attachment_count": len((existing.payload or {}).get("attachments") or []),
             "campaign_key": campaign_key,
             "idempotent_replay": True,
         }
@@ -1068,7 +1081,7 @@ def draft_customer_requested_campaign(
             "subject": payload.subject,
             "body": payload.body,
             "scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
-            "attachments": [],
+            "attachments": attachments,
             "auto_balance_mailboxes": True,
             "consent_evidence_digest": hashlib.sha256(payload.consent_evidence.encode()).hexdigest(),
             "recipient_source_filename": source_filename,
@@ -1094,6 +1107,8 @@ def draft_customer_requested_campaign(
             "source": "telegram_mailing_wizard",
             "recipient_source_filename": source_filename,
             "recipient_source_sha256": payload.source_sha256,
+            "attachment_count": len(attachments),
+            "attachment_digests": [item["sha256"] for item in attachments],
         },
     )
     db.commit()
@@ -1104,6 +1119,7 @@ def draft_customer_requested_campaign(
         "recipient_count": len(recipients),
         "batch_size": batch_size,
         "batch_count": len(recipient_batches),
+        "attachment_count": len(attachments),
         "campaign_key": campaign_key,
         "idempotent_replay": False,
     }

@@ -32,6 +32,10 @@ BASE = (settings.internal_api_url or settings.public_base_url or "http://web:800
 HEADERS = {"X-API-Key": settings.api_key, "X-Actor": "telegram-owner", "X-Role": "owner"}
 MAILING_MAX_RECIPIENTS = 1000
 MAILING_BATCH_SIZE = 100
+SUPPORTED_MAIL_ATTACHMENT_SUFFIXES = {
+    ".csv", ".doc", ".docx", ".jpeg", ".jpg", ".odt", ".pdf", ".png",
+    ".txt", ".xls", ".xlsm", ".xlsx",
+}
 _telegram_identity: ContextVar[dict | None] = ContextVar(
     "telegram_identity", default=None
 )
@@ -564,7 +568,8 @@ async def outreach_help(update: Update, _: ContextTypes.DEFAULT_TYPE):
         "➕ Новая рассылка\n\n"
         "Если клиенты сами передали email и попросили писать им, отправьте команду `/mailing`.\n"
         "Бот попросит XLSX/XLSM, DOCX или текстовый PDF, локально извлечёт до 1000 уникальных адресов, "
-        "разобьёт их на партии по 100 и последовательно запросит основание согласия, тему и текст, затем покажет preview.\n"
+        "разобьёт их на партии по 100 и последовательно запросит основание согласия, тему и текст, затем покажет preview. "
+        "В preview можно приложить к каждому письму один PDF, Word, Excel, ODT, CSV, TXT, PNG или JPG.\n"
         "Адреса также можно передать прямо в команде для обратной совместимости.\n\n"
         "Для рассылки документа по базе УК можно прислать PDF, Word, Excel или ODT с подписью «Разошли по базе УК».\n\n"
         "До подтверждения письма не ставятся в очередь. Отписки, suppression, дедупликация и лимиты применяются автоматически.",
@@ -657,7 +662,44 @@ async def mailing_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     draft = user_data.get("mailing_draft") if isinstance(user_data, dict) else None
     if not isinstance(draft, dict):
         return False
-    if draft.get("step") != "document":
+    step = draft.get("step")
+    if step in {"preview", "attachment"}:
+        document = update.effective_message.document
+        filename = _safe_document_filename(document.file_name or "attachment")
+        if Path(filename).suffix.lower() not in SUPPORTED_MAIL_ATTACHMENT_SUFFIXES:
+            await update.effective_message.reply_text(
+                "Этот тип вложения запрещён. Разрешены PDF, Word, Excel, ODT, CSV, TXT, PNG и JPG."
+            )
+            return True
+        if int(document.file_size or 0) > settings.max_attachment_bytes:
+            await update.effective_message.reply_text(
+                f"Вложение больше безопасного лимита {settings.max_attachment_bytes // 1_000_000} МБ. Уменьшите файл."
+            )
+            return True
+        try:
+            with tempfile.TemporaryDirectory(prefix="cleaningai-mail-attachment-") as directory:
+                path = Path(directory) / filename
+                telegram_file = await context.bot.get_file(document.file_id)
+                await telegram_file.download_to_drive(custom_path=str(path))
+                content = path.read_bytes()
+            if not content or len(content) > settings.max_attachment_bytes:
+                raise ValueError("Файл пуст или превышает безопасный лимит")
+        except (TelegramError, OSError, ValueError) as exc:
+            await update.effective_message.reply_text(
+                f"Не удалось получить вложение: {str(exc)[:300]}. Пришлите исправленный файл."
+            )
+            return True
+        draft.update({
+            "step": "preview",
+            "attachments": [{
+                "filename": filename,
+                "content_type": document.mime_type or "application/octet-stream",
+                "content_base64": base64.b64encode(content).decode(),
+            }],
+        })
+        await _show_mailing_preview(update, draft)
+        return True
+    if step != "document":
         await update.effective_message.reply_text("Файл получен, но сейчас мастер ожидает текстовый ответ. Для отмены: /cancel")
         return True
     document = update.effective_message.document
@@ -720,6 +762,39 @@ async def mailing_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("Черновик рассылки отменён." if existed else "Активного черновика рассылки нет.")
 
 
+async def _show_mailing_preview(update: Update, draft: dict) -> None:
+    addresses = draft.get("recipients") or []
+    address_preview = ", ".join(addresses)
+    if len(address_preview) > 1200:
+        address_preview = address_preview[:1200] + "…"
+    body_preview = draft["body"] if len(draft["body"]) <= 1800 else draft["body"][:1800] + "…"
+    batch_count = (len(addresses) + MAILING_BATCH_SIZE - 1) // MAILING_BATCH_SIZE
+    attachments = draft.get("attachments") or []
+    attachment_line = (
+        f"Вложение: {attachments[0]['filename']}"
+        if attachments
+        else "Вложение: нет"
+    )
+    keyboard_rows = []
+    if not attachments:
+        keyboard_rows.append([
+            InlineKeyboardButton("📎 Прикрепить файл", callback_data="mailing:attachment"),
+        ])
+    keyboard_rows.append([
+        InlineKeyboardButton("✅ Создать на согласование", callback_data="mailing:create"),
+        InlineKeyboardButton("❌ Отменить", callback_data="mailing:cancel"),
+    ])
+    await update.effective_message.reply_text(
+        f"📨 Preview рассылки\nПолучатели: {len(addresses)} · партии по {MAILING_BATCH_SIZE}: {batch_count}\n"
+        f"Файл получателей: {draft.get('source_filename', 'адреса введены текстом')}\n"
+        f"{attachment_line}\n"
+        f"Адреса: {address_preview}\n\n"
+        f"Тема: {draft['subject']}\n\n{body_preview}\n\n"
+        "Адреса и основание согласия будут сохранены только во внутренней базе. Письма пока не отправляются.",
+        reply_markup=InlineKeyboardMarkup(keyboard_rows),
+    )
+
+
 async def mailing_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user_data = getattr(context, "user_data", None)
     if not isinstance(user_data, dict):
@@ -768,23 +843,11 @@ async def mailing_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
             await update.effective_message.reply_text("Текст письма не может быть пустым.")
             return True
         draft.update({"body": text[:10000], "step": "preview"})
-        addresses = draft.get("recipients") or []
-        address_preview = ", ".join(addresses)
-        if len(address_preview) > 1200:
-            address_preview = address_preview[:1200] + "…"
-        body_preview = draft["body"] if len(draft["body"]) <= 1800 else draft["body"][:1800] + "…"
-        batch_count = (len(addresses) + MAILING_BATCH_SIZE - 1) // MAILING_BATCH_SIZE
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Создать на согласование", callback_data="mailing:create"),
-            InlineKeyboardButton("❌ Отменить", callback_data="mailing:cancel"),
-        ]])
+        await _show_mailing_preview(update, draft)
+        return True
+    if step == "attachment":
         await update.effective_message.reply_text(
-            f"📨 Preview рассылки\nПолучатели: {len(addresses)} · партии по {MAILING_BATCH_SIZE}: {batch_count}\n"
-            f"Файл: {draft.get('source_filename', 'адреса введены текстом')}\n"
-            f"Адреса: {address_preview}\n\n"
-            f"Тема: {draft['subject']}\n\n{body_preview}\n\n"
-            "Адреса и основание согласия будут сохранены только во внутренней базе. Письма пока не отправляются.",
-            reply_markup=keyboard,
+            "Сейчас нужен файл-вложение: PDF, Word, Excel, ODT, CSV, TXT, PNG или JPG. Для отмены: /cancel"
         )
         return True
     await update.effective_message.reply_text("Используйте кнопки под preview или /cancel.")
@@ -803,6 +866,7 @@ async def mailing_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "body": draft["body"],
         "source_filename": draft.get("source_filename"),
         "source_sha256": draft.get("source_sha256"),
+        "attachments": draft.get("attachments") or [],
     })
     context.user_data.pop("mailing_draft", None)
     approval_id = result.get("approval_id")
@@ -810,7 +874,8 @@ async def mailing_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
     replay = " Ранее созданный черновик найден повторно; новая копия не создавалась." if result.get("idempotent_replay") else ""
     await update.effective_message.reply_text(
         f"Защищённый черновик создан как задача #{result['task_id']} для {result['recipient_count']} получателей "
-        f"в {result.get('batch_count', 1)} партиях по максимум {result.get('batch_size', MAILING_BATCH_SIZE)}.{replay}\n"
+        f"в {result.get('batch_count', 1)} партиях по максимум {result.get('batch_size', MAILING_BATCH_SIZE)}. "
+        f"Вложений: {result.get('attachment_count', 0)}.{replay}\n"
         "Адреса имеют зафиксированное владельцем основание согласия. До отдельного одобрения письма не ставятся в очередь.",
         reply_markup=keyboard,
     )
@@ -1312,6 +1377,16 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data = await api("POST", "/api/simulations", json={"payroll_change_percent": 10})
             await update.effective_message.reply_text(f"🧪 Сценарий +10% к фонду оплаты\nТекущая прибыль: {data['current']['profit']} ₽\nБазовый прогноз: {data['base']['profit']} ₽\nОптимистичный: {data['optimistic']['profit']} ₽")
         elif q.data == "mailing:create": await mailing_create(update, context)
+        elif q.data == "mailing:attachment":
+            draft = context.user_data.get("mailing_draft")
+            if not isinstance(draft, dict) or draft.get("step") != "preview":
+                await update.effective_message.reply_text("Черновик устарел. Начните заново командой /mailing.")
+            else:
+                draft["step"] = "attachment"
+                await update.effective_message.reply_text(
+                    "Пришлите файл-вложение: PDF, Word, Excel, ODT, CSV, TXT, PNG или JPG. "
+                    f"Лимит: {settings.max_attachment_bytes // 1_000_000} МБ."
+                )
         elif q.data == "mailing:cancel": await mailing_cancel(update, context)
         elif q.data in {"ceo", "ceo:refresh"}:
             await ceo_brief(update, context)

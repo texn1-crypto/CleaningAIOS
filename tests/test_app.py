@@ -1941,6 +1941,57 @@ def test_customer_requested_campaign_records_consent_and_requires_exact_owner_ap
     assert len(queued) == 2
 
 
+def test_customer_requested_campaign_keeps_attachment_bound_to_approval_and_queue(client, monkeypatch, tmp_path):
+    import base64
+    import hashlib
+
+    from sqlalchemy import select
+
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import OutboundMessage
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    for field in ("smtp_host", "smtp_username", "smtp_password", "smtp_from_email"):
+        monkeypatch.setattr(settings, field, "")
+    raw = b"%PDF-safe-customer-requested-attachment"
+    payload = {
+        "recipients": ["requested-attachment@example.com"],
+        "consent_evidence": "13 августа 2026 клиент передал адрес и попросил присылать письма с документами",
+        "subject": "Предложение с документом",
+        "body": "Добрый день! Документ приложен к этому письму.",
+        "attachments": [{
+            "filename": "offer.pdf",
+            "content_type": "application/pdf",
+            "content_base64": base64.b64encode(raw).decode(),
+        }],
+    }
+    result = client.post("/api/outreach/campaigns/customer-requested/draft", json=payload).json()
+    assert result["status"] == "blocked"
+    assert result["attachment_count"] == 1
+
+    task = next(row for row in client.get("/api/tasks").json() if row["id"] == result["task_id"])
+    attachment = task["payload"]["attachments"][0]
+    assert attachment["filename"] == "offer.pdf"
+    assert attachment["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert "content_base64" not in attachment
+    assert Path(attachment["storage_path"]).read_bytes() == raw
+
+    approved = client.post(
+        f"/api/approvals/{result['approval_id']}/approve",
+        json={"note": "Проверены адрес, текст и PDF-вложение"},
+    ).json()
+    assert approved["execution"] == "queued"
+    completed = client.post(f"/api/tasks/{result['task_id']}/run").json()
+    assert completed["result"]["waiting_configuration"] == 1
+    with SessionLocal() as db:
+        message = db.scalar(
+            select(OutboundMessage).where(OutboundMessage.campaign_key == result["campaign_key"])
+        )
+        assert message is not None
+        assert message.attachments[0]["sha256"] == hashlib.sha256(raw).hexdigest()
+
+
 def test_customer_requested_campaign_queues_up_to_one_thousand_in_hundred_recipient_batches(client, monkeypatch):
     from app.config import settings
 
@@ -2046,12 +2097,19 @@ def test_telegram_mailing_wizard_keeps_customer_data_out_of_request_analysis(mon
         asyncio.run(bot.natural_language(update, context))
         assert context.user_data["mailing_draft"]["step"] == expected_step
     assert calls == []
+    preview_callbacks = [
+        button.callback_data
+        for row in update.effective_message.replies[-1][1]["reply_markup"].inline_keyboard
+        for button in row
+    ]
+    assert "mailing:attachment" in preview_callbacks
 
     asyncio.run(bot.mailing_create(update, context))
     assert len(calls) == 2
     method, path, kwargs = calls[0]
     assert (method, path) == ("POST", "/api/outreach/campaigns/customer-requested/draft")
     assert kwargs["json"]["recipients"] == ["one@example.com", "two@example.com"]
+    assert kwargs["json"]["attachments"] == []
     assert context.user_data.get("mailing_draft") is None
     assert "задача #700" in update.effective_message.replies[-1][0]
     markup = update.effective_message.replies[-1][1]["reply_markup"]
@@ -2179,6 +2237,95 @@ def test_telegram_mailing_accepts_recipient_file_and_reports_batches(monkeypatch
     assert len(draft["source_sha256"]) == 64
     assert draft["batch_size"] == 100
     assert "3 внутренних партий" in update.effective_message.replies[-1][0]
+
+
+def test_telegram_mailing_attaches_business_file_to_exact_draft(monkeypatch):
+    import base64
+
+    from app import bot
+
+    raw = b"%PDF-telegram-mail-attachment"
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/telegram/control/approvals/802/card":
+            return {"callbacks": {
+                "approve": "tc1.approve-test",
+                "reject": "tc1.reject-test",
+                "request_changes": "tc1.changes-test",
+            }}
+        return {
+            "status": "blocked",
+            "task_id": 801,
+            "approval_id": 802,
+            "recipient_count": 1,
+            "batch_count": 1,
+            "batch_size": 100,
+            "attachment_count": 1,
+        }
+
+    class TelegramFile:
+        async def download_to_drive(self, custom_path):
+            Path(custom_path).write_bytes(raw)
+
+    class TelegramBot:
+        async def get_file(self, file_id):
+            assert file_id == "mail-attachment"
+            return TelegramFile()
+
+    class Document:
+        file_name = "offer.pdf"
+        file_size = len(raw)
+        file_id = "mail-attachment"
+        mime_type = "application/pdf"
+
+    class Message:
+        document = Document()
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Chat:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+        effective_chat = Chat()
+
+    class Context:
+        bot = TelegramBot()
+        user_data = {
+            "mailing_draft": {
+                "step": "attachment",
+                "recipients": ["attachment-wizard@example.com"],
+                "consent_evidence": "Клиент запросил письма с приложенным коммерческим предложением",
+                "subject": "Предложение",
+                "body": "Добрый день! Направляем документ.",
+            }
+        }
+
+    monkeypatch.setattr(bot, "api", fake_api)
+    update, context = Update(), Context()
+    assert asyncio.run(bot.mailing_document(update, context)) is True
+    draft = context.user_data["mailing_draft"]
+    assert draft["step"] == "preview"
+    assert draft["attachments"][0]["filename"] == "offer.pdf"
+    assert base64.b64decode(draft["attachments"][0]["content_base64"]) == raw
+    assert "Вложение: offer.pdf" in update.effective_message.replies[-1][0]
+
+    asyncio.run(bot.mailing_create(update, context))
+    method, path, kwargs = calls[0]
+    assert (method, path) == ("POST", "/api/outreach/campaigns/customer-requested/draft")
+    assert kwargs["json"]["attachments"][0]["filename"] == "offer.pdf"
+    assert context.user_data.get("mailing_draft") is None
 
 
 def test_telegram_ambiguous_mailing_confirmation_executes_wizard(monkeypatch):

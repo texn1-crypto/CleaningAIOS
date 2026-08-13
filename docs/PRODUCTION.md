@@ -137,6 +137,13 @@ SMTP account is optional; the default SMTP remains the fallback transport. SMTP 
 465 uses implicit TLS and other configured ports use STARTTLS. The Telegram outreach
 panel reports receiving and forwarding readiness without returning any secret values.
 
+The `/mailing` Telegram wizard accepts the recipient registry first, then consent
+evidence, subject and body. Its preview can include one PDF, Word, Excel, ODT, CSV,
+TXT, PNG or JPG attachment up to `MAX_ATTACHMENT_BYTES`. The attachment is stored on
+the shared protected document volume, its checksum is bound to the owner approval,
+and the worker adds it to every resulting MIME message only after that exact campaign
+is approved. Do not put recipient data or SMTP credentials inside the attachment.
+
 ## Backup
 
 ```bash

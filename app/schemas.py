@@ -264,6 +264,7 @@ class CustomerRequestedCampaignDraft(BaseModel):
     body: str = Field(min_length=1, max_length=10000)
     source_filename: Optional[str] = Field(default=None, max_length=255)
     source_sha256: Optional[str] = Field(default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=5)
     scheduled_at: Optional[datetime] = None
 
 
