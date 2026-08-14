@@ -10,7 +10,7 @@ from .config import settings
 from .llm import llm_advisor
 from .models import AgentState, BusinessGoal, BusinessRecord, Decision, DecisionOutcome, MediaAsset, OperatingEntity, Task
 from .ai_router import provider_catalog
-from .operations import create_ceo_actions, goal_progress, score_tender, site_economics
+from .operations import create_ceo_actions, goal_progress, site_economics
 from .task_state import record_task_created
 
 
@@ -157,13 +157,168 @@ class OrchestratorAgent:
 class TenderAgent:
     name = "tender"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "prepare_tender_package":
+            from .models import TenderDocument
+            from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, evaluate_tender_viability, merge_registered_document_risks
+
+            record_id = int(payload.get("record_id") or 0)
+            tender = db.get(BusinessRecord, record_id)
+            if not tender or tender.record_type != "tender":
+                return {
+                    "status": "not_found",
+                    "record_id": record_id,
+                    "submission_allowed": False,
+                    "evidence": [{"type": "tender_record_lookup", "found": False}],
+                }
+
+            if tender.status in TERMINAL_TENDER_STATUSES:
+                return {
+                    "status": "tender_closed",
+                    "record_id": record_id,
+                    "reason": f"Тендер находится в конечном статусе: {tender.status}.",
+                    "submission_allowed": False,
+                    "separate_submission_approval_required": True,
+                    "evidence": [{"type": "tender_status", "status": tender.status, "open": False}],
+                }
+
+            tender.data = {
+                **(tender.data or {}),
+                "title": tender.title,
+                "external_id": tender.external_id or "",
+                "source_url": str((tender.data or {}).get("source_url") or ""),
+                "deadline_at": tender.deadline_at.isoformat() if tender.deadline_at else "",
+            }
+            tender.data = {
+                **tender.data,
+                "scope_assessment": classify_tender_scope(tender.title, tender.data),
+            }
+            tender.data = merge_registered_document_risks(db, tender, tender.data or {})
+            evaluation = evaluate_tender_viability(tender.data or {})
+            expected_fingerprint = str(payload.get("evaluation_fingerprint") or "")
+            if evaluation.get("fingerprint") != expected_fingerprint:
+                return {
+                    "status": "stale_evaluation",
+                    "record_id": record_id,
+                    "reason": "Параметры тендера изменились после подтверждения; требуется новый расчёт и новое решение владельца.",
+                    "submission_allowed": False,
+                    "separate_submission_approval_required": True,
+                    "evidence": [{"type": "tender_evaluation_fingerprint", "matches": False}],
+                }
+            if evaluation.get("status") != "ready_for_owner_review":
+                return {
+                    "status": "participation_no_longer_recommended",
+                    "record_id": record_id,
+                    "evaluation": evaluation,
+                    "submission_allowed": False,
+                    "separate_submission_approval_required": True,
+                    "evidence": [{"type": "tender_evaluation_rechecked", "eligible": False}],
+                }
+
+            documents = db.scalars(
+                select(TenderDocument).where(TenderDocument.record_id == tender.id).order_by(TenderDocument.id)
+            ).all()
+            available_names = {document.name.strip().casefold() for document in documents}
+            required_documents = [
+                str(name).strip() for name in (tender.data or {}).get("required_documents", []) if str(name).strip()
+            ]
+            missing_documents = [name for name in required_documents if name.casefold() not in available_names]
+            document_risks = [
+                {
+                    "document_id": document.id,
+                    "name": document.name,
+                    "risk_level": str((document.analysis or {}).get("risk_level") or "unclassified"),
+                    "risks": (document.analysis or {}).get("risks") or [],
+                }
+                for document in documents
+                if (document.analysis or {}).get("risks") or (document.analysis or {}).get("risk_level")
+            ]
+            critical_document_risks = [
+                risk for risk in document_risks if risk["risk_level"] == "critical"
+            ]
+            status = (
+                "legal_stop"
+                if critical_document_risks
+                else "package_incomplete"
+                if missing_documents
+                else "package_review_prepared"
+            )
+            portal_url = str((tender.data or {}).get("source_url") or (tender.data or {}).get("url") or "")
+            portal_guidance = (tender.data or {}).get("submission_instructions")
+            portal_instruction_status = (
+                "source_instructions_available"
+                if isinstance(portal_guidance, dict) and portal_guidance.get("steps")
+                else "portal_navigation_required"
+            )
+            return {
+                "status": status,
+                "record_id": tender.id,
+                "title": tender.title,
+                "evaluation": evaluation,
+                "documents": [
+                    {
+                        "id": document.id,
+                        "name": document.name,
+                        "status": document.status,
+                        "checksum": document.checksum,
+                        "analysis": document.analysis,
+                    }
+                    for document in documents
+                ],
+                "required_documents": required_documents,
+                "missing_documents": missing_documents,
+                "document_risks": document_risks,
+                "manual_submission_checklist": [
+                    "Уполномоченный человек повторно проверяет срок и номер закупки на официальной площадке.",
+                    "Живой юрист проверяет итоговые формы, риски и полномочия подписанта.",
+                    "Человек входит на площадку под своей учётной записью и сверяет актуальный перечень полей.",
+                    "Каждый файл сверяется по имени, версии и контрольной сумме перед загрузкой.",
+                    "Цена, обеспечение и состав заявки повторно показываются владельцу для отдельного подтверждения.",
+                    "Только после отдельного подтверждения уполномоченный человек подписывает ЭЦП и подаёт заявку.",
+                ],
+                "portal_url": portal_url,
+                "portal_instruction_status": portal_instruction_status,
+                "portal_guidance": portal_guidance if portal_instruction_status == "source_instructions_available" else None,
+                "screenshots_status": "source_material_required" if portal_instruction_status != "source_instructions_available" else "review_required",
+                "email_delivery_status": "recipient_and_attachment_approval_required",
+                "human_legal_review_required": True,
+                "human_upload_required": True,
+                "submission_allowed": False,
+                "separate_submission_approval_required": True,
+                "evidence": [
+                    {"type": "tender_evaluation_rechecked", "eligible": True, "fingerprint": expected_fingerprint},
+                    {"type": "tender_document_registry", "registered": len(documents), "missing": missing_documents},
+                    {"type": "tender_document_risk_summary", "risks": document_risks},
+                ],
+            }
+        from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, ensure_participation_review_task, evaluate_tender_viability, merge_registered_document_risks, screening_record_status
+
         keywords = payload.get("keywords", ["уборка МКД", "клининг БЦ", "ТСЖ", "УК"])
         rows = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "tender")).all()
         for row in rows:
-            if row.score is None and row.data:
-                calculated = score_tender(row.data); row.score = calculated["score"]; row.data = {**row.data, "score_breakdown": calculated["breakdown"], "recommendation": calculated["recommendation"]}
+            if row.status in TERMINAL_TENDER_STATUSES:
+                continue
+            row.data = {
+                **(row.data or {}),
+                "title": row.title,
+                "external_id": row.external_id or "",
+                "source_url": str((row.data or {}).get("source_url") or ""),
+            }
+            if row.deadline_at:
+                row.data = {**(row.data or {}), "deadline_at": row.deadline_at.isoformat()}
+            row.data = {**(row.data or {}), "scope_assessment": classify_tender_scope(row.title, row.data or {})}
+            row.data = merge_registered_document_risks(db, row, row.data)
+            evaluation = evaluate_tender_viability(row.data or {})
+            row.score = evaluation.get("score")
+            row.status = screening_record_status(evaluation["status"])
+            row.data = {
+                **(row.data or {}),
+                "viability_evaluation": evaluation,
+                "score_breakdown": evaluation.get("score_breakdown", {}),
+                "recommendation": evaluation["decision"],
+            }
+            ensure_participation_review_task(db, row, evaluation, actor="tender_agent")
         ranked = sorted(rows, key=lambda x: x.score or 0, reverse=True)
-        return {"keywords": keywords, "tenders": [{"id": r.id, "title": r.title, "score": r.score, "deadline": r.deadline_at, "recommendation": r.data.get("recommendation")} for r in ranked], "submission_requires_owner_approval": True, "evidence": [{"record_id": r.id, "score": r.score} for r in ranked]}
+        return {"keywords": keywords, "tenders": [{"id": r.id, "title": r.title, "score": r.score, "deadline": r.deadline_at, "recommendation": (r.data.get("viability_evaluation") or {}).get("decision")} for r in ranked], "submission_requires_owner_approval": True, "evidence": [{"record_id": r.id, "score": r.score} for r in ranked]}
 
 
 class SalesAgent:

@@ -301,6 +301,274 @@ def test_tender_scoring_and_document_registry(client):
     assert document.json()["status"] == "analyzed"
 
 
+def test_tender_viability_requires_real_economic_inputs(client):
+    tender = client.post(
+        "/api/records",
+        json={"record_type": "tender", "title": "Неполный тендер на уборку", "data": {}},
+    ).json()
+
+    result = client.post(
+        f"/api/tenders/{tender['id']}/evaluate",
+        json={"contract_value": 1_000_000, "region": "Санкт-Петербург"},
+    )
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["status"] == "data_required"
+    assert body["score"] is None
+    assert "monthly_payroll" in body["missing_fields"]
+    assert body["participation_review_task_id"] is None
+    assert body["automatic_submission_allowed"] is False
+
+
+def test_tender_viability_blocks_working_capital_shortfall(client):
+    tender = client.post(
+        "/api/records",
+        json={
+            "record_type": "tender",
+            "external_id": "cash-gap-1",
+            "title": "Уборка с кассовым разрывом",
+            "deadline_at": "2040-01-10T12:00:00Z",
+            "data": {"source_url": "https://zakupki.example.invalid/cash-gap-1"},
+        },
+    ).json()
+
+    result = client.post(
+        f"/api/tenders/{tender['id']}/evaluate",
+        json={
+            "contract_value": 12_000_000,
+            "contract_months": 12,
+            "monthly_payroll": 500_000,
+            "monthly_materials": 80_000,
+            "monthly_logistics": 40_000,
+            "tax_percent": 6,
+            "payment_delay_days": 90,
+            "available_working_capital": 100_000,
+            "min_margin_percent": 10,
+            "company_fit": 90,
+            "logistics_fit": 90,
+            "staffing_fit": 90,
+            "region": "Санкт-Петербург",
+        },
+    ).json()
+
+    assert result["status"] == "not_viable"
+    assert result["decision"] == "skip"
+    assert "working_capital_shortfall" in result["hard_stops"]
+    assert result["working_capital"]["gap"] > 0
+    assert result["participation_review_task_id"] is None
+
+
+def test_tender_participation_has_separate_owner_gate_and_prepares_package(client):
+    tender = client.post(
+        "/api/records",
+        json={
+            "record_type": "tender",
+            "external_id": "viable-cleaning-1",
+            "title": "Выгодный клининговый контракт",
+            "deadline_at": "2040-01-10T12:00:00Z",
+            "data": {"source_url": "https://zakupki.example.invalid/viable-cleaning-1"},
+        },
+    ).json()
+    registered = client.post(
+        f"/api/tenders/{tender['id']}/documents",
+        json={
+            "name": "Карточка организации.pdf",
+            "source_url": "https://example.invalid/company-card.pdf",
+            "analysis": {"risk_level": "low", "risks": []},
+        },
+    )
+    assert registered.status_code == 201
+
+    evaluation = client.post(
+        f"/api/tenders/{tender['id']}/evaluate",
+        json={
+            "contract_value": 18_000_000,
+            "contract_months": 12,
+            "monthly_payroll": 700_000,
+            "monthly_materials": 100_000,
+            "monthly_logistics": 50_000,
+            "monthly_other_costs": 25_000,
+            "tax_percent": 6,
+            "payment_delay_days": 30,
+            "available_working_capital": 2_000_000,
+            "min_margin_percent": 12,
+            "company_fit": 95,
+            "logistics_fit": 90,
+            "staffing_fit": 90,
+            "required_documents": ["Карточка организации.pdf", "Устав.pdf"],
+            "region": "Санкт-Петербург",
+        },
+    ).json()
+
+    assert evaluation["status"] == "ready_for_owner_review"
+    assert evaluation["decision"] == "consider_participation"
+    task_id = evaluation["participation_review_task_id"]
+    assert task_id is not None
+
+    blocked = client.post(f"/api/tasks/{task_id}/run").json()
+    assert blocked["status"] == "blocked"
+    assert blocked["result"]["reason"] == "owner_approval_required"
+    approval_id = blocked["result"]["approval_id"]
+
+    approved = client.post(
+        f"/api/approvals/{approval_id}/approve",
+        headers={"X-Role": "owner"},
+        json={"note": "Разрешаю только подготовку пакета для рассмотрения участия"},
+    )
+    assert approved.status_code == 200
+
+    completed = client.post(f"/api/tasks/{task_id}/run").json()
+    assert completed["status"] == "done"
+    package = completed["result"]
+    assert package["status"] == "package_incomplete"
+    assert package["missing_documents"] == ["Устав.pdf"]
+    assert package["human_upload_required"] is True
+    assert package["submission_allowed"] is False
+    assert package["separate_submission_approval_required"] is True
+    assert len(package["manual_submission_checklist"]) == 6
+    assert package["portal_instruction_status"] == "portal_navigation_required"
+    assert package["email_delivery_status"] == "recipient_and_attachment_approval_required"
+
+
+def test_tender_viability_never_recommends_out_of_scope_region(client):
+    tender = client.post(
+        "/api/records",
+        json={"record_type": "tender", "title": "Уборка офисов", "data": {"region": "Москва"}},
+    ).json()
+    result = client.post(
+        f"/api/tenders/{tender['id']}/evaluate",
+        json={
+            "contract_value": 18_000_000,
+            "contract_months": 12,
+            "monthly_payroll": 700_000,
+            "monthly_materials": 100_000,
+            "monthly_logistics": 50_000,
+            "tax_percent": 6,
+            "payment_delay_days": 30,
+            "available_working_capital": 2_000_000,
+            "min_margin_percent": 12,
+            "company_fit": 95,
+            "logistics_fit": 90,
+            "staffing_fit": 90,
+        },
+    ).json()
+    assert result["status"] == "out_of_scope_region"
+    assert result["decision"] == "skip"
+    assert result["score"] is None
+    assert result["participation_review_task_id"] is None
+
+
+def test_tender_viability_rejects_expired_tender_before_requesting_costs(client):
+    tender = client.post(
+        "/api/records",
+        json={
+            "record_type": "tender",
+            "title": "Уборка закрытого объекта",
+            "deadline_at": "2020-01-01T12:00:00Z",
+            "data": {"region": "Санкт-Петербург"},
+        },
+    ).json()
+    result = client.post(f"/api/tenders/{tender['id']}/evaluate", json={}).json()
+    assert result["status"] == "expired"
+    assert result["decision"] == "skip"
+    assert result["missing_fields"] == []
+    assert "submission_deadline_passed" in result["hard_stops"]
+    assert result["participation_review_task_id"] is None
+    stored = next(row for row in client.get("/api/records").json() if row["id"] == tender["id"])
+    assert stored["status"] == "expired"
+
+
+def test_tender_document_critical_legal_flag_blocks_participation(client):
+    tender = client.post(
+        "/api/records",
+        json={
+            "record_type": "tender",
+            "external_id": "legal-stop-1",
+            "title": "Уборка здания",
+            "deadline_at": "2040-01-10T12:00:00Z",
+            "data": {"source_url": "https://zakupki.example.invalid/legal-stop-1"},
+        },
+    ).json()
+    document = client.post(
+        f"/api/tenders/{tender['id']}/documents",
+        json={
+            "name": "Требования к участнику.pdf",
+            "source_url": "https://example.invalid/requirements.pdf",
+            "analysis": {
+                "risk_level": "critical",
+                "risks": ["Обязательный документ отсутствует"],
+                "legal_risk_flags": ["mandatory_document_unavailable"],
+            },
+        },
+    )
+    assert document.status_code == 201
+
+    result = client.post(
+        f"/api/tenders/{tender['id']}/evaluate",
+        json={
+            "contract_value": 18_000_000,
+            "contract_months": 12,
+            "monthly_payroll": 700_000,
+            "monthly_materials": 100_000,
+            "monthly_logistics": 50_000,
+            "tax_percent": 6,
+            "payment_delay_days": 30,
+            "available_working_capital": 2_000_000,
+            "min_margin_percent": 12,
+            "company_fit": 95,
+            "logistics_fit": 90,
+            "staffing_fit": 90,
+            "region": "Ленинградская область",
+        },
+    ).json()
+    assert result["status"] == "not_viable"
+    assert "legal:mandatory_document_unavailable" in result["hard_stops"]
+    assert result["participation_review_task_id"] is None
+
+
+def test_tender_document_critical_level_blocks_even_without_structured_flag(client):
+    tender = client.post(
+        "/api/records",
+        json={
+            "record_type": "tender",
+            "external_id": "legacy-legal-stop-1",
+            "title": "Клининг склада",
+            "deadline_at": "2040-01-10T12:00:00Z",
+            "data": {"source_url": "https://zakupki.example.invalid/legacy-legal-stop-1"},
+        },
+    ).json()
+    client.post(
+        f"/api/tenders/{tender['id']}/documents",
+        json={
+            "name": "Проект договора.pdf",
+            "source_url": "https://example.invalid/draft-contract.pdf",
+            "analysis": {"risk_level": "critical", "risks": ["Требуется проверка юриста"]},
+        },
+    )
+    result = client.post(
+        f"/api/tenders/{tender['id']}/evaluate",
+        json={
+            "contract_value": 18_000_000,
+            "contract_months": 12,
+            "monthly_payroll": 700_000,
+            "monthly_materials": 100_000,
+            "monthly_logistics": 50_000,
+            "tax_percent": 6,
+            "payment_delay_days": 30,
+            "available_working_capital": 2_000_000,
+            "min_margin_percent": 12,
+            "company_fit": 95,
+            "logistics_fit": 90,
+            "staffing_fit": 90,
+            "region": "Санкт-Петербург",
+        },
+    ).json()
+    assert result["status"] == "not_viable"
+    assert "legal:document_critical_risk" in result["hard_stops"]
+    assert result["participation_review_task_id"] is None
+
+
 def test_csv_import_and_bulk_campaign_approval(client, monkeypatch):
     import base64
     from app.config import settings
@@ -712,6 +980,7 @@ def test_delivery_event_suppresses_bounced_recipient(client):
 
 def test_worker_sends_real_attachment(client, monkeypatch):
     import base64
+    from datetime import datetime
     from sqlalchemy import update
     from app.config import settings
     from app.db import SessionLocal
@@ -733,7 +1002,7 @@ def test_worker_sends_real_attachment(client, monkeypatch):
         db.execute(update(OutboundMessage).where(OutboundMessage.status.in_(["queued", "waiting_configuration"])).values(status="sent"))
         row = OutboundMessage(campaign_key="attachment-test", recipient="attach@example.com", subject="Документ", body="Смотрите вложение", attachments=[{"filename": "offer.txt", "content_type": "text/plain", "content_base64": base64.b64encode(b"offer").decode()}])
         db.add(row); db.commit(); row_id = row.id
-        assert worker.send_next_email(db) is True
+        assert worker.send_next_email(db, now=datetime(2040, 1, 1, 12, 0)) is True
         db.refresh(row); assert row.status == "sent"
     assert sent and sent[0].is_multipart()
     assert any(part.get_filename() == "offer.txt" for part in sent[0].walk())
@@ -741,6 +1010,7 @@ def test_worker_sends_real_attachment(client, monkeypatch):
 
 
 def test_worker_supports_smtp_implicit_tls_on_port_465(client, monkeypatch):
+    from datetime import datetime
     from sqlalchemy import update
 
     from app import worker
@@ -773,7 +1043,7 @@ def test_worker_supports_smtp_implicit_tls_on_port_465(client, monkeypatch):
         )
         db.add(row)
         db.commit()
-        assert worker.send_next_email(db) is True
+        assert worker.send_next_email(db, now=datetime(2040, 1, 1, 12, 0)) is True
         db.refresh(row)
         assert row.status == "sent"
     assert len(sent) == 1
@@ -1621,6 +1891,8 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
     monkeypatch.setattr(scheduler.settings, "owner_activity_report_interval_minutes", 30)
+    monkeypatch.setattr(scheduler.settings, "tender_sources", "https://feed.example/tenders")
+    monkeypatch.setattr(scheduler.settings, "tender_monitor_interval_minutes", 60)
 
     scheduler.schedule_cycle()
     scheduler.schedule_cycle()
@@ -1630,10 +1902,16 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         reports = db.scalars(
             select(Task).where(Task.title.like("Регулярный отчёт владельцу · %"))
         ).all()
+        tender_monitors = db.scalars(
+            select(Task).where(Task.title.like("Tender source monitoring · %"))
+        ).all()
         development = [
             row for row in all_tasks if row.payload.get("origin") == "ceo_continuous_backlog"
         ]
         assert len(reports) == 1
+        assert len(tender_monitors) == 1
+        assert tender_monitors[0].payload["collection"] == "tenders"
+        assert tender_monitors[0].payload["sources"] == ["https://feed.example/tenders"]
         assert len(development) == 4
         assert {row.payload["scope"] for row in development} == {
             "website",
@@ -4073,7 +4351,7 @@ def test_worker_skips_rate_limited_mailbox_without_starving_pool(monkeypatch):
     monkeypatch.setattr(worker.smtplib, "SMTP", SMTP)
     monkeypatch.setenv("SMTP_LIMITED_TEST", "secret-a")
     monkeypatch.setenv("SMTP_AVAILABLE_TEST", "secret-b")
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime(2040, 1, 1, 12, 0)
     with SessionLocal() as db:
         db.execute(
             update(OutboundMessage)
@@ -4089,7 +4367,7 @@ def test_worker_skips_rate_limited_mailbox_without_starving_pool(monkeypatch):
             OutboundMessage(campaign_key="available-queue", recipient="send@example.com", subject="Send", body="Send", mailbox_id=available.id, status="queued", scheduled_at=now),
         ])
         db.commit()
-        assert worker.send_next_email(db) is True
+        assert worker.send_next_email(db, now=now) is True
         assert db.scalar(select(OutboundMessage.status).where(OutboundMessage.campaign_key == "limited-queue")) == "queued"
         assert db.scalar(select(OutboundMessage.status).where(OutboundMessage.campaign_key == "available-queue")) == "sent"
     assert sent == ["send@example.com"]

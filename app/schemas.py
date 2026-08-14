@@ -180,6 +180,36 @@ class TenderDocumentCreate(BaseModel):
     analysis: dict[str, Any] = Field(default_factory=dict)
 
 
+class TenderEvaluationRequest(BaseModel):
+    description: Optional[str] = Field(default=None, max_length=20_000)
+    category: Optional[str] = Field(default=None, max_length=1000)
+    purchase_object: Optional[str] = Field(default=None, max_length=5000)
+    region: Optional[str] = Field(default=None, max_length=1000)
+    place_of_performance: Optional[str] = Field(default=None, max_length=5000)
+    contract_value: Optional[float] = Field(default=None, gt=0)
+    contract_months: Optional[float] = Field(default=None, gt=0, le=1200)
+    monthly_payroll: Optional[float] = Field(default=None, ge=0)
+    monthly_materials: Optional[float] = Field(default=None, ge=0)
+    monthly_logistics: Optional[float] = Field(default=None, ge=0)
+    monthly_other_costs: Optional[float] = Field(default=0, ge=0)
+    tax_percent: Optional[float] = Field(default=None, ge=0, le=100)
+    payment_delay_days: Optional[int] = Field(default=None, ge=0, le=3650)
+    available_working_capital: Optional[float] = Field(default=None, ge=0)
+    min_margin_percent: Optional[float] = Field(default=None, ge=0, le=100)
+    company_fit: Optional[float] = Field(default=None, ge=0, le=100)
+    logistics_fit: Optional[float] = Field(default=None, ge=0, le=100)
+    staffing_fit: Optional[float] = Field(default=None, ge=0, le=100)
+    application_security: float = Field(default=0, ge=0)
+    performance_security: float = Field(default=0, ge=0)
+    onboarding_costs: float = Field(default=0, ge=0)
+    contingency_percent: float = Field(default=5, ge=0, le=100)
+    conservative_cost_increase_percent: float = Field(default=15, ge=0, le=500)
+    conservative_revenue_decrease_percent: float = Field(default=0, ge=0, le=100)
+    legal_risk_flags: list[str] = Field(default_factory=list, max_length=100)
+    required_documents: list[str] = Field(default_factory=list, max_length=500)
+    queue_participation_review: bool = True
+
+
 class MailboxCreate(BaseModel):
     name: str = Field(min_length=2, max_length=128)
     address: EmailStr

@@ -16,8 +16,8 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .models import BusinessRecord, TenderDocument
-from .operations import score_tender
 from .platform import event_bus
+from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, evaluate_tender_viability, screening_record_status
 
 
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
@@ -86,17 +86,52 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                     is_new = row is None
                     deadline = datetime.fromisoformat(str(item["deadline_at"]).replace("Z", "+00:00")).replace(tzinfo=None) if item.get("deadline_at") else None
                     data = item.get("data", {}) | {key: value for key, value in item.items() if key not in {"id", "external_id", "title", "name", "deadline_at", "data", "documents"}}
-                    scored = score_tender(data)
+                    data = {
+                        **data,
+                        "source_legal_risk_flags": list(data.get("legal_risk_flags") or []),
+                        "external_id": external_id,
+                        "source_url": str(data.get("source_url") or data.get("url") or source),
+                        "title": title,
+                        "deadline_at": deadline.isoformat() if deadline else "",
+                        "scope_assessment": classify_tender_scope(title, data),
+                    }
+                    evaluation = evaluate_tender_viability(data)
                     if row:
-                        row.title = title; row.deadline_at = deadline; row.data = {**row.data, **data, "score_breakdown": scored["breakdown"], "recommendation": scored["recommendation"]}; row.score = scored["score"]; updated += 1
+                        row.title = title
+                        row.deadline_at = deadline
+                        if row.status not in TERMINAL_TENDER_STATUSES:
+                            row.status = screening_record_status(evaluation["status"])
+                        row.data = {
+                            **row.data,
+                            **data,
+                            "viability_evaluation": evaluation,
+                            "score_breakdown": evaluation.get("score_breakdown", {}),
+                            "recommendation": evaluation["decision"],
+                        }
+                        row.score = evaluation.get("score")
+                        updated += 1
                     else:
-                        row = BusinessRecord(record_type="tender", external_id=external_id, title=title, source=source, deadline_at=deadline, data={**data, "score_breakdown": scored["breakdown"], "recommendation": scored["recommendation"]}, score=scored["score"])
+                        row = BusinessRecord(
+                            record_type="tender",
+                            external_id=external_id,
+                            title=title,
+                            source=source,
+                            deadline_at=deadline,
+                            status=screening_record_status(evaluation["status"]),
+                            data={
+                                **data,
+                                "viability_evaluation": evaluation,
+                                "score_breakdown": evaluation.get("score_breakdown", {}),
+                                "recommendation": evaluation["decision"],
+                            },
+                            score=evaluation.get("score"),
+                        )
                         db.add(row); db.flush(); created += 1
                     for doc in item.get("documents", []):
                         url = str(doc.get("url") or "")
                         if url and not db.scalar(select(TenderDocument.id).where(TenderDocument.record_id == row.id, TenderDocument.source_url == url)):
                             db.add(TenderDocument(record_id=row.id, name=str(doc.get("name") or "document"), source_url=url, content_type=str(doc.get("content_type") or "application/octet-stream")))
-                    event_bus.publish(db, "tender.discovered" if is_new else "tender.updated", "tender", str(row.id), {"external_id": external_id, "score": row.score}, idempotency_key=f"tender-feed:{external_id}:{hashlib.sha256(repr(item).encode()).hexdigest()[:16]}")
+                    event_bus.publish(db, "tender.discovered" if is_new else "tender.updated", "tender", str(row.id), {"external_id": external_id, "score": row.score, "viability_status": evaluation["status"]}, idempotency_key=f"tender-feed:{external_id}:{hashlib.sha256(repr(item).encode()).hexdigest()[:16]}")
             except Exception as exc:
                 errors.append({"source": source, "error": str(exc)})
     return {"status": "completed_with_errors" if errors else "completed", "created": created, "updated": updated, "errors": errors}

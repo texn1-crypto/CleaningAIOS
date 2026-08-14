@@ -60,6 +60,7 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 - `LLM_API_KEY` for OpenAI and/or `ANTHROPIC_API_KEY` for native Claude Messages API; `LLM_PROVIDER=auto` safely routes between them
 - optional `WORKSPACE_AGENT_TRIGGER_ID` and `WORKSPACE_AGENT_ACCESS_TOKEN` for server-side handoff to a published ChatGPT Workspace Agent
 - `TENDER_SOURCES` and per-source credentials/API keys for external tender ingestion
+- `TENDER_MONITOR_INTERVAL_MINUTES` controls idempotent 24/7 polling of configured tender feeds; no synthetic tenders are created when sources are absent
 - `COMPANY_LEGAL_NAME`, `COMPANY_INN`, company contacts/address and `PRIVACY_CONTACT_EMAIL` before enabling the public production lead form
 - `OWNER_NOTIFICATION_EMAIL` plus SMTP for hot-lead alerts; optional Russian advertising account credentials listed in `.env.example`
 - per-mailbox `SMTP_*` and `IMAP_*` environment secrets for outreach and inbound replies; secrets are referenced by name from `SenderMailbox` and are never returned by the API
@@ -77,6 +78,12 @@ Decision Engine checks policy. Tender submission, legal/contract/financial actio
 final HR decisions and bulk outreach are blocked until the owner decides a dedicated
 approval request. Every agent execution is recorded in `agent_runs`; durable company
 facts live in `company_knowledge` instead of prompts or chat history.
+
+For tenders, `POST /api/tenders/{id}/evaluate` performs evidence-based base and
+conservative economics, working-capital and legal-risk checks. A viable result
+creates a protected `tender_participation` task. Approval of that task permits only
+package preparation; `tender_submission` remains a separate critical action. The
+versioned operating policy is in `docs/TENDER_24_7_OPERATING_PROMPT.md`.
 
 The operational APIs include `/api/events`, `/api/brain`, `/api/agent-runs`,
 `/api/approvals`, `/api/entities`, `/api/company/graph`, `/api/goals`,

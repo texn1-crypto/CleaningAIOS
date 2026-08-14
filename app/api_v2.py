@@ -23,7 +23,7 @@ from .reports import build_ceo_brief
 from .orchestrator import audit, dispatch
 from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, validate_attachments, verified_recipients
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate
+from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate, TenderEvaluationRequest
 from .security import Principal, principal, require_role
 from .chat import redact_sensitive_text
 from .approval_service import (
@@ -49,6 +49,7 @@ from .notifications import (
     NotificationNotFound,
     acknowledge_owner_notification,
 )
+from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, ensure_participation_review_task, evaluate_tender_viability, merge_registered_document_risks, screening_record_status
 from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest, TelegramTaskQuery
 
 router = APIRouter(prefix="/api")
@@ -672,6 +673,82 @@ def calculate_tender_score(record_id: int, db: Session = Depends(get_db), actor:
     event_bus.publish(db, "tender.scored", "tender", str(tender.id), result)
     db.commit()
     return result
+
+
+@router.post("/tenders/{record_id}/evaluate")
+def evaluate_tender(
+    record_id: int,
+    payload: TenderEvaluationRequest,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "operator")
+    tender = db.get(BusinessRecord, record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(404, "Tender not found")
+    if tender.status in TERMINAL_TENDER_STATUSES:
+        raise HTTPException(409, f"Tender is in terminal status: {tender.status}")
+
+    values = payload.model_dump(
+        exclude={"queue_participation_review"},
+        exclude_none=True,
+        exclude_unset=True,
+    )
+    if "legal_risk_flags" in values:
+        values["source_legal_risk_flags"] = list(values["legal_risk_flags"])
+    tender.data = {**(tender.data or {}), **values, "title": tender.title, "external_id": tender.external_id or ""}
+    if tender.deadline_at:
+        tender.data = {**tender.data, "deadline_at": tender.deadline_at.isoformat()}
+    tender.data = {**tender.data, "scope_assessment": classify_tender_scope(tender.title, tender.data)}
+    tender.data = merge_registered_document_risks(db, tender, tender.data)
+    evaluation = evaluate_tender_viability(tender.data)
+    tender.score = evaluation.get("score")
+    tender.status = screening_record_status(evaluation["status"])
+    tender.data = {
+        **tender.data,
+        "viability_evaluation": evaluation,
+        "score_breakdown": evaluation.get("score_breakdown", {}),
+        "recommendation": evaluation["decision"],
+    }
+
+    participation_task = None
+    if evaluation.get("participation_review_available") and payload.queue_participation_review:
+        participation_task = ensure_participation_review_task(
+            db,
+            tender,
+            evaluation,
+            actor=actor.subject,
+        )
+
+    event_bus.publish(
+        db,
+        "tender.viability_evaluated",
+        "tender",
+        str(tender.id),
+        {
+            "status": evaluation["status"],
+            "decision": evaluation["decision"],
+            "score": evaluation.get("score"),
+            "hard_stops": evaluation.get("hard_stops", []),
+            "participation_review_task_id": participation_task.id if participation_task else None,
+        },
+        idempotency_key=f"tender:{tender.id}:evaluation:{evaluation['fingerprint']}",
+        actor=actor.subject,
+    )
+    audit(
+        db,
+        actor.subject,
+        "tender.viability_evaluated",
+        "tender",
+        str(tender.id),
+        {"status": evaluation["status"], "fingerprint": evaluation["fingerprint"]},
+    )
+    db.commit()
+    return {
+        **evaluation,
+        "participation_review_task_id": participation_task.id if participation_task else None,
+        "participation_review_task_status": participation_task.status if participation_task else None,
+    }
 
 
 @router.post("/tender-sources/collect")

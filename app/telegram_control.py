@@ -27,6 +27,7 @@ RISK_BY_ACTION = {
     "legal": "critical",
     "contract": "critical",
     "hr_final": "critical",
+    "tender_participation": "high",
     "tender_submission": "critical",
     "bulk_outreach": "high",
     "social_publication": "high",

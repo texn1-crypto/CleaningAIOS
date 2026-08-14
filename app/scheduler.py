@@ -46,6 +46,36 @@ def schedule_cycle() -> None:
             db.add(task)
             db.flush()
             record_task_created(db, task, actor="scheduler", reason="daily_cleaning_news_social_plan")
+        tender_sources = [source.strip() for source in settings.tender_sources.split(",") if source.strip()]
+        tender_interval = max(5, min(settings.tender_monitor_interval_minutes, 24 * 60))
+        tender_recent_since = now - timedelta(minutes=tender_interval)
+        tender_monitor_active = db.scalar(
+            select(Task.id).where(
+                Task.agent_type == "research",
+                Task.status.in_(["open", "queued", "running"]),
+                Task.title.like("Tender source monitoring · %"),
+            )
+        )
+        tender_monitor_recent = db.scalar(
+            select(Task.id).where(
+                Task.agent_type == "research",
+                Task.created_at >= tender_recent_since,
+                Task.title.like("Tender source monitoring · %"),
+            )
+        )
+        if tender_sources and not tender_monitor_active and not tender_monitor_recent:
+            task = Task(
+                title=f"Tender source monitoring · {now.isoformat(timespec='minutes')}",
+                agent_type="research",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={"collection": "tenders", "sources": tender_sources, "source": "scheduler"},
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(db, task, actor="scheduler", reason="recurring_tender_source_monitoring")
         report_interval = max(5, min(settings.owner_activity_report_interval_minutes, 24 * 60))
         report_window = owner_report_window(now, report_interval)
         report_key = f"owner-activity-report:{report_window.isoformat()}"

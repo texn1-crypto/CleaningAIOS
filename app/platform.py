@@ -192,7 +192,7 @@ class CompanyBrain:
 
 
 class ApprovalEngine:
-    protected_actions = {"financial", "legal", "contract", "hr_final", "tender_submission", "bulk_outreach", "social_publication"}
+    protected_actions = {"financial", "legal", "contract", "hr_final", "tender_participation", "tender_submission", "bulk_outreach", "social_publication"}
 
     def request(self, db: Session, action_kind: str, resource_type: str, resource_id: str, requested_by: str, payload: dict[str, Any], rationale: str = "") -> ApprovalRequest:
         now = now_utc()

@@ -20,6 +20,7 @@ class ApprovalKind(str, Enum):
     CONTRACT = "contract"
     HR_FINAL = "hr_final"
     TENDER_SUBMISSION = "tender_submission"
+    TENDER_PARTICIPATION = "tender_participation"
     BULK_OUTREACH = "bulk_outreach"
 
 
