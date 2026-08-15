@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 
 from .config import settings
 from .db import SessionLocal
@@ -26,6 +26,8 @@ from .social_runtime import generate_next_social_visual, publish_next_social_pos
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("cleaningai.worker")
+
+SMTP_AUTH_RETRY_DELAY = timedelta(minutes=15)
 
 
 def outreach_delivery_window(now: datetime) -> tuple[datetime | None, datetime]:
@@ -71,6 +73,7 @@ def _queue_outreach_progress(
         )
         or 0
     )
+
     campaign_sent = int(
         db.scalar(
             select(func.count(OutboundMessage.id)).where(
@@ -118,6 +121,60 @@ def _queue_outreach_progress(
             "next_window_start": next_window_start.isoformat(),
         },
         correlation_id=f"campaign:{row.campaign_key}",
+    )
+
+
+def _defer_mailbox_after_auth_failure(
+    db,
+    row: OutboundMessage,
+    *,
+    now: datetime,
+) -> None:
+    """Circuit-break a mailbox after an SMTP authentication failure.
+
+    Authentication errors apply to the sender mailbox rather than one
+    recipient. Deferring the whole mailbox prevents a bad application password
+    from turning every queued recipient into an immediate permanent failure.
+    """
+    retry_at = now + SMTP_AUTH_RETRY_DELAY
+    mailbox_scope = (
+        OutboundMessage.mailbox_id == row.mailbox_id
+        if row.mailbox_id is not None
+        else OutboundMessage.mailbox_id.is_(None)
+    )
+    safe_error = "SMTP authentication failed; verify the mailbox application password"
+    db.execute(
+        update(OutboundMessage)
+        .where(
+            mailbox_scope,
+            OutboundMessage.status.in_(["queued", "waiting_configuration"]),
+            OutboundMessage.scheduled_at < retry_at,
+        )
+        .values(
+            status="waiting_configuration",
+            scheduled_at=retry_at,
+            error=safe_error,
+        )
+    )
+    mailbox_key = str(row.mailbox_id or "default")
+    queue_owner_notification(
+        db,
+        idempotency_key=f"outreach-smtp-auth:{mailbox_key}:{now.date().isoformat()}:telegram",
+        channel="telegram",
+        resource_type="sender_mailbox",
+        resource_id=mailbox_key,
+        subject="📨 Рассылка приостановлена: SMTP",
+        body=(
+            "Почтовый сервер отклонил авторизацию. Очередь сохранена и не будет "
+            "массово помечена ошибочной. Проверьте пароль приложения отправителя; "
+            f"следующая безопасная проверка после {retry_at.isoformat()}."
+        ),
+        data={
+            "mailbox_id": row.mailbox_id,
+            "status": "credentials_required",
+            "retry_at": retry_at.isoformat(),
+        },
+        correlation_id=f"mailbox:{mailbox_key}",
     )
 
 
@@ -214,6 +271,9 @@ def send_next_email(db, *, now: datetime | None = None) -> bool:
             window_start=window_start,
             next_window_start=next_window_start,
         )
+    except smtplib.SMTPAuthenticationError:
+        _defer_mailbox_after_auth_failure(db, row, now=now)
+        log.warning("SMTP authentication failed for mailbox %s; queue deferred", row.mailbox_id or "default")
     except Exception as exc:
         row.status = "failed"; row.error = str(exc)
         log.exception("email delivery failed for message %s", row.id)

@@ -4373,6 +4373,96 @@ def test_worker_skips_rate_limited_mailbox_without_starving_pool(monkeypatch):
     assert sent == ["send@example.com"]
 
 
+def test_smtp_auth_failure_defers_entire_mailbox_queue(client, monkeypatch):
+    from datetime import datetime
+
+    from sqlalchemy import select, update
+
+    from app import worker
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import OutboundMessage, OwnerNotification, SenderMailbox
+
+    class SMTP:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def starttls(self): return None
+        def login(self, username, password):
+            raise worker.smtplib.SMTPAuthenticationError(535, b"Application password is REQUIRED")
+        def send_message(self, message):
+            raise AssertionError("A message must not be sent after failed authentication")
+
+    monkeypatch.setattr(worker.smtplib, "SMTP", SMTP)
+    monkeypatch.setenv("SMTP_AUTH_BREAKER_TEST", "wrong-application-password")
+    monkeypatch.setattr(settings, "outreach_timezone", "Europe/Moscow")
+    monkeypatch.setattr(settings, "outreach_daily_start_hour", 9)
+    monkeypatch.setattr(settings, "outreach_per_minute", 10)
+    monkeypatch.setattr(settings, "outreach_per_day", 50)
+    now = datetime(2040, 1, 1, 12, 0)
+    campaign_key = "smtp-auth-breaker-test"
+
+    with SessionLocal() as db:
+        db.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.status.in_(["queued", "waiting_configuration", "retry"]))
+            .values(status="sent", sent_at=None)
+        )
+        mailbox = SenderMailbox(
+            name="Auth breaker",
+            address="auth-breaker@example.com",
+            smtp_host="smtp.example.com",
+            username="auth-breaker@example.com",
+            secret_ref="SMTP_AUTH_BREAKER_TEST",
+            per_minute=10,
+            per_day=50,
+        )
+        db.add(mailbox); db.flush()
+        db.add_all([
+            OutboundMessage(
+                campaign_key=campaign_key,
+                recipient=f"recipient-{index}@example.com",
+                subject="Auth breaker",
+                body="Body",
+                mailbox_id=mailbox.id,
+                status="queued",
+                scheduled_at=now,
+            )
+            for index in range(1, 3)
+        ])
+        db.commit()
+
+        assert worker.send_next_email(db, now=now) is True
+        rows = db.scalars(
+            select(OutboundMessage)
+            .where(OutboundMessage.campaign_key == campaign_key)
+            .order_by(OutboundMessage.id)
+        ).all()
+        retry_at = now + worker.SMTP_AUTH_RETRY_DELAY
+        assert [row.status for row in rows] == ["waiting_configuration", "waiting_configuration"]
+        assert [row.scheduled_at for row in rows] == [retry_at, retry_at]
+        assert all(row.error == "SMTP authentication failed; verify the mailbox application password" for row in rows)
+        assert worker.send_next_email(db, now=now) is False
+
+        notification = db.scalar(
+            select(OwnerNotification).where(
+                OwnerNotification.idempotency_key
+                == f"outreach-smtp-auth:{mailbox.id}:{now.date().isoformat()}:telegram"
+            )
+        )
+        assert notification is not None
+        assert notification.data["status"] == "credentials_required"
+        assert "пароль приложения" in notification.body
+
+        db.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.campaign_key == campaign_key)
+            .values(status="sent", sent_at=None)
+        )
+        notification.status = "sent"
+        db.commit()
+
+
 def test_expired_approval_is_persistently_rejected(client):
     from datetime import datetime, timedelta, timezone
 
