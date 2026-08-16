@@ -1272,6 +1272,11 @@ def test_russian_chat_reads_existing_sections():
         "kind": "task_eta",
         "task_id": 42,
     }
+    image = understand_russian_message("Создай изображение чистого холла бизнес-центра без людей")
+    assert image["kind"] == "task"
+    assert image["agent_type"] == "marketing"
+    assert image["payload"]["action"] == "generate_image"
+    assert image["payload"]["external_publish"] is False
 
 
 def test_sensitive_text_redacts_telegram_token_inside_api_url():
@@ -1495,6 +1500,88 @@ def test_telegram_social_setup_preserves_failed_status(monkeypatch):
     reply = Update.effective_message.replies[-1]
     assert "не началось" in reply
     assert "adapter failure" in reply
+
+
+def test_telegram_image_request_runs_audited_agent_and_reports_async_delivery(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 701, "agent_type": "marketing", "title": "AI image"}
+        if path == "/api/tasks/701/run":
+            return {"status": "done", "result": {"status": "queued", "asset_id": 81}}
+        raise AssertionError(path)
+
+    class Message:
+        text = "Создай изображение чистого холла бизнес-центра без людей"
+        message_id = 555
+        reply_to_message = None
+
+        def __init__(self): self.replies = []
+        async def reply_text(self, value, **kwargs): self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Chat:
+        id = 456
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+        effective_chat = Chat()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+
+    assert "Генерация изображения #81 запущена" in Update.effective_message.replies[-1]
+    task_payload = next(kwargs["json"] for _, path, kwargs in calls if path == "/api/tasks")
+    assert task_payload["payload"]["request_key"] == "telegram:456:555"
+    assert task_payload["payload"]["external_publish"] is False
+    assert task_payload["max_attempts"] == 1
+
+
+def test_image_request_is_supported_and_idempotently_queues_real_provider(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    monkeypatch.setattr(settings, "image_generation_enabled", True)
+    monkeypatch.setattr(settings, "image_generation_api_key", "test-image-key")
+    message = "Сгенерируй картинку современного чистого офиса без людей"
+    intent = understand_russian_message(message)
+    analysis = client.post("/api/request-analysis", json={"message": message, "intent": intent}).json()
+    assert analysis["classification"] == "supported"
+    assert analysis["improvement_id"] is None
+
+    payload = {**intent["payload"], "request_key": "telegram:test:image:1"}
+    first_task = client.post("/api/tasks", json={
+        "title": message,
+        "agent_type": "marketing",
+        "payload": payload,
+        "max_attempts": 1,
+    }).json()
+    first = client.post(f"/api/tasks/{first_task['id']}/run").json()
+    assert first["status"] == "done"
+    assert first["result"]["status"] == "queued"
+    assert first["result"]["external_publish"] is False
+
+    second_task = client.post("/api/tasks", json={
+        "title": message,
+        "agent_type": "marketing",
+        "payload": payload,
+        "max_attempts": 1,
+    }).json()
+    second = client.post(f"/api/tasks/{second_task['id']}/run").json()
+    assert second["status"] == "done"
+    assert second["result"]["asset_id"] == first["result"]["asset_id"]
+    assert second["result"]["idempotent_replay"] is True
 
 
 def test_task_timing_report_does_not_treat_empty_agent_summary_as_completion(client):
@@ -3727,7 +3814,7 @@ def test_published_website_news_and_media_workflow(client):
     published = client.patch(f"/api/marketing/content/{content['id']}", json={"status": "published", "metrics": {"cover_url": "/static/cleaning-hero.png"}})
     assert published.status_code == 200
     asset = client.post("/api/marketing/media-assets", json={"kind": "image", "title": "Визуал новости", "prompt": "Минималистичный чистый интерьер"}).json()
-    assert asset["provider"] == "codex_imagegen_workflow"
+    assert asset["provider"] == "local_media_pool"
     completed = client.patch(f"/api/marketing/media-assets/{asset['id']}", headers={"X-Role": "manager"}, json={"status": "published", "public_url": "/static/cleaning-hero.png", "alt_text": "Чистый интерьер"})
     assert completed.status_code == 200
     site = client.get("/api/public/site").json()

@@ -131,6 +131,20 @@ to hand capability gaps to a published ChatGPT Workspace Agent API channel. With
 them the Request Analyst still stores a complete Codex prompt, acceptance criteria
 and test plan in PostgreSQL and reports `credentials_required`.
 
+Set `IMAGE_GENERATION_API_KEY` and explicitly opt in with
+`IMAGE_GENERATION_ENABLED=true` to activate `/image` and natural-language image
+requests in Telegram. `IMAGE_GENERATION_MODEL` defaults to `gpt-image-2`, while
+`IMAGE_GENERATION_SIZE`, `IMAGE_GENERATION_QUALITY` and
+`IMAGE_GENERATION_TIMEOUT_SECONDS` control the bounded provider request. The worker
+validates the returned base64, PNG/JPEG signature, file-size limit and SHA-256 before
+delivering the file through Telegram. It never publishes a direct result. Set
+`SOCIAL_IMAGE_GENERATION_ENABLED=true` separately to use paid generation for daily
+social visuals; otherwise those plans continue with the original local media pool.
+Store the key only in the production secret store or `.env`, never in a bot message,
+database field, log or prompt. A 401/403 becomes a terminal `credentials_required`
+job until configuration is fixed and the request is explicitly requeued, preventing
+an accidental paid or hot retry loop.
+
 Before exposing the website, set `COMPANY_NAME`, `COMPANY_LEGAL_NAME`,
 `COMPANY_INN`, `COMPANY_PHONE`, `COMPANY_EMAIL`, `COMPANY_ADDRESS`,
 `COMPANY_SERVICE_AREA` and `PRIVACY_CONTACT_EMAIL`. The production lead form remains

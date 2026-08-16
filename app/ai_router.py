@@ -56,8 +56,12 @@ def provider_catalog() -> list[dict[str, Any]]:
         },
         {
             "capability": "image_generation",
-            "provider": "codex_imagegen_workflow" if not settings.image_generation_api_key else "external_image_provider",
-            "status": "codex_workflow_available" if not settings.image_generation_api_key else "credentials_present_adapter_required",
+            "provider": "openai_images",
+            "status": (
+                "configured"
+                if settings.image_generation_configured
+                else "credentials_required"
+            ),
             "scopes": ["approved_brand_brief", "public_content"],
             "forbidden": ["customer_personal_data", "banking_credentials"],
         },
@@ -73,7 +77,9 @@ def provider_catalog() -> list[dict[str, Any]]:
 
 def media_provider(kind: str) -> tuple[str, str]:
     if kind == "image":
-        return "codex_imagegen_workflow", "queued"
+        if settings.image_generation_configured:
+            return "openai_images", "queued"
+        return "local_media_pool", "queued"
     if settings.video_generation_api_key:
         return "external_video_provider", "adapter_required"
     return "external_video_provider", "credentials_required"

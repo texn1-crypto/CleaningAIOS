@@ -94,9 +94,10 @@ def integration_status() -> dict[str, Any]:
         "media_generation": {
             "image": (
                 "configured_owner_approval_required"
-                if settings.social_image_generation_enabled and settings.image_generation_api_key
+                if settings.image_generation_configured
                 else "local_media_pool_ready"
             ),
+            "ai_image": "ready" if settings.image_generation_configured else "credentials_required",
             "video": "credentials_present_adapter_required"
             if settings.video_generation_api_key
             else "credentials_required",

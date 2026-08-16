@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 from .chat import redact_sensitive_text
 from .config import settings
 from .models import ApprovalRequest, ContentItem, MediaAsset
+from .notifications import queue_owner_notification
 from .orchestrator import audit
 from .platform import event_bus
 from .social_marketing import finalize_social_preview_batch
@@ -26,6 +28,12 @@ LOCAL_SOCIAL_MEDIA_POOL = (
     "services/facade-territory-v1.jpg",
     "social/2026-08-13-business-center.png",
     "social/2026-08-13-checklist-quality.png",
+)
+
+PRIVATE_IMAGE_PROMPT_PATTERN = re.compile(
+    r"(?i)(?:[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})"
+    r"|(?<!\d)(?:(?:\+?7|8)[\s()\-]*)?(?:\d[\s()\-]*){10}(?!\d)"
+    r"|(?<!\d)\d{20}(?!\d)"
 )
 
 
@@ -70,7 +78,11 @@ def _store_verified_image(asset: MediaAsset, raw: bytes, *, provider: str, metad
     temporary.replace(destination)
     asset.provider = provider
     asset.storage_path = str(destination)
-    asset.public_url = f"/api/public/social-media/{asset.id}/{digest}.{extension}"
+    asset.public_url = (
+        ""
+        if metadata.get("direct_request")
+        else f"/api/public/social-media/{asset.id}/{digest}.{extension}"
+    )
     asset.status = "ready"
     asset.metadata_json = {
         **metadata,
@@ -95,6 +107,136 @@ def _use_local_media_pool(asset: MediaAsset, metadata: dict) -> None:
     })
 
 
+def queue_direct_image_request(db: Session, payload: dict) -> dict:
+    """Create one auditable, idempotent image job for a Telegram request."""
+    prompt = str(payload.get("prompt") or "").strip()[:4000]
+    safe_prompt = redact_sensitive_text(prompt)
+    if len(prompt) < 4:
+        return {
+            "status": "input_rejected",
+            "reason": "Опишите, что должно быть изображено, минимум несколькими словами.",
+            "evidence": [{"type": "image_prompt_rejected", "reason": "prompt_too_short"}],
+        }
+    if safe_prompt != prompt or PRIVATE_IMAGE_PROMPT_PATTERN.search(prompt):
+        return {
+            "status": "input_rejected",
+            "reason": "Из запроса удалите email, телефоны, банковские реквизиты и любые секреты.",
+            "evidence": [{"type": "image_prompt_rejected", "reason": "sensitive_data_detected"}],
+        }
+    if not settings.image_generation_configured:
+        return {
+            "status": "credentials_required",
+            "reason": (
+                "AI-генератор установлен, но не активирован: нужен отдельный OpenAI API key "
+                "и IMAGE_GENERATION_ENABLED=true. Ключ нельзя отправлять сообщением в Telegram или чат."
+            ),
+            "credentials_required": ["IMAGE_GENERATION_API_KEY", "IMAGE_GENERATION_ENABLED"],
+            "evidence": [{"type": "image_generation_configuration_check", "configured": False}],
+        }
+
+    request_key = str(payload.get("request_key") or "")[:255]
+    if request_key:
+        candidates = db.scalars(
+            select(MediaAsset)
+            .where(MediaAsset.kind == "image", MediaAsset.provider == "openai_images")
+            .order_by(MediaAsset.id.desc())
+            .limit(500)
+        ).all()
+        existing = next(
+            (
+                row
+                for row in candidates
+                if str((row.metadata_json or {}).get("request_key") or "") == request_key
+            ),
+            None,
+        )
+        if existing:
+            return {
+                "status": "ready" if existing.status == "ready" else "queued",
+                "asset_id": existing.id,
+                "record_id": existing.id,
+                "idempotent_replay": True,
+                "public_url": existing.public_url if existing.status == "ready" else "",
+                "evidence": [{"type": "image_generation_reused", "media_asset_id": existing.id}],
+            }
+
+    asset = MediaAsset(
+        kind="image",
+        title=f"AI-изображение: {prompt[:220]}"[:255],
+        provider="openai_images",
+        prompt=prompt,
+        alt_text="Изображение, созданное AI по запросу владельца"[:500],
+        status="queued",
+        metadata_json={
+            "direct_request": True,
+            "notify_owner": True,
+            "request_key": request_key,
+            "source": str(payload.get("source") or "telegram_natural_language")[:64],
+            "external_publish": False,
+        },
+    )
+    db.add(asset)
+    db.flush()
+    event_bus.publish(
+        db,
+        "marketing.image_generation_requested",
+        "media_asset",
+        str(asset.id),
+        {"provider": asset.provider, "model": settings.image_generation_model},
+        idempotency_key=f"direct-image-request:{request_key or asset.id}",
+    )
+    audit(
+        db,
+        "marketing",
+        "marketing.image_generation_requested",
+        "media_asset",
+        str(asset.id),
+        {"provider": asset.provider, "model": settings.image_generation_model},
+    )
+    return {
+        "status": "queued",
+        "asset_id": asset.id,
+        "record_id": asset.id,
+        "idempotent_replay": False,
+        "external_publish": False,
+        "evidence": [{"type": "image_generation_queued", "media_asset_id": asset.id}],
+    }
+
+
+def _queue_direct_image_notification(db: Session, asset: MediaAsset, *, succeeded: bool) -> None:
+    metadata = dict(asset.metadata_json or {})
+    if not metadata.get("direct_request") or not metadata.get("notify_owner"):
+        return
+    if succeeded:
+        digest = str(metadata.get("sha256") or "")
+        queue_owner_notification(
+            db,
+            idempotency_key=f"direct-image:{asset.id}:ready:{digest}",
+            channel="telegram",
+            resource_type="media_asset",
+            resource_id=str(asset.id),
+            subject=f"🎨 AI-изображение #{asset.id} готово",
+            body="Файл создан и проверен. Он никуда не опубликован и доступен только как результат вашего запроса.",
+            data={"media_asset_id": asset.id, "sha256": digest},
+        )
+        return
+    queue_owner_notification(
+        db,
+        idempotency_key=f"direct-image:{asset.id}:failed:{asset.status}",
+        channel="telegram",
+        resource_type="media_asset",
+        resource_id=str(asset.id),
+        subject=f"⚠️ AI-изображение #{asset.id} не создано",
+        body=(
+            "Нужен новый IMAGE_GENERATION_API_KEY."
+            if asset.status == "credentials_required"
+            else "Провайдер или проверка файла завершились ошибкой. Ошибка записана в audit log."
+        ),
+        data={"generation_status": asset.status},
+        severity="high" if asset.status == "credentials_required" else "normal",
+    )
+
+
 def generate_next_social_visual(db: Session) -> bool:
     asset = db.scalar(
         select(MediaAsset)
@@ -103,7 +245,10 @@ def generate_next_social_visual(db: Session) -> bool:
             # workflow. Keep consuming those persisted jobs while all newly
             # created jobs use the canonical ``openai_images`` provider.
             MediaAsset.provider.in_(["imagegen", "openai_images", "local_media_pool"]),
-            MediaAsset.status.in_(["queued", "credentials_required"]),
+            # Credential failures are terminal until an operator explicitly
+            # fixes configuration and requeues the asset. This prevents a hot
+            # retry loop against a rejected API key.
+            MediaAsset.status == "queued",
         )
         .order_by(MediaAsset.id)
         .limit(1)
@@ -112,9 +257,29 @@ def generate_next_social_visual(db: Session) -> bool:
     if asset is None:
         return False
     metadata = dict(asset.metadata_json or {})
-    if asset.provider == "local_media_pool" or not (
+    direct_request = bool(metadata.get("direct_request"))
+    social_generation_configured = bool(
         settings.social_image_generation_enabled and settings.image_generation_api_key
-    ):
+    )
+    if direct_request and not settings.image_generation_configured:
+        asset.status = "credentials_required"
+        asset.metadata_json = {
+            **metadata,
+            "generation_status": "credentials_required",
+            "error_type": "ConfigurationRequired",
+        }
+        audit(
+            db,
+            "social_image_agent",
+            "marketing.social_visual_failed",
+            "media_asset",
+            str(asset.id),
+            {"generation_status": asset.status, "error_type": "ConfigurationRequired"},
+        )
+        _queue_direct_image_notification(db, asset, succeeded=False)
+        db.commit()
+        return True
+    if asset.provider == "local_media_pool" or (not direct_request and not social_generation_configured):
         try:
             _use_local_media_pool(asset, metadata)
             batch_id = int(metadata.get("batch_id") or 0)
@@ -137,7 +302,8 @@ def generate_next_social_visual(db: Session) -> bool:
 
     try:
         endpoint = _https_endpoint(settings.image_generation_base_url, "/images/generations")
-        with httpx.Client(timeout=90) as client:
+        timeout = min(300, max(10, int(settings.image_generation_timeout_seconds)))
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             response = client.post(
                 endpoint,
                 headers={
@@ -147,7 +313,7 @@ def generate_next_social_visual(db: Session) -> bool:
                 json={
                     "model": settings.image_generation_model,
                     "prompt": asset.prompt,
-                    "size": "1024x1024",
+                    "size": settings.image_generation_size,
                     "quality": settings.image_generation_quality,
                     "output_format": "png",
                 },
@@ -155,9 +321,11 @@ def generate_next_social_visual(db: Session) -> bool:
             response.raise_for_status()
         encoded = str(response.json()["data"][0]["b64_json"])
         raw = base64.b64decode(encoded, validate=True)
+        provider_request_id = str(getattr(response, "headers", {}).get("x-request-id") or "")[:128]
         _store_verified_image(asset, raw, provider="openai_images", metadata={
             **metadata,
             "model": settings.image_generation_model,
+            "provider_request_id": provider_request_id,
         })
         digest = str(asset.metadata_json["sha256"])
         batch_id = int(metadata.get("batch_id") or 0)
@@ -172,6 +340,7 @@ def generate_next_social_visual(db: Session) -> bool:
             idempotency_key=f"social-visual-generated:{asset.id}:{digest}",
         )
         audit(db, "social_image_agent", "marketing.social_visual_generated", "media_asset", str(asset.id), {"sha256": digest})
+        _queue_direct_image_notification(db, asset, succeeded=True)
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
         status_code = getattr(getattr(exc, "response", None), "status_code", None)
         asset.status = "credentials_required" if status_code in {401, 403} else "generation_failed"
@@ -180,6 +349,19 @@ def generate_next_social_visual(db: Session) -> bool:
             "generation_status": asset.status,
             "error_type": type(exc).__name__,
         }
+        audit(
+            db,
+            "social_image_agent",
+            "marketing.social_visual_failed",
+            "media_asset",
+            str(asset.id),
+            {
+                "generation_status": asset.status,
+                "error_type": type(exc).__name__,
+                "provider_status_code": status_code,
+            },
+        )
+        _queue_direct_image_notification(db, asset, succeeded=False)
     db.commit()
     return True
 

@@ -370,6 +370,10 @@ class SalesAgent:
 class MarketingAgent:
     name = "marketing"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "generate_image":
+            from .social_runtime import queue_direct_image_request
+
+            return queue_direct_image_request(db, payload)
         if payload.get("action") == "prepare_social_account_setup":
             from .social_marketing import prepare_social_account_setup
 

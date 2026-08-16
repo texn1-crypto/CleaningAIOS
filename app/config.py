@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     image_generation_base_url: str = "https://api.openai.com/v1"
     image_generation_model: str = "gpt-image-2"
     image_generation_quality: str = "low"
+    image_generation_size: str = "1024x1024"
+    image_generation_timeout_seconds: int = 120
+    image_generation_enabled: bool = False
     social_image_generation_enabled: bool = False
     video_generation_api_key: str = ""
     tender_sources: str = ""
@@ -120,6 +123,14 @@ class Settings(BaseSettings):
         if not self.production:
             return True
         return bool(self.company_legal_name and (self.privacy_contact_email or self.company_email))
+
+    @property
+    def image_generation_configured(self) -> bool:
+        """Keep the original social-only switch backward compatible."""
+        return bool(
+            self.image_generation_api_key
+            and (self.image_generation_enabled or self.social_image_generation_enabled)
+        )
 
 
 @lru_cache

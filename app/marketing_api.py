@@ -370,9 +370,10 @@ def social_summary(db: Session = Depends(get_db), actor: Principal = Depends(pri
             "instagram": "manual_legal_review_only",
             "images": (
                 "ready"
-                if settings.social_image_generation_enabled and settings.image_generation_api_key
+                if settings.image_generation_configured
                 else "local_media_pool_ready"
             ),
+            "ai_images": "ready" if settings.image_generation_configured else "credentials_required",
         },
         "latest_batches": [
             {

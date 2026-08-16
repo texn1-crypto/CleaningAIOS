@@ -318,7 +318,7 @@ async def proposal_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён."); return
-    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🛡 Системный администратор", "system_admin"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["📱 Новости и соцсети", "social"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
+    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🛡 Системный администратор", "system_admin"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["🎨 AI-генератор изображений", "image_help"], ["📱 Новости и соцсети", "social"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
     keyboard = [[InlineKeyboardButton(label, callback_data=key)] for label, key in rows]
     await update.effective_message.reply_text("CleaningAI OS · выберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1146,6 +1146,61 @@ async def addtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(f"Задача #{data['id']} создана: {data['title']}")
 
 
+def _image_request_key(update: Update) -> str:
+    message = update.effective_message
+    chat = getattr(update, "effective_chat", None)
+    chat_id = getattr(chat, "id", None) or getattr(getattr(update, "effective_user", None), "id", "owner")
+    message_id = getattr(message, "message_id", None) or "command"
+    return f"telegram:{chat_id}:{message_id}"[:255]
+
+
+async def _execute_image_generation(update: Update, intent: dict) -> None:
+    payload = {
+        **intent["payload"],
+        "request_key": _image_request_key(update),
+    }
+    task = await api("POST", "/api/tasks", json={
+        "title": intent["title"],
+        "agent_type": "marketing",
+        "priority": intent["priority"],
+        "payload": payload,
+        "max_attempts": 1,
+    })
+    completed = await api("POST", f"/api/tasks/{task['id']}/run")
+    result = completed.get("result") or {}
+    status = str(result.get("status") or completed.get("status") or "unknown")
+    if completed.get("status") == "done" and status in {"queued", "ready"}:
+        replay = " Ранее созданная заявка найдена повторно." if result.get("idempotent_replay") else ""
+        await update.effective_message.reply_text(
+            f"🎨 Генерация изображения #{result.get('asset_id', '—')} запущена.{replay} "
+            "Готовый проверенный файл бот пришлёт сюда автоматически. Публикация не выполняется."
+        )
+    elif status == "input_rejected":
+        await update.effective_message.reply_text(f"Изображение не создавалось: {result.get('reason', 'проверьте запрос')}" )
+    elif result.get("credentials_required") or status == "credentials_required" or completed.get("status") == "blocked":
+        await update.effective_message.reply_text(
+            "AI-генератор установлен, но пока не активирован. Нужен OpenAI API key в защищённой конфигурации сервера "
+            "и IMAGE_GENERATION_ENABLED=true. Не присылайте ключ сообщением."
+        )
+    else:
+        await update.effective_message.reply_text(
+            f"Изображение не создано. Задача #{task['id']}: {completed.get('status', 'unknown')}. "
+            f"Причина: {result.get('reason') or result.get('error') or 'неизвестная ошибка'}."
+        )
+
+
+async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = " ".join(getattr(context, "args", ()) or ()).strip()
+    if not prompt:
+        await update.effective_message.reply_text(
+            "Напишите: /image описание картинки. Например: /image современный чистый холл бизнес-центра, реалистичное фото, без текста и логотипов. "
+            "Не включайте персональные данные, телефоны, email и секреты."
+        )
+        return
+    intent = understand_russian_message(f"Создай изображение: {prompt}")
+    await _execute_image_generation(update, intent)
+
+
 async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён.")
@@ -1187,6 +1242,7 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• Что с тендерами?\n"
                 "• Найди тендеры по уборке БЦ\n"
                 "• Создай задачу связаться с новым клиентом\n"
+                "• Создай изображение чистого холла бизнес-центра\n"
                 "• Проанализируй финансы\n\n"
                 "Request Analyst проверяет каждый запрос. Если функции не хватает, он создаёт техническое задание для Codex с критериями и тест-планом.\n\n"
                 "Оплата, договоры, подача тендеров, окончательные кадровые решения и массовые рассылки всегда потребуют вашего подтверждения."
@@ -1238,13 +1294,16 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "improvement_id": analysis.get("improvement_id"),
                 })
                 return
+            if action == "generate_image":
+                await _execute_image_generation(update, intent)
+                return
             data = await api("POST", "/api/tasks", json={
                 "title": intent["title"],
                 "agent_type": intent["agent_type"],
                 "priority": intent["priority"],
                 "payload": intent["payload"],
                 "max_attempts": 1
-                if action in {"generate_proposal", "improve_referenced_text", "review_previous_text", "prepare_social_account_setup"}
+                if action in {"generate_proposal", "improve_referenced_text", "review_previous_text", "prepare_social_account_setup", "generate_image"}
                 else 3,
             })
             protection = " Критическое действие будет остановлено до вашего подтверждения." if intent["protected"] else ""
@@ -1462,6 +1521,11 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif q.data == "hr": await records(update, "candidate", "🧹 Кандидаты и HR")
         elif q.data == "finance": await module_summary(update, "finance", "💰 Финансы")
         elif q.data == "marketing": await module_summary(update, "marketing", "📊 Маркетинг")
+        elif q.data == "image_help":
+            await update.effective_message.reply_text(
+                "🎨 AI-генератор\n\nНапишите обычной фразой «Создай изображение …» или используйте /image описание. "
+                "Результат придёт отдельным сообщением; он никуда не публикуется автоматически."
+            )
         elif q.data == "social": await social_dashboard(update, context)
         elif q.data == "marketing_invoices": await records(update, "marketing_invoice", "🧾 Счета рекламы · одобрение не выполняет оплату")
         elif q.data == "simulator":
@@ -1531,6 +1595,7 @@ def build_application() -> Application:
         ("decisions", decisions, "viewer"),
         ("outreach", outreach_dashboard, "viewer"),
         ("mailing", mailing_start, "operator"),
+        ("image", image_command, "operator"),
         ("social", social_dashboard, "viewer"),
         ("cancel", mailing_cancel, "operator"),
         ("addtask", addtask, "operator"),

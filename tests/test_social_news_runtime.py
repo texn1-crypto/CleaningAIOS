@@ -7,14 +7,14 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.config import settings
 from app.db import SessionLocal
 from app.models import ApprovalRequest, BusinessRecord, ContentItem, MediaAsset, OwnerNotification
 from app.social_marketing import prepare_daily_cleaning_news_plan
 from app.social_news import CleaningNewsItem, parse_cleaning_news_feed
-from app.social_runtime import _https_endpoint, _ok_signature, _safe_provider_failure, generate_next_social_visual, publish_next_social_post
+from app.social_runtime import _https_endpoint, _ok_signature, _safe_provider_failure, generate_next_social_visual, publish_next_social_post, queue_direct_image_request
 
 
 def test_cleaning_news_feed_keeps_only_fresh_relevant_https_items(monkeypatch):
@@ -73,8 +73,10 @@ def test_news_agent_does_not_invent_posts_when_sources_are_empty(client):
 def test_image_agent_generates_checksum_bound_public_asset(client, monkeypatch, tmp_path):
     raw = b"\x89PNG\r\n\x1a\n" + b"verified-generated-image"
     digest = hashlib.sha256(raw).hexdigest()
+    calls = []
 
     class Response:
+        headers = {"x-request-id": "image-request-123"}
         def raise_for_status(self): return None
         def json(self): return {"data": [{"b64_json": base64.b64encode(raw).decode()}]}
 
@@ -82,7 +84,7 @@ def test_image_agent_generates_checksum_bound_public_asset(client, monkeypatch, 
         def __init__(self, *args, **kwargs): pass
         def __enter__(self): return self
         def __exit__(self, *args): return None
-        def post(self, *args, **kwargs): return Response()
+        def post(self, *args, **kwargs): calls.append((args, kwargs)); return Response()
 
     monkeypatch.setattr("app.social_runtime.httpx.Client", Client)
     monkeypatch.setattr(settings, "social_image_generation_enabled", True)
@@ -96,7 +98,17 @@ def test_image_agent_generates_checksum_bound_public_asset(client, monkeypatch, 
         db.refresh(asset)
         assert asset.status == "ready"
         assert asset.metadata_json["sha256"] == digest
+        assert asset.metadata_json["provider_request_id"] == "image-request-123"
         public_url = asset.public_url
+    assert calls[0][0][0] == "https://api.openai.com/v1/images/generations"
+    assert calls[0][1]["json"] == {
+        "model": settings.image_generation_model,
+        "prompt": "Safe prompt",
+        "size": settings.image_generation_size,
+        "quality": settings.image_generation_quality,
+        "output_format": "png",
+    }
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer test-key"
     response = client.get(public_url)
     assert response.status_code == 200
     assert response.content == raw
@@ -142,6 +154,174 @@ def test_image_agent_consumes_legacy_imagegen_job(client, monkeypatch, tmp_path)
         assert asset.provider == "local_media_pool"
         assert asset.metadata_json["generation_status"] == "ready_for_owner_preview"
         assert client.get(asset.public_url).status_code == 200
+
+
+def test_direct_image_request_rejects_personal_data_before_provider(monkeypatch):
+    monkeypatch.setattr(settings, "image_generation_enabled", True)
+    monkeypatch.setattr(settings, "image_generation_api_key", "test-key")
+    with SessionLocal() as db:
+        result = queue_direct_image_request(db, {
+            "prompt": "Нарисуй карточку клиента client@example.com",
+            "request_key": "private-image-test",
+        })
+    assert result["status"] == "input_rejected"
+    assert result["evidence"][0]["reason"] == "sensitive_data_detected"
+
+
+def test_direct_image_request_reports_missing_credentials_without_fake_asset(monkeypatch):
+    monkeypatch.setattr(settings, "image_generation_enabled", False)
+    monkeypatch.setattr(settings, "social_image_generation_enabled", False)
+    monkeypatch.setattr(settings, "image_generation_api_key", "")
+    with SessionLocal() as db:
+        before = len(db.scalars(select(MediaAsset)).all())
+        result = queue_direct_image_request(db, {
+            "prompt": "Чистый современный холл без людей",
+            "request_key": "missing-credentials-test",
+        })
+        after = len(db.scalars(select(MediaAsset)).all())
+    assert result["status"] == "credentials_required"
+    assert result["credentials_required"] == ["IMAGE_GENERATION_API_KEY", "IMAGE_GENERATION_ENABLED"]
+    assert after == before
+
+
+def test_direct_image_success_queues_verified_photo_notification(client, monkeypatch, tmp_path):
+    from app.models import OwnerNotification
+
+    raw = b"\x89PNG\r\n\x1a\n" + b"direct-generated-image"
+
+    class Response:
+        headers = {}
+        def raise_for_status(self): return None
+        def json(self): return {"data": [{"b64_json": base64.b64encode(raw).decode()}]}
+
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, *args, **kwargs): return Response()
+
+    monkeypatch.setattr("app.social_runtime.httpx.Client", Client)
+    monkeypatch.setattr(settings, "image_generation_enabled", True)
+    monkeypatch.setattr(settings, "image_generation_api_key", "test-key")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    monkeypatch.setattr(settings, "owner_telegram_id", "999")
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token")
+    with SessionLocal() as db:
+        db.execute(update(MediaAsset).where(MediaAsset.status == "queued").values(status="test_skipped"))
+        requested = queue_direct_image_request(db, {
+            "prompt": "Чистый современный холл без людей и текста",
+            "request_key": "direct-success-test",
+            "source": "telegram_natural_language",
+        })
+        db.commit()
+        assert generate_next_social_visual(db) is True
+        asset = db.get(MediaAsset, requested["asset_id"])
+        assert asset.status == "ready"
+        assert asset.public_url == ""
+        notification = db.scalar(
+            select(OwnerNotification).where(
+                OwnerNotification.resource_type == "media_asset",
+                OwnerNotification.resource_id == str(asset.id),
+            )
+        )
+        assert notification is not None
+        assert notification.status == "queued"
+        assert notification.data["media_asset_id"] == asset.id
+
+
+def test_direct_image_auth_failure_is_audited_and_not_hot_retried(monkeypatch, tmp_path):
+    from app.models import AuditLog
+
+    response = httpx.Response(
+        401,
+        request=httpx.Request("POST", "https://api.openai.com/v1/images/generations"),
+        json={"error": {"message": "invalid credential"}},
+    )
+
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, *args, **kwargs):
+            raise httpx.HTTPStatusError("unauthorized", request=response.request, response=response)
+
+    monkeypatch.setattr("app.social_runtime.httpx.Client", Client)
+    monkeypatch.setattr(settings, "image_generation_enabled", True)
+    monkeypatch.setattr(settings, "image_generation_api_key", "invalid-test-key")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    monkeypatch.setattr(settings, "owner_telegram_id", "999")
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token")
+    with SessionLocal() as db:
+        db.execute(update(MediaAsset).where(MediaAsset.status == "queued").values(status="test_skipped"))
+        requested = queue_direct_image_request(db, {
+            "prompt": "Современный чистый холл без людей",
+            "request_key": "direct-auth-failure-test",
+        })
+        db.commit()
+        assert generate_next_social_visual(db) is True
+        asset = db.get(MediaAsset, requested["asset_id"])
+        assert asset.status == "credentials_required"
+        failure = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "marketing.social_visual_failed",
+                AuditLog.resource_id == str(asset.id),
+            )
+        )
+        assert failure.details["provider_status_code"] == 401
+        assert "invalid-test-key" not in str(failure.details)
+        assert generate_next_social_visual(db) is False
+
+
+def test_owner_notification_sends_direct_generated_image_as_photo(monkeypatch, tmp_path):
+    from app import notifications
+    from app.models import OwnerNotification
+
+    raw = b"\x89PNG\r\n\x1a\n" + b"telegram-direct-image"
+    digest = hashlib.sha256(raw).hexdigest()
+    path = tmp_path / "social-media" / "image.png"
+    path.parent.mkdir()
+    path.write_bytes(raw)
+    asset = MediaAsset(
+        id=881,
+        kind="image",
+        title="Generated image",
+        provider="openai_images",
+        storage_path=str(path),
+        status="ready",
+        metadata_json={"sha256": digest},
+    )
+    calls = []
+
+    class Response:
+        def raise_for_status(self): return None
+
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def post(self, url, **kwargs): calls.append((url, kwargs)); return Response()
+
+    class FakeDb:
+        def get(self, model, identity):
+            assert (model, identity) == (MediaAsset, 881)
+            return asset
+
+    monkeypatch.setattr(notifications.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    row = OwnerNotification(
+        idempotency_key="direct-photo-test",
+        channel="telegram",
+        recipient="999",
+        subject="AI image ready",
+        body="Not published",
+        data={"media_asset_id": 881},
+    )
+    notifications._send_telegram(FakeDb(), row)
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/sendPhoto")
+    assert calls[0][1]["files"]["photo"] == ("ai-image-881.png", raw, "image/png")
+    assert "Not published" in calls[0][1]["data"]["caption"]
 
 
 def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeypatch, tmp_path):

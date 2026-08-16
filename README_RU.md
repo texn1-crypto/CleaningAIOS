@@ -65,7 +65,7 @@ Open `http://localhost:8000/docs`. In development role headers are available for
 - `OWNER_NOTIFICATION_EMAIL` plus SMTP for hot-lead alerts; optional Russian advertising account credentials listed in `.env.example`
 - per-mailbox `SMTP_*` and `IMAP_*` environment secrets for outreach and inbound replies; secrets are referenced by name from `SenderMailbox` and are never returned by the API
 - social administrator credentials listed in `.env.example`; Telegram, VK and Odnoklassniki publish only after exact owner approval, while Instagram remains manual/legal-review only
-- `IMAGE_GENERATION_API_KEY` plus the explicit `SOCIAL_IMAGE_GENERATION_ENABLED=true` owner switch for paid social-image generation; the default is disabled
+- `IMAGE_GENERATION_API_KEY` plus the explicit `IMAGE_GENERATION_ENABLED=true` owner switch for the Telegram AI image generator; `SOCIAL_IMAGE_GENERATION_ENABLED=true` additionally enables paid visuals for daily social posts; both default to disabled
 - without a paid image key the worker uses the repository's original cleaning-photo pool, still checksum-binds every selected file to the owner preview
 
 See [production deployment](docs/PRODUCTION.md) and [baseline failures](docs/BASELINE.md).
@@ -113,6 +113,23 @@ See [architecture](docs/ARCHITECTURE.md) for the event flow and module boundarie
 See [website and Marketing OS](docs/MARKETING_SITE.md) for the lead, media, advertising-platform, invoice and credential flows.
 
 ## Общение с Telegram-ботом
+
+### AI-генератор изображений
+
+Владелец может написать обычной фразой «Создай изображение чистого холла
+бизнес-центра без людей» или использовать `/image описание`. Запрос проходит через
+Marketing Agent и durable-очередь. Worker вызывает OpenAI Images, принимает только
+валидный PNG/JPEG в пределах лимита, сохраняет SHA-256 и отправляет готовый файл в
+Telegram как фотографию. Повторная обработка одного Telegram message ID не создаёт
+второй платный запрос. Изображение никогда не публикуется автоматически.
+
+Передача email, телефона, банковского счёта или секрета в prompt блокируется до
+внешнего API. Для активации задайте `IMAGE_GENERATION_API_KEY` и
+`IMAGE_GENERATION_ENABLED=true` только в защищённой конфигурации сервера. При
+отсутствующем или отклонённом ключе бот сообщает `credentials_required`; ключ нельзя
+присылать в Telegram, чат, API payload или хранить в БД. Плановые соцсети используют
+AI только при отдельном `SOCIAL_IMAGE_GENERATION_ENABLED=true`, иначе остаются на
+оригинальном локальном медиапуле.
 
 Владелец может писать боту обычным русским текстом: «покажи задачи», «что с
 тендерами», «найди тендеры по уборке БЦ», «создай задачу связаться с клиентом» или

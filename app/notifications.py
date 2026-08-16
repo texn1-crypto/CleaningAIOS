@@ -285,6 +285,26 @@ def _send_email(db: Session, row: OwnerNotification) -> None:
         smtp.send_message(message)
 
 
+def _verified_media_attachment(asset: MediaAsset) -> tuple[bytes, str, str]:
+    if not asset.storage_path:
+        raise RuntimeError("Generated image file is unavailable")
+    root = Path(settings.document_storage_path).resolve()
+    path = Path(asset.storage_path).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("Generated image is outside document storage") from exc
+    raw = path.read_bytes()
+    digest = str((asset.metadata_json or {}).get("sha256") or "")
+    if len(digest) != 64 or hashlib.sha256(raw).hexdigest() != digest:
+        raise RuntimeError("Generated image checksum mismatch")
+    suffix = path.suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg"}:
+        raise RuntimeError("Generated image has an unsupported file type")
+    content_type = "image/png" if suffix == ".png" else "image/jpeg"
+    return raw, f"ai-image-{asset.id}{suffix}", content_type
+
+
 def _send_telegram(db: Session, row: OwnerNotification) -> None:
     if not all([row.recipient, settings.telegram_bot_token]):
         raise RuntimeError("Telegram owner credentials are not configured")
@@ -322,7 +342,23 @@ def _send_telegram(db: Session, row: OwnerNotification) -> None:
             ]
         )
     preview_posts = row.data.get("preview_posts") if isinstance(row.data, dict) else None
+    media_asset_id = row.data.get("media_asset_id") if isinstance(row.data, dict) else None
     with httpx.Client(timeout=30) as client:
+        if isinstance(media_asset_id, int):
+            asset = db.get(MediaAsset, media_asset_id)
+            if not asset or asset.status != "ready":
+                raise RuntimeError("Generated image is not ready")
+            raw, filename, content_type = _verified_media_attachment(asset)
+            caption = f"{row.subject}\n\n{row.body}"
+            if len(caption) > 1024:
+                caption = caption[:1023] + "…"
+            response = client.post(
+                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendPhoto",
+                data={"chat_id": row.recipient, "caption": caption},
+                files={"photo": (filename, raw, content_type)},
+            )
+            response.raise_for_status()
+            return
         if isinstance(preview_posts, list) and preview_posts:
             media: list[dict[str, str]] = []
             files: list[tuple[str, tuple[str, bytes, str]]] = []
@@ -344,22 +380,11 @@ def _send_telegram(db: Session, row: OwnerNotification) -> None:
                 asset_id = int(post.get("visual_asset_id") or 0)
                 asset = db.get(MediaAsset, asset_id) if asset_id else None
                 if asset and asset.storage_path:
-                    root = Path(settings.document_storage_path).resolve()
-                    path = Path(asset.storage_path).resolve()
-                    try:
-                        path.relative_to(root)
-                    except ValueError as exc:
-                        raise RuntimeError("Social preview image is outside document storage") from exc
-                    raw = path.read_bytes()
-                    digest = str((asset.metadata_json or {}).get("sha256") or "")
-                    if len(digest) != 64 or hashlib.sha256(raw).hexdigest() != digest:
-                        raise RuntimeError("Social preview image checksum mismatch")
+                    raw, filename, content_type = _verified_media_attachment(asset)
                     attach_name = f"asset_{asset.id}"
                     media_value = f"attach://{attach_name}"
                     if attach_name not in attached:
-                        suffix = path.suffix.lower()
-                        content_type = "image/png" if suffix == ".png" else "image/jpeg"
-                        files.append((attach_name, (f"social{suffix}", raw, content_type)))
+                        files.append((attach_name, (filename, raw, content_type)))
                         attached.add(attach_name)
                 media.append({"type": "photo", "media": media_value, "caption": caption})
             endpoint = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMediaGroup"

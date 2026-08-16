@@ -198,6 +198,26 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
     ):
         return {"kind": "system_self_check"}
 
+    image_action = _contains(
+        text,
+        "создай", "сделай", "сгенерируй", "нарисуй", "подготовь",
+    ) and _contains(text, "изображен", "картин", "иллюстрац", "визуал", "фото")
+    if image_action:
+        return {
+            "kind": "task",
+            "title": safe_original[:255],
+            "agent_type": "marketing",
+            "priority": _priority(text),
+            "payload": {
+                "action": "generate_image",
+                "source": "telegram_natural_language",
+                "original_message": safe_original[:4000],
+                "prompt": safe_original[:4000],
+                "external_publish": False,
+            },
+            "protected": False,
+        }
+
     action_words = _contains(
         text,
         "создай", "поставь", "добавь", "запусти", "проведи", "проанализируй",
