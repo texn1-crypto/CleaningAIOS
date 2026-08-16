@@ -19,7 +19,7 @@ from .domains import module_summary, validate_record
 from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, ContentItem, Decision, DomainEvent, EventConsumerReceipt, MessageTemplate, OutboundMessage, SenderMailbox, Suppression, Task, TaskTransition
 from .orchestrator import audit, dispatch
 from .platform import company_brain, event_bus
-from .schemas import ApprovalDecision, ContactEventCreate, DecisionCreate, KnowledgeCreate, OutreachCreate, RecordCreate, RecordUpdate, SuppressionCreate, TaskCreate
+from .schemas import ApprovalDecision, ContactEventCreate, DecisionCreate, KnowledgeCreate, LeadAutopilotCreate, OutreachCreate, RecordCreate, RecordUpdate, SuppressionCreate, TaskCreate
 from .security import Principal, principal, require_role, valid_unsubscribe_token, validate_production_security
 from .api_v2 import router as api_v2_router
 from .marketing_api import router as marketing_router
@@ -83,6 +83,25 @@ def ready(db: Session = Depends(get_db)):
 @app.get("/api/integrations")
 def integrations(_: Principal = Depends(principal)):
     return integration_status()
+
+
+@app.post("/api/leads/autopilot", status_code=201)
+def create_autopilot_lead(
+    payload: LeadAutopilotCreate,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "operator")
+    from .lead_autopilot import LeadRateLimitExceeded, intake_telegram_lead
+
+    try:
+        return intake_telegram_lead(db, payload)
+    except LeadRateLimitExceeded as exc:
+        raise HTTPException(429, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/api/dashboard")

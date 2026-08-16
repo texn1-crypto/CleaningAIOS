@@ -25,6 +25,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - a two-year 1B RUB annual revenue run-rate goal owned by Growth Officer, weekly cross-agent workstreams and a verified goal snapshot in every 30-minute owner report;
 - unified inbound message inbox, content plan, staffing/reserve view, vacancy Telegram drafts, payment calendar and complaint/SLA control;
 - public lead capture into CRM/inbox with consent, abuse protection, UTM attribution, deterministic hot-lead scoring, Sales tasks and owner-email notifications;
+- public Telegram Lead Autopilot: `/start` and `/estimate` collect an explicitly consented cleaning request, qualify it deterministically, create a CRM contact plus Sales follow-up task, and notify the owner without sending customer PII to an AI provider;
 - Russian marketing-provider registry, trackable hypotheses/experiments, manual external campaign binding, media queue and evidence-backed attribution analytics;
 - masked company requisites and marketing invoices routed to Telegram owner approval with no automatic payment;
 - least-privilege AI provider routing for reasoning, product improvements, images and video, with truthful credential/adapter states;
@@ -113,6 +114,27 @@ See [architecture](docs/ARCHITECTURE.md) for the event flow and module boundarie
 See [website and Marketing OS](docs/MARKETING_SITE.md) for the lead, media, advertising-platform, invoice and credential flows.
 
 ## Общение с Telegram-ботом
+
+### Публичный Lead Autopilot
+
+Неавторизованный посетитель бота видит только безопасный мастер заявки. Команда
+`/estimate`, кнопка «Рассчитать уборку» или фраза «нужна уборка» последовательно
+запрашивает согласие на обработку данных, тип и площадь объекта, район, график,
+срок запуска, имя и контакт. До согласия телефон и email не запрашиваются. Каждое
+новое обращение идемпотентно записывается в CRM и Inbox, получает прозрачную
+детерминированную оценку качества лида и отдельную задачу Sales Agent; владелец
+получает Telegram-уведомление, а о горячем лиде — также email при настроенном SMTP.
+Неавторизованный клиент не получает доступ к Mission Control, задачам, рассылкам,
+тендерам или данным других клиентов.
+
+Числовой диапазон цены показывается только из утверждённой владельцем матрицы
+`LEAD_ESTIMATE_MIN_RUB_PER_SQM`, `LEAD_ESTIMATE_MAX_RUB_PER_SQM` и
+`LEAD_ESTIMATE_MIN_ORDER_RUB`. Ставки задаются в рублях за м² за один выезд;
+для регулярного графика рассчитывается ориентир за месяц. Нулевые значения
+оставляют сбор и квалификацию заявок рабочими, но бот честно передаёт расчёт
+специалисту. Любой диапазон помечается как предварительный, не является офертой и
+требует обследования объекта. В production мастер не запрашивает персональные
+данные, пока не заполнены `COMPANY_LEGAL_NAME` и контакт политики обработки данных.
 
 ### AI-генератор изображений
 

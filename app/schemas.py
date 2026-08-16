@@ -389,6 +389,27 @@ class PublicLeadCreate(BaseModel):
     website: str = Field(default="", max_length=255, description="Spam honeypot; must remain empty")
 
 
+class LeadAutopilotCreate(BaseModel):
+    conversation_id: str = Field(
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    requester_key: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(default="", max_length=32)
+    email: Optional[EmailStr] = None
+    company: str = Field(default="", max_length=255)
+    telegram_username: str = Field(default="", max_length=64, pattern=r"^$|^[A-Za-z0-9_]{5,32}$")
+    service: str = Field(pattern="^(mcd|business_center|commercial|general|other)$")
+    object_area: float = Field(gt=0, le=10_000_000)
+    location: str = Field(min_length=2, max_length=500)
+    frequency: str = Field(pattern="^(once|weekly|weekdays|daily|custom)$")
+    urgency: str = Field(default="month", pattern="^(today|week|month|planning)$")
+    message: str = Field(default="", max_length=3000)
+    consent: bool
+
+
 class MarketingProviderCreate(BaseModel):
     name: str = Field(min_length=2, max_length=255)
     platform: str = Field(pattern="^(yandex_direct|yandex_business|vk_ads|2gis|avito|telegram_ads|agency|other)$")

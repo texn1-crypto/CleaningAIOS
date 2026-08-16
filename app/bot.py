@@ -4,6 +4,7 @@ import asyncio
 import base64
 from difflib import SequenceMatcher
 import hashlib
+import hmac
 import io
 import logging
 import re
@@ -17,10 +18,11 @@ from urllib.parse import unquote
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .chat import understand_russian_message
 from .config import settings
+from .lead_autopilot import FREQUENCY_LABELS, SERVICE_LABELS, URGENCY_LABELS, normalize_phone
 from .recipient_import import EMAIL_PATTERN, SUPPORTED_RECIPIENT_SUFFIXES, extract_recipient_emails
 
 logging.basicConfig(level=logging.INFO)
@@ -318,7 +320,7 @@ async def proposal_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён."); return
-    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🛡 Системный администратор", "system_admin"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["🎨 AI-генератор изображений", "image_help"], ["📱 Новости и соцсети", "social"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
+    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🛡 Системный администратор", "system_admin"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🧲 Проверить Lead Autopilot", "lead:new"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["🎨 AI-генератор изображений", "image_help"], ["📱 Новости и соцсети", "social"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
     keyboard = [[InlineKeyboardButton(label, callback_data=key)] for label, key in rows]
     await update.effective_message.reply_text("CleaningAI OS · выберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -643,6 +645,290 @@ async def _offer_action_confirmation(update: Update, context: ContextTypes.DEFAU
         f"Я не уверен, что правильно понял запрос.\n\n{suggestion['question']}",
         reply_markup=keyboard,
     )
+
+
+def _lead_callback(draft: dict, action: str, value: str) -> str:
+    return f"lead:{draft['nonce']}:{action}:{value}"
+
+
+def _lead_requester_key(update: Update) -> str:
+    identity = _identity_payload(update)
+    secret = settings.public_lead_rate_secret or settings.api_key
+    value = f"{identity['user_id']}:{identity['chat_id']}"
+    return hmac.new(secret.encode(), value.encode(), hashlib.sha256).hexdigest()
+
+
+def _lead_buttons(draft: dict, action: str, rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=_lead_callback(draft, action, value)) for label, value in row]
+        for row in rows
+    ])
+
+
+async def lead_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not settings.public_leads_enabled:
+        await update.effective_message.reply_text(
+            "Сбор заявок временно недоступен: владелец ещё не заполнил юридическое наименование "
+            "и контакт для политики обработки данных. Персональные данные не запрашивались."
+        )
+        return
+    draft = {
+        "step": "consent",
+        "nonce": secrets.token_urlsafe(5),
+        "conversation_id": secrets.token_urlsafe(16),
+    }
+    context.user_data["lead_draft"] = draft
+    privacy_url = f"{settings.public_base_url.rstrip('/')}/privacy"
+    await update.effective_message.reply_text(
+        "🧹 Предварительный расчёт уборки\n\n"
+        "Я задам несколько вопросов об объекте и передам заявку специалисту. "
+        "Данные используются только для ответа, расчёта и ведения обращения в CRM; "
+        "они не отправляются AI‑провайдерам.\n\n"
+        f"Политика обработки данных: {privacy_url}\n\n"
+        "Согласны продолжить?",
+        reply_markup=_lead_buttons(
+            draft,
+            "consent",
+            [[("✅ Согласен", "yes"), ("❌ Не согласен", "no")]],
+        ),
+    )
+
+
+async def public_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if allowed(update):
+        await start(update, context)
+        return
+    try:
+        identity = await api(
+            "POST",
+            "/api/telegram/control/authorize",
+            json={**_identity_payload(update), "minimum_role": "viewer"},
+        )
+    except (httpx.HTTPError, RuntimeError):
+        identity = {"authorized": False}
+    if identity.get("authorized"):
+        token = _telegram_identity.set(identity)
+        try:
+            await start(update, context)
+        finally:
+            _telegram_identity.reset(token)
+        return
+    await update.effective_message.reply_text(
+        "Здравствуйте! Я помогу передать заявку на профессиональную уборку и собрать данные для предварительного расчёта.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🧮 Рассчитать уборку", callback_data="lead:new"),
+        ]]),
+    )
+
+
+async def _lead_submit(update: Update, context: ContextTypes.DEFAULT_TYPE, draft: dict) -> None:
+    user = update.effective_user
+    username = str(getattr(user, "username", "") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+        username = ""
+    try:
+        result = await api(
+            "POST",
+            "/api/leads/autopilot",
+            json={
+                "conversation_id": draft["conversation_id"],
+                "requester_key": _lead_requester_key(update),
+                "name": draft["name"],
+                "company": draft.get("company", ""),
+                "phone": draft.get("phone", ""),
+                "email": draft.get("email") or None,
+                "telegram_username": username,
+                "service": draft["service"],
+                "object_area": draft["object_area"],
+                "location": draft["location"],
+                "frequency": draft["frequency"],
+                "urgency": draft["urgency"],
+                "message": draft.get("message", ""),
+                "consent": True,
+            },
+        )
+    except httpx.HTTPError:
+        await update.effective_message.reply_text(
+            "Не удалось сохранить заявку. Данные остаются только в текущем диалоге; попробуйте отправить последний ответ ещё раз или используйте /cancel."
+        )
+        return
+    context.user_data.pop("lead_draft", None)
+    estimate = result.get("estimate") or {}
+    if estimate.get("status") == "preliminary":
+        period = "за выезд" if estimate.get("period") == "visit" else "в месяц"
+        estimate_line = (
+            f"Предварительный диапазон: {estimate['min_rub']:,}–{estimate['max_rub']:,} ₽ {period}. "
+            "Это не оферта; итог определяется после обследования объекта."
+        ).replace(",", " ")
+    else:
+        estimate_line = (
+            "Точную цену специалист рассчитает после уточнения состава работ и обследования объекта; "
+            "бот не стал придумывать тариф без утверждённой ценовой матрицы."
+        )
+    replay = " Заявка уже была сохранена ранее; копия не создавалась." if result.get("idempotent_replay") else ""
+    await update.effective_message.reply_text(
+        f"✅ Заявка #{result['lead_id']} принята.{replay}\n\n{estimate_line}\n\n"
+        "Ответственный получил задачу связаться с вами и согласовать обследование."
+    )
+
+
+async def lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = str(query.data or "")
+    if data == "lead:new":
+        await lead_start(update, context)
+        raise ApplicationHandlerStop
+    parts = data.split(":", 3)
+    draft = context.user_data.get("lead_draft")
+    if len(parts) != 4 or not isinstance(draft, dict) or parts[1] != draft.get("nonce"):
+        await update.effective_message.reply_text("Эта кнопка устарела. Начните новый расчёт командой /estimate.")
+        raise ApplicationHandlerStop
+    action, value = parts[2], parts[3]
+    step = draft.get("step")
+    if action == "consent" and step == "consent":
+        if value != "yes":
+            context.user_data.pop("lead_draft", None)
+            await update.effective_message.reply_text("Расчёт отменён. Персональные данные не запрашивались и заявка не создавалась.")
+            raise ApplicationHandlerStop
+        draft["step"] = "service"
+        await update.effective_message.reply_text(
+            "Какой объект нужно убирать?",
+            reply_markup=_lead_buttons(draft, "service", [
+                [("ЖК / МКД", "mcd"), ("Бизнес-центр", "business_center")],
+                [("Коммерческий", "commercial"), ("Генеральная", "general")],
+                [("Другое", "other")],
+            ]),
+        )
+    elif action == "service" and step == "service" and value in SERVICE_LABELS:
+        draft.update({"service": value, "step": "area"})
+        await update.effective_message.reply_text("Укажите площадь объекта в квадратных метрах, например: 1250")
+    elif action == "frequency" and step == "frequency" and value in FREQUENCY_LABELS:
+        draft.update({"frequency": value, "step": "urgency"})
+        await update.effective_message.reply_text(
+            "Когда нужно начать?",
+            reply_markup=_lead_buttons(draft, "urgency", [
+                [("Срочно", "today"), ("За неделю", "week")],
+                [("За месяц", "month"), ("Планируем", "planning")],
+            ]),
+        )
+    elif action == "urgency" and step == "urgency" and value in URGENCY_LABELS:
+        draft.update({"urgency": value, "step": "name"})
+        await update.effective_message.reply_text("Как к вам обращаться?")
+    elif action == "company" and step == "company" and value == "skip":
+        draft.update({"company": "", "step": "contact"})
+        await update.effective_message.reply_text("Укажите телефон или email для связи.")
+    elif action == "details" and step == "details" and value == "skip":
+        draft["message"] = ""
+        await _lead_submit(update, context, draft)
+    else:
+        await update.effective_message.reply_text("Эта кнопка не соответствует текущему шагу. Продолжите с последнего вопроса или используйте /cancel.")
+    raise ApplicationHandlerStop
+
+
+def _lead_trigger(text: str) -> bool:
+    normalized = " ".join((text or "").lower().replace("ё", "е").split())
+    return any(phrase in normalized for phrase in (
+        "рассчитать уборку",
+        "рассчитать стоимость",
+        "заказать уборку",
+        "нужна уборка",
+        "нужен клининг",
+        "оставить заявку",
+    ))
+
+
+async def lead_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    draft = context.user_data.get("lead_draft")
+    text = " ".join((update.effective_message.text or "").split()).strip()
+    if not isinstance(draft, dict):
+        if not _lead_trigger(text):
+            return False
+        await lead_start(update, context)
+        return True
+    step = draft.get("step")
+    if step in {"consent", "service", "frequency", "urgency"}:
+        await update.effective_message.reply_text("Выберите один из вариантов кнопкой под последним вопросом или используйте /cancel.")
+        return True
+    if step == "area":
+        try:
+            area = float(text.replace(" ", "").replace(",", "."))
+        except ValueError:
+            area = 0
+        if area <= 0 or area > 10_000_000:
+            await update.effective_message.reply_text("Укажите площадь числом больше нуля, например: 1250")
+            return True
+        draft.update({"object_area": area, "step": "location"})
+        await update.effective_message.reply_text("В каком городе или районе находится объект? Точный адрес пока не обязателен.")
+        return True
+    if step == "location":
+        if len(text) < 2 or len(text) > 500:
+            await update.effective_message.reply_text("Укажите город или район текстом до 500 символов.")
+            return True
+        draft.update({"location": text, "step": "frequency"})
+        await update.effective_message.reply_text(
+            "Как часто нужна уборка?",
+            reply_markup=_lead_buttons(draft, "frequency", [
+                [("Разово", "once"), ("Еженедельно", "weekly")],
+                [("По будням", "weekdays"), ("Ежедневно", "daily")],
+                [("Особый график", "custom")],
+            ]),
+        )
+        return True
+    if step == "name":
+        if len(text) < 2 or len(text) > 120:
+            await update.effective_message.reply_text("Имя должно содержать от 2 до 120 символов.")
+            return True
+        draft.update({"name": text, "step": "company"})
+        await update.effective_message.reply_text(
+            "Название компании или управляющей организации?",
+            reply_markup=_lead_buttons(draft, "company", [[("Пропустить", "skip")]]),
+        )
+        return True
+    if step == "company":
+        if len(text) > 255:
+            await update.effective_message.reply_text("Название компании должно быть короче 255 символов.")
+            return True
+        draft.update({"company": text, "step": "contact"})
+        await update.effective_message.reply_text("Укажите телефон или email для связи.")
+        return True
+    if step == "contact":
+        email_match = EMAIL_PATTERN.search(text)
+        phone = normalize_phone(text)
+        if not email_match and not phone:
+            await update.effective_message.reply_text("Не удалось распознать контакт. Пришлите российский телефон или корректный email.")
+            return True
+        draft.update({
+            "email": email_match.group(0).lower() if email_match else "",
+            "phone": f"+{phone}" if phone else "",
+            "step": "details",
+        })
+        await update.effective_message.reply_text(
+            "Что ещё важно учесть: график доступа, сложные зоны, текущие проблемы?",
+            reply_markup=_lead_buttons(draft, "details", [[("Без дополнений", "skip")]]),
+        )
+        return True
+    if step == "details":
+        if len(text) > 3000:
+            await update.effective_message.reply_text("Комментарий должен быть короче 3000 символов.")
+            return True
+        draft["message"] = text
+        await _lead_submit(update, context, draft)
+        return True
+    await update.effective_message.reply_text("Черновик расчёта устарел. Начните заново командой /estimate.")
+    context.user_data.pop("lead_draft", None)
+    return True
+
+
+async def lead_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await lead_input(update, context):
+        raise ApplicationHandlerStop
+
+
+async def lead_cancel_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("lead_draft", None) is not None:
+        await update.effective_message.reply_text("Расчёт отменён. Незавершённая заявка не была сохранена.")
+        raise ApplicationHandlerStop
 
 
 async def _begin_mailing(update: Update, context: ContextTypes.DEFAULT_TYPE, addresses: list[str]):
@@ -1242,6 +1528,7 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• Что с тендерами?\n"
                 "• Найди тендеры по уборке БЦ\n"
                 "• Создай задачу связаться с новым клиентом\n"
+                "• /estimate — проверить публичный мастер заявки\n"
                 "• Создай изображение чистого холла бизнес-центра\n"
                 "• Проанализируй финансы\n\n"
                 "Request Analyst проверяет каждый запрос. Если функции не хватает, он создаёт техническое задание для Codex с критериями и тест-планом.\n\n"
@@ -1586,8 +1873,15 @@ def build_application() -> Application:
         local_base = settings.telegram_bot_api_base_url.rstrip("/")
         builder = builder.base_url(f"{local_base}/bot").base_file_url(f"{local_base}/file/bot").local_mode(True)
     application = builder.build()
+    application.add_handler(CommandHandler("start", public_start), group=-1)
+    application.add_handler(CommandHandler("estimate", lead_start), group=-1)
+    application.add_handler(CommandHandler("cancel", lead_cancel_router), group=-1)
+    application.add_handler(CallbackQueryHandler(lead_callback, pattern=r"^lead:"), group=-1)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, lead_text_router),
+        group=-1,
+    )
     commands = [
-        ("start", start, "viewer"),
         ("dashboard", dashboard, "viewer"),
         ("ceo", ceo_brief, "manager"),
         ("sysadmin", system_admin_report, "manager"),

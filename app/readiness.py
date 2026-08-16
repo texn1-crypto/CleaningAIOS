@@ -12,6 +12,10 @@ def integration_status() -> dict[str, Any]:
     smtp_ready = all(
         [settings.smtp_host, settings.smtp_username, settings.smtp_password, settings.smtp_from_email]
     )
+    lead_pricing_ready = bool(
+        settings.lead_estimate_min_rub_per_sqm > 0
+        and settings.lead_estimate_max_rub_per_sqm >= settings.lead_estimate_min_rub_per_sqm
+    )
     return {
         "postgresql": {
             "status": "connected"
@@ -57,6 +61,15 @@ def integration_status() -> dict[str, Any]:
         "public_website": {
             "status": "ready" if settings.public_leads_enabled else "legal_profile_required",
             "lead_form_enabled": settings.public_leads_enabled,
+        },
+        "lead_autopilot": {
+            "status": (
+                "legal_profile_required"
+                if not settings.public_leads_enabled
+                else "ready" if lead_pricing_ready else "capture_ready_pricing_configuration_required"
+            ),
+            "telegram_intake": "ready" if settings.public_leads_enabled else "legal_profile_required",
+            "pricing_configured": lead_pricing_ready,
         },
         "marketing_channels": {
             "yandex": "credentials_present_adapter_manual"
