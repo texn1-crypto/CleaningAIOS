@@ -40,6 +40,48 @@ def _card(client, approval_id: int, user_id: int, chat_id: int):
     return response.json()
 
 
+def test_telegram_approval_list_excludes_expired_pending_rows(client, monkeypatch):
+    from app.db import SessionLocal
+    from app.models import ApprovalRequest
+
+    owner_user, owner_chat = _configure_owner(monkeypatch)
+    current = datetime.now(timezone.utc).replace(tzinfo=None)
+    with SessionLocal() as db:
+        expired = ApprovalRequest(
+            action_kind="social_publication",
+            resource_type="test_batch",
+            resource_id="expired-list-card",
+            status="pending",
+            rationale="Expired test approval",
+            expires_at=current - timedelta(minutes=1),
+        )
+        actionable = ApprovalRequest(
+            action_kind="social_publication",
+            resource_type="test_batch",
+            resource_id="actionable-list-card",
+            status="pending",
+            rationale="Actionable test approval",
+            expires_at=current + timedelta(hours=1),
+        )
+        db.add_all([expired, actionable])
+        db.commit()
+        expired_id = expired.id
+        actionable_id = actionable.id
+
+    response = client.post(
+        "/api/telegram/control/approvals",
+        json={"user_id": owner_user, "chat_id": owner_chat, "minimum_role": "owner"},
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert actionable_id in {row["id"] for row in items}
+    assert expired_id not in {row["id"] for row in items}
+    assert all(
+        set(row["callbacks"]) == {"approve", "reject", "request_changes"}
+        for row in items
+    )
+
+
 def test_telegram_identity_is_exact_deny_by_default_and_pseudonymous(client, monkeypatch):
     from app.db import SessionLocal
     from app.models import AuditLog

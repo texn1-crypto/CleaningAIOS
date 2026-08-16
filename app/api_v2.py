@@ -142,13 +142,21 @@ def telegram_approval_cards(
 ):
     require_role(channel, "owner")
     identity = _require_telegram_owner(db, payload)
+    current = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = db.scalars(
         select(ApprovalRequest)
-        .where(ApprovalRequest.status == "pending")
+        .where(
+            ApprovalRequest.status == "pending",
+            or_(ApprovalRequest.expires_at.is_(None), ApprovalRequest.expires_at > current),
+        )
         .order_by(ApprovalRequest.id.desc())
         .limit(20)
     ).all()
-    return {"role": identity.role, "items": [approval_card(row) for row in rows]}
+    cards = [approval_card(row) for row in rows]
+    return {
+        "role": identity.role,
+        "items": [card for card in cards if card["callbacks"]],
+    }
 
 
 @router.post("/telegram/control/approvals/{approval_id}/card")

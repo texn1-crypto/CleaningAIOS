@@ -478,7 +478,12 @@ async def approvals(update: Update, _: ContextTypes.DEFAULT_TYPE):
         "/api/telegram/control/approvals",
         json={**_identity_payload(update), "minimum_role": "owner"},
     )
-    pending = data.get("items") or []
+    pending = [
+        row
+        for row in (data.get("items") or [])
+        if set((row.get("callbacks") or {}).keys())
+        == {"approve", "reject", "request_changes"}
+    ]
     if not pending:
         await update.effective_message.reply_text("Подтверждений, ожидающих владельца, нет."); return
     for row in pending[:10]:
