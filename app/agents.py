@@ -54,6 +54,14 @@ class DataCollectorAgent:
 class OrchestratorAgent:
     name = "orchestrator"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "marketing_sales_coordination":
+            from .marketing_coordination import run_marketing_sales_coordination
+
+            return run_marketing_sales_coordination(
+                db,
+                scheduled_window_start=payload.get("scheduled_window_start"),
+                period_minutes=int(payload.get("period_minutes") or 30),
+            )
         if payload.get("action") == "system_activity_report":
             from .notifications import queue_owner_notification
             from .reports import build_activity_report, format_activity_report
@@ -324,6 +332,14 @@ class TenderAgent:
 class SalesAgent:
     name = "sales"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "prepare_lead_follow_up":
+            from .marketing_coordination import prepare_lead_follow_up
+
+            return prepare_lead_follow_up(
+                db,
+                record_id=int(payload.get("record_id") or 0),
+                fingerprint=str(payload.get("fingerprint") or ""),
+            )
         if payload.get("action") == "generate_proposal":
             from .proposals import generate_proposal
             return generate_proposal(db, payload)
@@ -370,6 +386,10 @@ class SalesAgent:
 class MarketingAgent:
     name = "marketing"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "prepare_lead_generation_strategy":
+            from .marketing_coordination import prepare_lead_generation_strategy
+
+            return prepare_lead_generation_strategy(db)
         if payload.get("action") == "generate_image":
             from .social_runtime import queue_direct_image_request
 

@@ -263,6 +263,39 @@ def build_activity_report(
         }
         for row in recent_completed
     ]
+    latest_coordination_task = next(
+        (
+            row
+            for row in db.scalars(
+                select(Task)
+                .where(
+                    Task.agent_type == "orchestrator",
+                    Task.status == "done",
+                    Task.updated_at >= generated_at - timedelta(minutes=max(60, minutes * 2)),
+                )
+                .order_by(Task.updated_at.desc(), Task.id.desc())
+                .limit(50)
+            ).all()
+            if (row.result or {}).get("report_kind") == "marketing_sales_coordination"
+        ),
+        None,
+    )
+    marketing_sales_coordination = None
+    if latest_coordination_task is not None:
+        coordination_result = latest_coordination_task.result or {}
+        marketing_sales_coordination = {
+            "task_id": latest_coordination_task.id,
+            "generated_at": coordination_result.get("generated_at"),
+            "participants": coordination_result.get("participants") or [],
+            "discussion": coordination_result.get("discussion") or [],
+            "decisions": coordination_result.get("decisions") or [],
+            "actions": coordination_result.get("actions") or [],
+            "funnel": coordination_result.get("funnel") or {},
+            "automatic_outreach": bool(coordination_result.get("automatic_outreach")),
+            "outbound_messages_created": int(
+                coordination_result.get("outbound_messages_created") or 0
+            ),
+        }
     strategic_growth = growth_snapshot(db, now=generated_at)
     return {
         "outcome": "completed",
@@ -293,6 +326,7 @@ def build_activity_report(
         ],
         "agent_statuses": agent_statuses,
         "strategic_growth": strategic_growth,
+        "marketing_sales_coordination": marketing_sales_coordination,
         "blockers": blockers,
         "evidence": [
             {
@@ -336,6 +370,25 @@ def format_activity_report(result: dict[str, Any]) -> str:
             f"Прогресс: {growth.get('progress_percent', 0)}% · разрыв: {growth.get('gap_to_target_rub', growth.get('gap_rub', 0)):,} ₽".replace(",", " "),
             f"Темп: {'по плану' if growth.get('status') == 'on_track' else 'ниже плана'} · данные: активные договоры",
         ])
+    coordination = result.get("marketing_sales_coordination") or {}
+    if coordination:
+        lines.append("\n🤝 Marketing ↔ Research ↔ Sales")
+        for item in (coordination.get("discussion") or [])[:4]:
+            message = str(item.get("message") or "").strip()
+            if len(message) > 360:
+                message = message[:357] + "..."
+            lines.append(f"• {item.get('agent', 'agent')}: {message}")
+        actions = coordination.get("actions") or []
+        if actions:
+            lines.append("Следующие действия:")
+            for item in actions[:5]:
+                status = str(item.get("status") or "planned")
+                action = str(item.get("action") or "").strip()
+                if len(action) > 240:
+                    action = action[:237] + "..."
+                task_id = f"#{item['task_id']} " if item.get("task_id") else ""
+                lines.append(f"• {task_id}[{item.get('agent', 'agent')}/{status}] {action}")
+        lines.append("Автоматическая отправка: не выполнялась.")
     recent = result.get("recent_completed_tasks") or []
     if recent:
         lines.append("\nПоследние результаты:")

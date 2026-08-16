@@ -113,6 +113,30 @@ def schedule_cycle() -> None:
             )
         report_interval = max(5, min(settings.owner_activity_report_interval_minutes, 24 * 60))
         report_window = owner_report_window(now, report_interval)
+        coordination_title = f"Marketing/Sales coordination · {report_window.isoformat()}"
+        if not db.scalar(select(Task.id).where(Task.title == coordination_title)):
+            task = Task(
+                title=coordination_title,
+                agent_type="orchestrator",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={
+                    "action": "marketing_sales_coordination",
+                    "period_minutes": report_interval,
+                    "source": "scheduler",
+                    "scheduled_window_start": report_window.isoformat(),
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(
+                db,
+                task,
+                actor="scheduler",
+                reason="recurring_marketing_sales_coordination",
+            )
         report_key = f"owner-activity-report:{report_window.isoformat()}"
         report_title = f"Регулярный отчёт владельцу · {report_window.isoformat()}"
         if not db.scalar(select(Task.id).where(Task.title == report_title)):

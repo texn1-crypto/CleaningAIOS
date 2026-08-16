@@ -2071,6 +2071,127 @@ def test_scheduled_activity_report_is_30_minutes_and_notification_is_idempotent(
         ) == 1
 
 
+def test_marketing_sales_coordination_prepares_safe_actions_and_appears_in_report(client):
+    from uuid import uuid4
+
+    from sqlalchemy import func, select
+
+    from app.db import SessionLocal
+    from app.models import OutboundMessage
+    from app.reports import format_activity_report
+
+    suffix = uuid4().hex[:8]
+    lead = client.post(
+        "/api/records",
+        json={
+            "record_type": "lead",
+            "title": f"Входящий лид {suffix}",
+            "status": "qualified",
+            "score": 90,
+            "source": "website",
+            "data": {
+                "name": "Тестовый заказчик",
+                "email": f"lead-{suffix}@example.com",
+                "service": "business_center",
+                "object_area": 1200,
+                "location": "Санкт-Петербург",
+                "consent": True,
+            },
+        },
+    ).json()
+    no_consent_lead = client.post(
+        "/api/records",
+        json={
+            "record_type": "lead",
+            "title": f"Импортированный контакт {suffix}",
+            "status": "qualified",
+            "score": 90,
+            "source": "import",
+            "data": {"email": f"cold-{suffix}@example.com", "consent": False},
+        },
+    ).json()
+    with SessionLocal() as db:
+        outbound_before = int(db.scalar(select(func.count()).select_from(OutboundMessage)) or 0)
+
+    task = client.post(
+        "/api/tasks",
+        json={
+            "title": f"Marketing/Sales coordination test {suffix}",
+            "agent_type": "orchestrator",
+            "payload": {
+                "action": "marketing_sales_coordination",
+                "period_minutes": 30,
+                "scheduled_window_start": "2040-01-01T09:00:00",
+            },
+            "max_attempts": 1,
+        },
+    ).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    assert completed["status"] == "done"
+    result = completed["result"]
+    assert result["report_kind"] == "marketing_sales_coordination"
+    assert result["participants"] == ["marketing", "research", "sales", "orchestrator"]
+    assert {row["agent"] for row in result["discussion"]} == {
+        "marketing",
+        "research",
+        "sales",
+        "orchestrator",
+    }
+    assert result["automatic_outreach"] is False
+    assert result["outbound_messages_created"] == 0
+    sales_action = next(
+        row
+        for row in result["actions"]
+        if row["agent"] == "sales" and f"#{lead['id']}" in row["action"]
+    )
+    assert not any(
+        row["agent"] == "sales" and f"#{no_consent_lead['id']}" in row["action"]
+        for row in result["actions"]
+    )
+    sales_task = client.post(f"/api/tasks/{sales_action['task_id']}/run").json()
+    assert sales_task["status"] == "done"
+    assert sales_task["result"]["status"] == "draft_prepared"
+    assert sales_task["result"]["automatic_send"] is False
+    refreshed = next(
+        row for row in client.get("/api/records?record_type=lead").json() if row["id"] == lead["id"]
+    )
+    assert refreshed["data"]["sales_follow_up_draft"]["subject"]
+    assert refreshed["data"]["next_action"] == "human_review_then_reply"
+
+    report_task = client.post(
+        "/api/tasks",
+        json={
+            "title": f"Coordination report test {suffix}",
+            "agent_type": "orchestrator",
+            "payload": {"action": "system_activity_report", "period_minutes": 30},
+            "max_attempts": 1,
+        },
+    ).json()
+    report = client.post(f"/api/tasks/{report_task['id']}/run").json()["result"]
+    assert report["marketing_sales_coordination"]["task_id"] == task["id"]
+    formatted = format_activity_report(report)
+    assert "Marketing ↔ Research ↔ Sales" in formatted
+    assert "Автоматическая отправка: не выполнялась" in formatted
+
+    repeated_task = client.post(
+        "/api/tasks",
+        json={
+            "title": f"Repeated Marketing/Sales coordination test {suffix}",
+            "agent_type": "orchestrator",
+            "payload": {"action": "marketing_sales_coordination", "period_minutes": 30},
+            "max_attempts": 1,
+        },
+    ).json()
+    repeated = client.post(f"/api/tasks/{repeated_task['id']}/run").json()["result"]
+    assert not any(
+        row["agent"] == "sales" and f"#{lead['id']}" in row["action"]
+        for row in repeated["actions"]
+    )
+    with SessionLocal() as db:
+        outbound_after = int(db.scalar(select(func.count()).select_from(OutboundMessage)) or 0)
+    assert outbound_after == outbound_before
+
+
 def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
     from sqlalchemy import create_engine, select
     from sqlalchemy.orm import sessionmaker
@@ -2100,6 +2221,9 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         reports = db.scalars(
             select(Task).where(Task.title.like("Регулярный отчёт владельцу · %"))
         ).all()
+        coordination_rounds = db.scalars(
+            select(Task).where(Task.title.like("Marketing/Sales coordination · %"))
+        ).all()
         tender_monitors = db.scalars(
             select(Task).where(Task.title.like("Tender source monitoring · %"))
         ).all()
@@ -2110,6 +2234,9 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
             row for row in all_tasks if row.payload.get("origin") == "ceo_continuous_backlog"
         ]
         assert len(reports) == 1
+        assert len(coordination_rounds) == 1
+        assert coordination_rounds[0].payload["action"] == "marketing_sales_coordination"
+        assert coordination_rounds[0].payload["period_minutes"] == 30
         assert len(tender_monitors) == 1
         assert len(system_admin_audits) == 1
         assert system_admin_audits[0].agent_type == "system_admin"
