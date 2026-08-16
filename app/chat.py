@@ -15,7 +15,11 @@ def _contains(text: str, *needles: str) -> bool:
 def redact_sensitive_text(text: str) -> str:
     """Remove common credentials before a Telegram request reaches storage or AI."""
     patterns = [
-        (r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b", "[TELEGRAM_TOKEN_REDACTED]"),
+        (
+            r"(?i)(https://api\.telegram\.org/bot)[^/\s\"']+",
+            r"\1[TELEGRAM_TOKEN_REDACTED]",
+        ),
+        (r"(?<!\d)\d{6,12}:[A-Za-z0-9_-]{20,}", "[TELEGRAM_TOKEN_REDACTED]"),
         (r"\bsk-[A-Za-z0-9_-]{16,}\b", "[API_KEY_REDACTED]"),
         (r"(?i)\b(api[_ -]?key|token|пароль|password)\s*[:=]\s*\S+", r"\1=[REDACTED]"),
     ]
@@ -166,6 +170,18 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
         and _contains(text, "скажи", "покажи", "какая", "какую", "что")
     ):
         return {"kind": "activity_report", "period_hours": 24}
+    if (
+        (_contains(text, "системн", "сисадмин") and _contains(text, "администратор", "отчет", "ошиб", "сбой"))
+        or _contains(
+            text,
+            "что сломалось",
+            "ошибки бота",
+            "сбои бота",
+            "динамика реконструкции",
+            "что не получилось у бота",
+        )
+    ):
+        return {"kind": "system_admin_report"}
     if _contains(
         text,
         "сколько нужно времени",

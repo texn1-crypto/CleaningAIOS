@@ -15,9 +15,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import case, func, select, update
 
 from .config import settings
+from .chat import redact_sensitive_text
 from .db import SessionLocal
 from .orchestrator import run_next
-from .models import OutboundMessage, SenderMailbox, Suppression
+from .models import AuditLog, OutboundMessage, SenderMailbox, Suppression
 from .platform import process_next_event
 from .notifications import queue_owner_notification, send_next_owner_notification
 from .inbound_mail import collect_inbound_replies
@@ -28,6 +29,19 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("cleaningai.worker")
 
 SMTP_AUTH_RETRY_DELAY = timedelta(minutes=15)
+
+
+def _safe_worker_error(exc: Exception) -> str:
+    value = redact_sensitive_text(str(exc))
+    for secret in (
+        settings.smtp_password,
+        settings.telegram_bot_token,
+        settings.api_key,
+    ):
+        if secret:
+            value = value.replace(secret, "<redacted>")
+    detail = value.strip()[:1000]
+    return f"{type(exc).__name__}: {detail or 'email delivery failed'}"
 
 
 def outreach_delivery_window(now: datetime) -> tuple[datetime | None, datetime]:
@@ -176,6 +190,94 @@ def _defer_mailbox_after_auth_failure(
         },
         correlation_id=f"mailbox:{mailbox_key}",
     )
+    db.add(
+        AuditLog(
+            actor="worker",
+            action="outreach.smtp_auth_failed",
+            resource_type="sender_mailbox",
+            resource_id=mailbox_key,
+            details={
+                "status": "credentials_required",
+                "retry_at": retry_at.isoformat(),
+            },
+        )
+    )
+
+
+def _is_provider_mailbox_block(exc: smtplib.SMTPResponseException) -> bool:
+    response = exc.smtp_error
+    if isinstance(response, bytes):
+        response = response.decode("utf-8", errors="replace")
+    message = str(response).lower()
+    markers = (
+        "account is blocked",
+        "account blocked",
+        "account disabled",
+        "sender blocked",
+        "mailbox blocked",
+        "spam detected",
+        "spam policy",
+        "sending limit",
+        "rate limit",
+        "too many messages",
+        "temporarily locked",
+        "access denied",
+    )
+    return int(exc.smtp_code or 0) in {421, 454} or any(marker in message for marker in markers)
+
+
+def _defer_mailbox_after_provider_block(
+    db,
+    row: OutboundMessage,
+    *,
+    now: datetime,
+) -> None:
+    retry_at = now + SMTP_AUTH_RETRY_DELAY
+    mailbox_scope = (
+        OutboundMessage.mailbox_id == row.mailbox_id
+        if row.mailbox_id is not None
+        else OutboundMessage.mailbox_id.is_(None)
+    )
+    safe_error = "SMTP provider blocked or rate-limited the sender mailbox; verify provider status"
+    db.execute(
+        update(OutboundMessage)
+        .where(
+            mailbox_scope,
+            OutboundMessage.status.in_(["queued", "waiting_configuration"]),
+            OutboundMessage.scheduled_at < retry_at,
+        )
+        .values(status="waiting_configuration", scheduled_at=retry_at, error=safe_error)
+    )
+    mailbox_key = str(row.mailbox_id or "default")
+    queue_owner_notification(
+        db,
+        idempotency_key=f"outreach-smtp-provider-block:{mailbox_key}:{now.date().isoformat()}:telegram",
+        channel="telegram",
+        resource_type="sender_mailbox",
+        resource_id=mailbox_key,
+        subject="📨 Рассылка приостановлена почтовым провайдером",
+        body=(
+            "Почтовый провайдер заблокировал или ограничил отправителя. Очередь сохранена, "
+            "повторная массовая отправка не выполняется. Проверьте статус ящика и правила "
+            f"провайдера; следующая безопасная проверка после {retry_at.isoformat()}."
+        ),
+        data={
+            "mailbox_id": row.mailbox_id,
+            "status": "provider_blocked",
+            "retry_at": retry_at.isoformat(),
+        },
+        severity="critical",
+        correlation_id=f"mailbox:{mailbox_key}",
+    )
+    db.add(
+        AuditLog(
+            actor="worker",
+            action="outreach.smtp_provider_blocked",
+            resource_type="sender_mailbox",
+            resource_id=mailbox_key,
+            details={"status": "provider_blocked", "retry_at": retry_at.isoformat()},
+        )
+    )
 
 
 def send_next_email(db, *, now: datetime | None = None) -> bool:
@@ -274,8 +376,35 @@ def send_next_email(db, *, now: datetime | None = None) -> bool:
     except smtplib.SMTPAuthenticationError:
         _defer_mailbox_after_auth_failure(db, row, now=now)
         log.warning("SMTP authentication failed for mailbox %s; queue deferred", row.mailbox_id or "default")
+    except smtplib.SMTPResponseException as exc:
+        if _is_provider_mailbox_block(exc):
+            _defer_mailbox_after_provider_block(db, row, now=now)
+            log.warning("SMTP provider blocked mailbox %s; queue deferred", row.mailbox_id or "default")
+        else:
+            row.status = "failed"
+            row.error = f"SMTP delivery failed with response code {int(exc.smtp_code or 0)}"
+            db.add(
+                AuditLog(
+                    actor="worker",
+                    action="outreach.delivery_failed",
+                    resource_type="outbound_message",
+                    resource_id=str(row.id),
+                    details={"error_type": type(exc).__name__, "smtp_code": int(exc.smtp_code or 0)},
+                )
+            )
+            log.warning("SMTP delivery failed for message %s with response code %s", row.id, exc.smtp_code)
     except Exception as exc:
-        row.status = "failed"; row.error = str(exc)
+        safe_error = _safe_worker_error(exc)
+        row.status = "failed"; row.error = safe_error
+        db.add(
+            AuditLog(
+                actor="worker",
+                action="outreach.delivery_failed",
+                resource_type="outbound_message",
+                resource_id=str(row.id),
+                details={"error_type": type(exc).__name__, "error": safe_error},
+            )
+        )
         log.exception("email delivery failed for message %s", row.id)
     db.commit(); return True
 
@@ -299,8 +428,20 @@ def main() -> None:
                     if result["received"] or result["failed"]:
                         log.info("inbound mail poll: received=%s failed=%s", result["received"], result["failed"])
                     next_inbound_poll = time.monotonic() + settings.inbound_mail_poll_seconds
-            except Exception:
+                from .system_admin import record_component_recovery
+
+                record_component_recovery(db, component="worker")
+                db.commit()
+            except Exception as exc:
                 db.rollback(); log.exception("task processing failed")
+                try:
+                    from .system_admin import record_component_failure
+
+                    record_component_failure(db, component="worker", error=exc)
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    log.exception("system administrator could not persist worker failure")
         time.sleep(settings.worker_poll_seconds)
 
 

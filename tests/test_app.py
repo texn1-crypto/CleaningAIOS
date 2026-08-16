@@ -1260,6 +1260,9 @@ def test_russian_chat_reads_existing_sections():
         "kind": "activity_report",
         "period_hours": 24,
     }
+    assert understand_russian_message("Что сломалось и какие ошибки у бота?") == {
+        "kind": "system_admin_report"
+    }
     assert understand_russian_message("Запусти весь функционал чат бота")["kind"] == "system_self_check"
     assert understand_russian_message("Сколько нужно времени на выполнение задачи?") == {
         "kind": "task_eta",
@@ -1269,6 +1272,17 @@ def test_russian_chat_reads_existing_sections():
         "kind": "task_eta",
         "task_id": 42,
     }
+
+
+def test_sensitive_text_redacts_telegram_token_inside_api_url():
+    from app.chat import redact_sensitive_text
+
+    token = "1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZabcd"
+    value = redact_sensitive_text(
+        f"401 for https://api.telegram.org/bot{token}/sendMessage and bare {token}"
+    )
+    assert token not in value
+    assert value.count("[TELEGRAM_TOKEN_REDACTED]") == 2
 
 
 def test_menu_request_is_supported_and_does_not_create_an_improvement(client, monkeypatch):
@@ -1871,6 +1885,64 @@ def test_telegram_activity_report_preserves_failed_result(monkeypatch):
     assert "failed" in Update.effective_message.replies[-1]
 
 
+def test_telegram_system_admin_report_returns_recheck_status(monkeypatch):
+    from app import bot
+
+    async def fake_api(method, path, **kwargs):
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            assert kwargs["json"]["agent_type"] == "system_admin"
+            return {"id": 512, "agent_type": "system_admin"}
+        if path == "/api/tasks/512/run":
+            return {
+                "status": "done",
+                "result": {
+                    "outcome": "completed",
+                    "overall_status": "degraded",
+                    "summary": {"active": 1, "critical": 1, "new": 0, "resolved": 0},
+                    "incidents": [
+                        {
+                            "resource_type": "sender_mailbox",
+                            "resource_id": "2",
+                            "reason": "SMTP provider blocked the sender mailbox",
+                            "improvement_id": 19,
+                            "verification_status": "not_fixed",
+                            "responsible_party": "owner_configuration",
+                        }
+                    ],
+                    "resolved": [],
+                    "recent_requests": [],
+                },
+            }
+        raise AssertionError(path)
+
+    class Message:
+        text = "Что сломалось и какие ошибки у бота?"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    response = Update.effective_message.replies[-1]
+    assert "Системный администратор" in response
+    assert "SMTP provider blocked" in response
+    assert "improvement #19" in response
+    assert "не исправлено" in response
+
+
 def test_scheduled_activity_report_is_30_minutes_and_notification_is_idempotent(client):
     from uuid import uuid4
 
@@ -1944,11 +2016,17 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         tender_monitors = db.scalars(
             select(Task).where(Task.title.like("Tender source monitoring · %"))
         ).all()
+        system_admin_audits = db.scalars(
+            select(Task).where(Task.title.like("System administrator audit · %"))
+        ).all()
         development = [
             row for row in all_tasks if row.payload.get("origin") == "ceo_continuous_backlog"
         ]
         assert len(reports) == 1
         assert len(tender_monitors) == 1
+        assert len(system_admin_audits) == 1
+        assert system_admin_audits[0].agent_type == "system_admin"
+        assert system_admin_audits[0].payload["notify_owner"] is True
         assert tender_monitors[0].payload["collection"] == "tenders"
         assert tender_monitors[0].payload["sources"] == ["https://feed.example/tenders"]
         assert len(development) == 4
@@ -2328,7 +2406,7 @@ def test_telegram_application_registers_natural_language_handler(monkeypatch):
     handlers = [handler for group in application.handlers.values() for handler in group]
     assert any(isinstance(handler, MessageHandler) for handler in handlers)
     commands = {command for handler in handlers if isinstance(handler, CommandHandler) for command in handler.commands}
-    assert {"outreach", "mailing", "cancel"}.issubset(commands)
+    assert {"outreach", "mailing", "cancel", "sysadmin"}.issubset(commands)
 
 
 def test_outreach_summary_is_owner_safe_and_manager_guarded(client):
@@ -4492,6 +4570,96 @@ def test_smtp_auth_failure_defers_entire_mailbox_queue(client, monkeypatch):
         assert notification is not None
         assert notification.data["status"] == "credentials_required"
         assert "пароль приложения" in notification.body
+
+        db.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.campaign_key == campaign_key)
+            .values(status="sent", sent_at=None)
+        )
+        notification.status = "sent"
+        db.commit()
+
+
+def test_smtp_provider_mailbox_block_defers_queue_and_records_incident(client, monkeypatch):
+    from datetime import datetime
+
+    from sqlalchemy import select, update
+
+    from app import worker
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import AuditLog, OutboundMessage, OwnerNotification, SenderMailbox
+
+    class SMTP:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def starttls(self): return None
+        def login(self, username, password): return None
+        def send_message(self, message):
+            raise worker.smtplib.SMTPDataError(550, b"Account is blocked by spam policy")
+
+    monkeypatch.setattr(worker.smtplib, "SMTP", SMTP)
+    monkeypatch.setenv("SMTP_PROVIDER_BLOCK_TEST", "secret")
+    monkeypatch.setattr(settings, "outreach_timezone", "Europe/Moscow")
+    monkeypatch.setattr(settings, "outreach_daily_start_hour", 9)
+    monkeypatch.setattr(settings, "outreach_per_minute", 10)
+    monkeypatch.setattr(settings, "outreach_per_day", 50)
+    now = datetime(2040, 1, 2, 12, 0)
+    campaign_key = "smtp-provider-block-test"
+
+    with SessionLocal() as db:
+        db.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.status.in_(["queued", "waiting_configuration", "retry"]))
+            .values(status="sent", sent_at=None)
+        )
+        mailbox = SenderMailbox(
+            name="Provider block",
+            address="provider-block@example.com",
+            smtp_host="smtp.example.com",
+            username="provider-block@example.com",
+            secret_ref="SMTP_PROVIDER_BLOCK_TEST",
+            per_minute=10,
+            per_day=50,
+        )
+        db.add(mailbox)
+        db.flush()
+        db.add_all(
+            [
+                OutboundMessage(
+                    campaign_key=campaign_key,
+                    recipient=f"blocked-{index}@example.com",
+                    subject="Provider block",
+                    body="Body",
+                    mailbox_id=mailbox.id,
+                    status="queued",
+                    scheduled_at=now,
+                )
+                for index in range(2)
+            ]
+        )
+        db.commit()
+
+        assert worker.send_next_email(db, now=now) is True
+        messages = db.scalars(
+            select(OutboundMessage).where(OutboundMessage.campaign_key == campaign_key)
+        ).all()
+        assert {row.status for row in messages} == {"waiting_configuration"}
+        assert all("provider blocked or rate-limited" in row.error for row in messages)
+        notification = db.scalar(
+            select(OwnerNotification).where(
+                OwnerNotification.idempotency_key
+                == f"outreach-smtp-provider-block:{mailbox.id}:{now.date().isoformat()}:telegram"
+            )
+        )
+        assert notification is not None
+        assert notification.severity == "critical"
+        audit = db.scalar(
+            select(AuditLog).where(AuditLog.action == "outreach.smtp_provider_blocked")
+        )
+        assert audit is not None
+        assert "Account is blocked" not in str(audit.details)
 
         db.execute(
             update(OutboundMessage)

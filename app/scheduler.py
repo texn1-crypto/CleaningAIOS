@@ -76,6 +76,41 @@ def schedule_cycle() -> None:
             db.add(task)
             db.flush()
             record_task_created(db, task, actor="scheduler", reason="recurring_tender_source_monitoring")
+        system_admin_interval = max(
+            1,
+            min(settings.system_admin_interval_minutes, 24 * 60),
+        )
+        system_admin_window = owner_report_window(now, system_admin_interval)
+        system_admin_title = (
+            f"System administrator audit · {system_admin_window.isoformat()}"
+        )
+        if not db.scalar(select(Task.id).where(Task.title == system_admin_title)):
+            task = Task(
+                title=system_admin_title,
+                agent_type="system_admin",
+                status="queued",
+                priority="critical",
+                run_after=now,
+                max_attempts=3,
+                payload={
+                    "action": "system_admin_audit",
+                    "source": "scheduler",
+                    "notify_owner": True,
+                    "stale_task_minutes": settings.system_admin_stale_task_minutes,
+                    "scheduled_window_start": system_admin_window.isoformat(),
+                    "notification_idempotency_key": (
+                        f"system-admin-report:{system_admin_window.isoformat()}:telegram"
+                    ),
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(
+                db,
+                task,
+                actor="scheduler",
+                reason="recurring_system_admin_audit",
+            )
         report_interval = max(5, min(settings.owner_activity_report_interval_minutes, 24 * 60))
         report_window = owner_report_window(now, report_interval)
         report_key = f"owner-activity-report:{report_window.isoformat()}"
@@ -139,8 +174,23 @@ def schedule_cycle() -> None:
 def main() -> None:
     log.info("scheduler started")
     while True:
-        try: schedule_cycle()
-        except Exception: log.exception("scheduler cycle failed")
+        try:
+            schedule_cycle()
+            with SessionLocal() as db:
+                from .system_admin import record_component_recovery
+
+                record_component_recovery(db, component="scheduler")
+                db.commit()
+        except Exception as exc:
+            log.exception("scheduler cycle failed")
+            try:
+                with SessionLocal() as db:
+                    from .system_admin import record_component_failure
+
+                    record_component_failure(db, component="scheduler", error=exc)
+                    db.commit()
+            except Exception:
+                log.exception("system administrator could not persist scheduler failure")
         time.sleep(settings.scheduler_interval_seconds)
 
 

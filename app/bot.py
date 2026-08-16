@@ -318,7 +318,7 @@ async def proposal_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён."); return
-    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["📱 Новости и соцсети", "social"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
+    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🛡 Системный администратор", "system_admin"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["📱 Новости и соцсети", "social"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
     keyboard = [[InlineKeyboardButton(label, callback_data=key)] for label, key in rows]
     await update.effective_message.reply_text("CleaningAI OS · выберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -983,6 +983,72 @@ async def system_self_check(update: Update):
     await update.effective_message.reply_text(format_system_self_check(result))
 
 
+def format_system_admin_report(result: dict) -> str:
+    summary = result.get("summary") or {}
+    lines = [
+        "🛡 Системный администратор CleaningAI OS",
+        f"Состояние: {'есть активные сбои' if result.get('overall_status') == 'degraded' else 'ошибок не обнаружено'}",
+        (
+            f"Активно: {summary.get('active', 0)} · критических: {summary.get('critical', 0)} · "
+            f"новых: {summary.get('new', 0)} · исправлено: {summary.get('resolved', 0)}"
+        ),
+    ]
+    for incident in (result.get("incidents") or [])[:10]:
+        status = {
+            "new": "обнаружено",
+            "changed": "изменилось",
+            "regression": "повторилось",
+            "not_fixed": "не исправлено",
+        }.get(incident.get("verification_status"), incident.get("verification_status", "проверяется"))
+        lines.append(
+            f"• {incident.get('resource_type')} #{incident.get('resource_id')}: "
+            f"{incident.get('reason')}\n"
+            f"  improvement #{incident.get('improvement_id')} · {status} · "
+            f"ответственный: {incident.get('responsible_party')}"
+        )
+    for resolved in (result.get("resolved") or [])[:10]:
+        lines.append(
+            f"✅ Исправлено: {resolved.get('resource_type')} #{resolved.get('resource_id')} · "
+            f"перепроверка improvement #{resolved.get('improvement_id')} успешна"
+        )
+    requests = result.get("recent_requests") or []
+    if requests:
+        lines.append("\nПоследние понятые запросы:")
+        for request in requests[:5]:
+            lines.append(
+                f"• задача #{request.get('task_id')}: {request.get('intent')} → "
+                f"{request.get('classification')}"
+            )
+    lines.append(
+        "\nРассылки и другие бизнес-действия автоматически повторно не запускались. "
+        "Credentials в отчёт не попадают."
+    )
+    return "\n".join(lines)
+
+
+async def system_admin_report(update: Update, _: ContextTypes.DEFAULT_TYPE | None = None):
+    task = await api("POST", "/api/tasks", json={
+        "title": "Внеплановая проверка системного администратора",
+        "agent_type": "system_admin",
+        "priority": "critical",
+        "payload": {
+            "action": "system_admin_audit",
+            "source": "telegram_read_request",
+            "notify_owner": False,
+        },
+        "max_attempts": 1,
+    })
+    completed = await api("POST", f"/api/tasks/{task['id']}/run")
+    result = completed.get("result") or {}
+    if completed.get("status") != "done" or result.get("outcome") != "completed":
+        await update.effective_message.reply_text(
+            f"Системная проверка не завершилась. Задача #{task['id']} сохранена со статусом "
+            f"{completed.get('status', 'unknown')}."
+        )
+        return
+    await update.effective_message.reply_text(format_system_admin_report(result))
+
+
 def format_task_timing(result: dict) -> str:
     if result.get("outcome") == "needs_clarification":
         return result.get("message", "Укажите номер задачи.")
@@ -1149,6 +1215,8 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await improvement_queue(update, context)
         elif kind == "activity_report":
             await activity_report(update, intent)
+        elif kind == "system_admin_report":
+            await system_admin_report(update)
         elif kind == "system_self_check":
             await system_self_check(update)
         elif kind == "task_eta":
@@ -1363,7 +1431,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "owner"
         if q.data == "approvals"
         else "manager"
-        if q.data in {"meta_brain", "simulator", "marketing_invoices", "improvements"}
+        if q.data in {"meta_brain", "system_admin", "simulator", "marketing_invoices", "improvements"}
         or q.data == "ceo"
         or q.data.startswith("ceo:")
         else "operator"
@@ -1431,6 +1499,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif q.data == "meta_brain":
             data = await api("POST", "/api/tasks", json={"title": f"{q.data} on-demand review", "agent_type": q.data})
             await update.effective_message.reply_text(f"Задача #{data['id']} поставлена агенту {q.data}.")
+        elif q.data == "system_admin":
+            await system_admin_report(update, context)
         elif q.data == "agents": await dashboard(update, context)
         elif q.data == "improvements": await improvement_queue(update, context)
         elif q.data == "outreach": await outreach_dashboard(update, context)
@@ -1456,6 +1526,7 @@ def build_application() -> Application:
         ("start", start, "viewer"),
         ("dashboard", dashboard, "viewer"),
         ("ceo", ceo_brief, "manager"),
+        ("sysadmin", system_admin_report, "manager"),
         ("tasks", tasks, "viewer"),
         ("decisions", decisions, "viewer"),
         ("outreach", outreach_dashboard, "viewer"),

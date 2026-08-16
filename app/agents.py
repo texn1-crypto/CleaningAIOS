@@ -493,6 +493,25 @@ class MetaBrainAgent:
         return {"agents_evaluated": len(states), "data_gaps": gaps, "decision_outcomes_measured": len(measured), "decision_success_rate": success_rate, "recommendations": [f"Restore telemetry for {x}" for x in gaps] + (["Start measuring decision outcomes"] if not measured else []), "evidence": [{"decision_id": x.decision_id, "successful": x.successful} for x in measured]}
 
 
+class SystemAdminAgent:
+    name = "system_admin"
+
+    def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        from .system_admin import run_system_admin_audit
+
+        return run_system_admin_audit(
+            db,
+            stale_task_minutes=int(
+                payload.get("stale_task_minutes")
+                or settings.system_admin_stale_task_minutes
+            ),
+            notify_owner=bool(payload.get("notify_owner")),
+            notification_idempotency_key=str(
+                payload.get("notification_idempotency_key") or ""
+            ),
+        )
+
+
 class GrowthOfficerAgent:
     name = "growth_officer"
 
@@ -550,7 +569,7 @@ class CreativeAgent:
 
 
 AGENTS: dict[str, Agent] = {}
-for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), GrowthOfficerAgent(), MetaBrainAgent(), RequestAnalystAgent(), CopywriterAgent(), CreativeAgent()]:
+for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), GrowthOfficerAgent(), MetaBrainAgent(), SystemAdminAgent(), RequestAnalystAgent(), CopywriterAgent(), CreativeAgent()]:
     AGENTS[agent.name] = agent
 
 
