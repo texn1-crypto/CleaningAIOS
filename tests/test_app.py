@@ -4312,6 +4312,10 @@ def test_research_and_sales_agents_audit_management_company_base_without_sending
     assert summary["segments_by_type"]["УК"] >= 1
     assert summary["segments_by_type"]["ТСЖ"] >= 2
     assert summary["send_eligible_addresses"] == 0
+    assert summary["draft"]["subject"]
+    assert "не хотите получать" in summary["draft"]["body"]
+    assert summary["automatic_send"] is False
+    assert summary["human_review_required"] is True
     assert summary["messages_queued"] == 0
     assert summary["owner_approval_required_before_campaign"] is True
     with SessionLocal() as db:

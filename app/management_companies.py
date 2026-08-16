@@ -334,6 +334,19 @@ def management_company_outreach_summary(db: Session) -> dict:
         regions[region] = regions.get(region, 0) + 1
         addresses.update(_record_emails(record))
     eligible = (addresses & verified_consents) - suppressed
+    draft = {
+        "subject": "Клининг для объектов УК/ТСЖ — расчёт под ваши задачи",
+        "body": (
+            "Здравствуйте!\n\n"
+            "CleaningAIOS помогает управляющим организациям организовать регулярную уборку, "
+            "содержание общих зон и подбор линейного персонала под параметры объектов. "
+            "Если задача актуальна, ответьте на письмо — мы уточним адреса, площадь, график и "
+            "подготовим предварительный расчёт без обязательств.\n\n"
+            "Если вы не хотите получать такие сообщения, сообщите об этом ответным письмом."
+        ),
+        "audience": "УК/ТСЖ с зафиксированным основанием согласия, кроме suppression",
+        "personalization_fields": ["organization_name", "region", "object_scope"],
+    }
     return {
         "status": "prepared",
         "action": "prepare_management_company_outreach",
@@ -344,7 +357,10 @@ def management_company_outreach_summary(db: Session) -> dict:
         "verified_marketing_consents": len(addresses & verified_consents),
         "suppressed_addresses": len(addresses & suppressed),
         "send_eligible_addresses": len(eligible),
+        "draft": draft,
         "messages_queued": 0,
+        "automatic_send": False,
+        "human_review_required": True,
         "owner_approval_required_before_campaign": True,
         "evidence": [
             {

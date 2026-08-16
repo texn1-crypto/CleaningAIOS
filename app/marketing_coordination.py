@@ -347,6 +347,33 @@ def run_marketing_sales_coordination(
             }
         )
 
+    if management_coverage["send_eligible_addresses"]:
+        outreach_task, outreach_created = _ensure_task(
+            db,
+            title=f"Sales management-company outreach draft · {day}",
+            agent_type="sales",
+            priority="high",
+            payload={
+                "action": "prepare_management_company_outreach",
+                "source": "marketing_sales_coordination",
+                "external_send": False,
+                "owner_approval_required_before_campaign": True,
+            },
+            reason="marketing_sales_outreach_draft",
+        )
+        actions.append(
+            {
+                "agent": "sales",
+                "task_id": outreach_task.id,
+                "status": "queued" if outreach_created else outreach_task.status,
+                "action": (
+                    "Подготовить текст предложения для consent-проверенного сегмента УК/ТСЖ; "
+                    "не создавать и не отправлять письма без отдельного одобрения."
+                ),
+                "created_now": outreach_created,
+            }
+        )
+
     sales_created = 0
     for lead in contactable[:20]:
         fingerprint = _follow_up_fingerprint(lead)
