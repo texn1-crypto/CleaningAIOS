@@ -2525,6 +2525,7 @@ def test_outreach_summary_is_owner_safe_and_manager_guarded(client):
         "verified_consent_required": True,
         "owner_approval_required": True,
         "suppression_enforced": True,
+        "transport_circuit_breaker": True,
     }
     campaign = next(row for row in summary["campaigns"]["recent"] if row["campaign_key"] == "bot-outreach-panel-test")
     assert campaign["message_count"] == 1
@@ -2542,6 +2543,10 @@ def test_telegram_outreach_panel_is_read_only_and_actionable(monkeypatch):
         return {
             "delivery_ready": True,
             "mailboxes": {"total": 2, "active": 2, "ready": 2},
+            "transports": {
+                "unavailable": 1,
+                "items": [{"mailbox_key": "7", "status": "provider_blocked"}],
+            },
             "inbound": {"enabled": 2, "receiving_ready": 2, "forwarding_ready": 2, "owner_destination_ready": True},
             "consents": {"verified": 12, "revoked": 1},
             "suppressed": 3,
@@ -2565,13 +2570,19 @@ def test_telegram_outreach_panel_is_read_only_and_actionable(monkeypatch):
     text, kwargs = Update.effective_message.replies[0]
     assert "Подтверждённые согласия: 12" in text
     assert "Входящие ответы: готовы (2 из 2)" in text
+    assert "Карантин / пауза отправителей: 1" in text
     assert "Ожидают approval: 1" in text
     callbacks = {
         button.callback_data
         for row in kwargs["reply_markup"].inline_keyboard
         for button in row
     }
-    assert callbacks == {"outreach", "outreach:campaigns", "outreach:help"}
+    assert callbacks == {
+        "outreach",
+        "outreach:campaigns",
+        "outreach:help",
+        "outreach:resume:7",
+    }
 
     monkeypatch.setattr(bot, "allowed", lambda update: False)
     Update.effective_message.replies.clear()
@@ -4585,7 +4596,7 @@ def test_smtp_auth_failure_defers_entire_mailbox_queue(client, monkeypatch):
     from app import worker
     from app.config import settings
     from app.db import SessionLocal
-    from app.models import OutboundMessage, OwnerNotification, SenderMailbox
+    from app.models import MailTransportState, OutboundMessage, OwnerNotification, SenderMailbox
 
     class SMTP:
         def __init__(self, *args, **kwargs): pass
@@ -4642,11 +4653,13 @@ def test_smtp_auth_failure_defers_entire_mailbox_queue(client, monkeypatch):
             .where(OutboundMessage.campaign_key == campaign_key)
             .order_by(OutboundMessage.id)
         ).all()
-        retry_at = now + worker.SMTP_AUTH_RETRY_DELAY
         assert [row.status for row in rows] == ["waiting_configuration", "waiting_configuration"]
-        assert [row.scheduled_at for row in rows] == [retry_at, retry_at]
+        assert [row.scheduled_at for row in rows] == [now, now]
         assert all(row.error == "SMTP authentication failed; verify the mailbox application password" for row in rows)
         assert worker.send_next_email(db, now=now) is False
+        state = db.get(MailTransportState, str(mailbox.id))
+        assert state.status == "credentials_required"
+        assert state.retry_after is None
 
         notification = db.scalar(
             select(OwnerNotification).where(
@@ -4657,6 +4670,17 @@ def test_smtp_auth_failure_defers_entire_mailbox_queue(client, monkeypatch):
         assert notification is not None
         assert notification.data["status"] == "credentials_required"
         assert "пароль приложения" in notification.body
+
+        assert client.post(
+            f"/api/outreach/mailboxes/{mailbox.id}/resume",
+            headers={"X-Role": "manager"},
+        ).status_code == 403
+        resumed = client.post(f"/api/outreach/mailboxes/{mailbox.id}/resume")
+        assert resumed.status_code == 200
+        assert resumed.json()["previous_status"] == "credentials_required"
+        assert resumed.json()["requeued"] == 2
+        db.expire_all()
+        assert db.get(MailTransportState, str(mailbox.id)).status == "ready"
 
         db.execute(
             update(OutboundMessage)
@@ -4675,7 +4699,7 @@ def test_smtp_provider_mailbox_block_defers_queue_and_records_incident(client, m
     from app import worker
     from app.config import settings
     from app.db import SessionLocal
-    from app.models import AuditLog, OutboundMessage, OwnerNotification, SenderMailbox
+    from app.models import AuditLog, MailTransportState, OutboundMessage, OwnerNotification, SenderMailbox
 
     class SMTP:
         def __init__(self, *args, **kwargs): pass
@@ -4733,11 +4757,11 @@ def test_smtp_provider_mailbox_block_defers_queue_and_records_incident(client, m
             select(OutboundMessage).where(OutboundMessage.campaign_key == campaign_key)
         ).all()
         assert {row.status for row in messages} == {"waiting_configuration"}
-        assert all("provider blocked or rate-limited" in row.error for row in messages)
+        assert all("provider blocked the sender mailbox" in row.error for row in messages)
         notification = db.scalar(
             select(OwnerNotification).where(
                 OwnerNotification.idempotency_key
-                == f"outreach-smtp-provider-block:{mailbox.id}:{now.date().isoformat()}:telegram"
+                == f"outreach-smtp-provider_blocked:{mailbox.id}:{now.date().isoformat()}:telegram"
             )
         )
         assert notification is not None
@@ -4747,6 +4771,19 @@ def test_smtp_provider_mailbox_block_defers_queue_and_records_incident(client, m
         )
         assert audit is not None
         assert "Account is blocked" not in str(audit.details)
+        state = db.get(MailTransportState, str(mailbox.id))
+        assert state.status == "provider_blocked"
+        assert state.retry_after is None
+        assert worker.send_next_email(db, now=now.replace(hour=13)) is False
+
+        summary = client.get("/api/outreach/summary", headers={"X-Role": "manager"}).json()
+        assert any(
+            item["mailbox_key"] == str(mailbox.id) and item["status"] == "provider_blocked"
+            for item in summary["transports"]["items"]
+        )
+        resumed = client.post(f"/api/outreach/mailboxes/{mailbox.id}/resume")
+        assert resumed.status_code == 200
+        assert resumed.json()["requeued"] == 2
 
         db.execute(
             update(OutboundMessage)
@@ -4755,6 +4792,86 @@ def test_smtp_provider_mailbox_block_defers_queue_and_records_incident(client, m
         )
         notification.status = "sent"
         db.commit()
+
+
+def test_smtp_rate_limit_uses_cooldown_then_recovers(client, monkeypatch):
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import select, update
+
+    from app import worker
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import AuditLog, MailTransportState, OutboundMessage, SenderMailbox
+
+    attempts = []
+
+    class SMTP:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def starttls(self): return None
+        def login(self, username, password): return None
+        def send_message(self, message):
+            attempts.append(message["To"])
+            if len(attempts) == 1:
+                raise worker.smtplib.SMTPDataError(421, b"Daily user sending quota exceeded")
+
+    monkeypatch.setattr(worker.smtplib, "SMTP", SMTP)
+    monkeypatch.setenv("SMTP_RATE_LIMIT_TEST", "secret")
+    monkeypatch.setattr(settings, "outreach_timezone", "Europe/Moscow")
+    monkeypatch.setattr(settings, "outreach_daily_start_hour", 9)
+    monkeypatch.setattr(settings, "outreach_per_minute", 10)
+    monkeypatch.setattr(settings, "outreach_per_day", 50)
+    monkeypatch.setattr(settings, "outreach_rate_limit_cooldown_hours", 24)
+    now = datetime(2040, 1, 3, 12, 0)
+    campaign_key = "smtp-rate-limit-test"
+
+    with SessionLocal() as db:
+        db.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.status.in_(["queued", "waiting_configuration", "retry"]))
+            .values(status="sent", sent_at=None)
+        )
+        mailbox = SenderMailbox(
+            name="Rate limit",
+            address="rate-limit@example.com",
+            smtp_host="smtp.example.com",
+            username="rate-limit@example.com",
+            secret_ref="SMTP_RATE_LIMIT_TEST",
+            per_minute=10,
+            per_day=50,
+        )
+        db.add(mailbox)
+        db.flush()
+        db.add(
+            OutboundMessage(
+                campaign_key=campaign_key,
+                recipient="rate-limited-recipient@example.com",
+                subject="Rate limit",
+                body="Body",
+                mailbox_id=mailbox.id,
+                status="queued",
+                scheduled_at=now,
+            )
+        )
+        db.commit()
+
+        assert worker.send_next_email(db, now=now) is True
+        state = db.get(MailTransportState, str(mailbox.id))
+        assert state.status == "rate_limited"
+        assert state.retry_after == now + timedelta(hours=24)
+        assert worker.send_next_email(db, now=now + timedelta(hours=23)) is False
+        assert attempts == ["rate-limited-recipient@example.com"]
+
+        assert worker.send_next_email(db, now=now + timedelta(hours=24)) is True
+        row = db.scalar(select(OutboundMessage).where(OutboundMessage.campaign_key == campaign_key))
+        assert row.status == "sent"
+        assert attempts == ["rate-limited-recipient@example.com"] * 2
+        assert db.get(MailTransportState, str(mailbox.id)).status == "ready"
+        assert db.scalar(
+            select(AuditLog).where(AuditLog.action == "outreach.smtp_cooldown_completed")
+        ) is not None
 
 
 def test_expired_approval_is_persistently_rejected(client):

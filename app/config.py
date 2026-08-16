@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     outreach_per_day: int = 100
     outreach_timezone: str = "Europe/Moscow"
     outreach_daily_start_hour: int = 9
+    outreach_rate_limit_cooldown_hours: int = 24
     inbound_mail_poll_seconds: int = 60
     llm_api_key: str = ""
     llm_base_url: str = "https://api.openai.com/v1"

@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SenderMailbox, Suppression, Task, TaskTransition, TenderDocument
+from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SenderMailbox, Suppression, Task, TaskTransition, TenderDocument
 from .integrations import collect_tenders, download_tender_document
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -786,7 +786,82 @@ def create_mailbox(payload: MailboxCreate, db: Session = Depends(get_db), actor:
 def mailboxes(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "manager")
     rows = db.scalars(select(SenderMailbox).order_by(SenderMailbox.id)).all()
-    return [{"id": x.id, "name": x.name, "address": x.address, "active": x.active, "per_minute": x.per_minute, "per_day": x.per_day, "sent_today": x.sent_today, "last_sent_at": x.last_sent_at, "secret_configured": bool(x.secret_ref and os.environ.get(x.secret_ref)), "inbound_enabled": x.inbound_enabled, "inbound_secret_configured": bool(x.imap_secret_ref and os.environ.get(x.imap_secret_ref))} for x in rows]
+    states = {state.mailbox_key: state for state in db.scalars(select(MailTransportState)).all()}
+    return [{"id": x.id, "name": x.name, "address": x.address, "active": x.active, "per_minute": x.per_minute, "per_day": x.per_day, "sent_today": x.sent_today, "last_sent_at": x.last_sent_at, "secret_configured": bool(x.secret_ref and os.environ.get(x.secret_ref)), "inbound_enabled": x.inbound_enabled, "inbound_secret_configured": bool(x.imap_secret_ref and os.environ.get(x.imap_secret_ref)), "delivery_status": states[str(x.id)].status if str(x.id) in states else "ready", "retry_after": states[str(x.id)].retry_after if str(x.id) in states else None} for x in rows]
+
+
+@router.post("/outreach/mailboxes/{mailbox_key}/resume")
+def resume_mailbox_transport(
+    mailbox_key: str,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    """Owner-controlled recovery after credentials/provider status were fixed."""
+    require_role(actor, "owner")
+    mailbox_id: int | None
+    if mailbox_key == "default":
+        mailbox_id = None
+        configured = bool(
+            settings.smtp_host
+            and settings.smtp_username
+            and settings.smtp_password
+            and settings.smtp_from_email
+        )
+    elif mailbox_key.isdigit() and str(int(mailbox_key)) == mailbox_key:
+        mailbox_id = int(mailbox_key)
+        mailbox = db.get(SenderMailbox, mailbox_id)
+        if mailbox is None:
+            raise HTTPException(404, "Mailbox not found")
+        configured = bool(
+            mailbox.active
+            and mailbox.smtp_host
+            and (mailbox.username or mailbox.address)
+            and mailbox.secret_ref
+            and os.environ.get(mailbox.secret_ref)
+        )
+    else:
+        raise HTTPException(404, "Mailbox not found")
+    if not configured:
+        raise HTTPException(409, "SMTP credentials must be configured before recovery")
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    state = db.get(MailTransportState, mailbox_key)
+    previous_status = state.status if state else "ready"
+    if state is None:
+        state = MailTransportState(mailbox_key=mailbox_key)
+        db.add(state)
+    state.status = "ready"
+    state.reason = ""
+    state.consecutive_failures = 0
+    state.blocked_at = None
+    state.retry_after = None
+    state.updated_at = now
+    mailbox_scope = (
+        OutboundMessage.mailbox_id == mailbox_id
+        if mailbox_id is not None
+        else OutboundMessage.mailbox_id.is_(None)
+    )
+    result = db.execute(
+        update(OutboundMessage)
+        .where(mailbox_scope, OutboundMessage.status == "waiting_configuration")
+        .values(status="queued", scheduled_at=now, error="")
+    )
+    requeued = int(result.rowcount or 0)
+    audit(
+        db,
+        actor.subject,
+        "outreach.smtp_transport_resumed",
+        "sender_mailbox",
+        mailbox_key,
+        {"previous_status": previous_status, "requeued": requeued},
+    )
+    db.commit()
+    return {
+        "mailbox_key": mailbox_key,
+        "status": "ready",
+        "previous_status": previous_status,
+        "requeued": requeued,
+    }
 
 
 @router.put("/outreach/consents")
@@ -858,7 +933,21 @@ def delivery_log(status: Optional[str] = None, db: Session = Depends(get_db), ac
 def outreach_summary(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     """Return an owner-safe operational view without exposing recipient addresses."""
     require_role(actor, "manager")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     mailboxes = db.scalars(select(SenderMailbox).order_by(SenderMailbox.id)).all()
+    transport_states = db.scalars(select(MailTransportState).order_by(MailTransportState.mailbox_key)).all()
+    state_by_key = {row.mailbox_key: row for row in transport_states}
+
+    def transport_available(key: str) -> bool:
+        state = state_by_key.get(key)
+        if state is None or state.status == "ready":
+            return True
+        return bool(
+            state.status == "rate_limited"
+            and state.retry_after
+            and state.retry_after <= now
+        )
+
     ready_mailboxes = sum(
         1
         for row in mailboxes
@@ -867,13 +956,20 @@ def outreach_summary(db: Session = Depends(get_db), actor: Principal = Depends(p
         and (row.username or row.address)
         and row.secret_ref
         and bool(os.environ.get(row.secret_ref))
+        and transport_available(str(row.id))
     )
     default_sender_ready = bool(
         settings.smtp_host
         and settings.smtp_username
         and settings.smtp_password
         and settings.smtp_from_email
+        and transport_available("default")
     )
+    unavailable_transports = [
+        row
+        for row in transport_states
+        if not transport_available(row.mailbox_key)
+    ]
     inbound_enabled = [row for row in mailboxes if row.active and row.inbound_enabled]
     inbound_receiving_ready = sum(
         1
@@ -959,6 +1055,19 @@ def outreach_summary(db: Session = Depends(get_db), actor: Principal = Depends(p
             "active": sum(1 for row in mailboxes if row.active),
             "ready": ready_mailboxes,
             "default_sender_ready": default_sender_ready,
+            "quarantined": len(unavailable_transports),
+        },
+        "transports": {
+            "unavailable": len(unavailable_transports),
+            "items": [
+                {
+                    "mailbox_key": row.mailbox_key,
+                    "status": row.status,
+                    "reason": row.reason,
+                    "retry_after": row.retry_after,
+                }
+                for row in unavailable_transports
+            ],
         },
         "inbound": {
             "enabled": len(inbound_enabled),
@@ -985,6 +1094,7 @@ def outreach_summary(db: Session = Depends(get_db), actor: Principal = Depends(p
             "verified_consent_required": True,
             "owner_approval_required": True,
             "suppression_enforced": True,
+            "transport_circuit_breaker": True,
         },
     }
 

@@ -397,6 +397,25 @@ class SenderMailbox(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class MailTransportState(Base):
+    """Persistent circuit-breaker state for one SMTP transport.
+
+    ``mailbox_key`` is either ``default`` for the environment-backed sender or
+    the numeric ``SenderMailbox.id`` rendered as text.  Provider responses are
+    reduced to safe operational categories before they reach this table; raw
+    SMTP responses and credentials are never persisted.
+    """
+
+    __tablename__ = "mail_transport_states"
+    mailbox_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="ready", index=True)
+    reason: Mapped[str] = mapped_column(String(512), default="")
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    blocked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    retry_after: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class MessageTemplate(Base):
     __tablename__ = "message_templates"
     id: Mapped[int] = mapped_column(primary_key=True)

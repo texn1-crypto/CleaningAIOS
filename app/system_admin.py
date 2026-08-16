@@ -14,6 +14,7 @@ from .models import (
     AgentState,
     AuditLog,
     ImprovementRequest,
+    MailTransportState,
     OutboundMessage,
     OwnerNotification,
     Task,
@@ -183,6 +184,38 @@ def collect_incidents(
                 count=group["count"],
                 credentials_required=True,
                 data={"statuses": sorted(group["statuses"]), "message_count": group["count"]},
+            )
+        )
+
+    transport_states = db.scalars(
+        select(MailTransportState).where(MailTransportState.status != "ready")
+    ).all()
+    for state in transport_states:
+        if state.mailbox_key in mailbox_groups:
+            continue
+        if (
+            state.status == "rate_limited"
+            and state.retry_after is not None
+            and state.retry_after <= now
+        ):
+            continue
+        incidents.append(
+            _incident(
+                kind="outreach_transport_quarantined",
+                resource_type="sender_mailbox",
+                resource_id=state.mailbox_key,
+                reason=_safe_text(state.reason, 500) or f"SMTP transport status: {state.status}",
+                severity=(
+                    "critical"
+                    if state.status in {"provider_blocked", "credentials_required"}
+                    else "high"
+                ),
+                credentials_required=state.status in {"provider_blocked", "credentials_required"},
+                data={
+                    "status": state.status,
+                    "retry_after": state.retry_after.isoformat() if state.retry_after else None,
+                    "consecutive_failures": state.consecutive_failures,
+                },
             )
         )
 

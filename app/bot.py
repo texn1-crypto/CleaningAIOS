@@ -513,6 +513,7 @@ def format_outreach_summary(data: dict) -> str:
     consents = data.get("consents") or {}
     limits = data.get("limits") or {}
     inbound = data.get("inbound") or {}
+    transports = data.get("transports") or {}
     ready = "готова к отправке" if data.get("delivery_ready") else "нужна настройка SMTP"
     inbound_ready = (
         "готовы"
@@ -524,6 +525,7 @@ def format_outreach_summary(data: dict) -> str:
         "📣 Сервис рассылок\n"
         f"Система: {ready}\n"
         f"Почтовые ящики: {mailboxes.get('ready', 0)} готовы из {mailboxes.get('active', 0)} активных\n"
+        f"Карантин / пауза отправителей: {transports.get('unavailable', 0)}\n"
         f"Входящие ответы: {inbound_ready} ({inbound.get('forwarding_ready', 0)} из {inbound.get('enabled', 0)})\n"
         f"Подтверждённые согласия: {consents.get('verified', 0)}\n"
         f"Suppression / отписки: {data.get('suppressed', 0)}\n"
@@ -568,13 +570,28 @@ async def outreach_dashboard(update: Update, _: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Доступ не разрешён.")
         return
     data = await api("GET", "/api/outreach/summary")
-    keyboard = InlineKeyboardMarkup([
+    keyboard_rows = [
         [
             InlineKeyboardButton("🔄 Обновить", callback_data="outreach"),
             InlineKeyboardButton("📨 Кампании", callback_data="outreach:campaigns"),
         ],
         [InlineKeyboardButton("➕ Как создать рассылку", callback_data="outreach:help")],
-    ])
+    ]
+    manual_recovery = [
+        item
+        for item in ((data.get("transports") or {}).get("items") or [])
+        if item.get("status") in {"provider_blocked", "credentials_required"}
+    ]
+    for item in manual_recovery[:5]:
+        key = str(item.get("mailbox_key") or "")
+        if key == "default" or key.isdigit():
+            keyboard_rows.append([
+                InlineKeyboardButton(
+                    f"✅ Повторно проверить почту {key}",
+                    callback_data=f"outreach:resume:{key}",
+                )
+            ])
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
     await update.effective_message.reply_text(format_outreach_summary(data), reply_markup=keyboard)
 
 
@@ -597,6 +614,15 @@ async def outreach_help(update: Update, _: ContextTypes.DEFAULT_TYPE):
         "До подтверждения письма не ставятся в очередь. Отписки, suppression, дедупликация и лимиты применяются автоматически.",
         reply_markup=keyboard,
         parse_mode="Markdown",
+    )
+
+
+async def outreach_resume_transport(update: Update, _: ContextTypes.DEFAULT_TYPE, mailbox_key: str):
+    result = await api("POST", f"/api/outreach/mailboxes/{mailbox_key}/resume")
+    await update.effective_message.reply_text(
+        "✅ Почтовый транспорт снова разрешён к проверке. "
+        f"В очередь возвращено писем: {result.get('requeued', 0)}. "
+        "Если провайдер снова отклонит отправку, защита немедленно вернёт ящик в карантин."
     )
 
 
@@ -1791,7 +1817,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     minimum_role = (
         "owner"
-        if q.data == "approvals"
+        if q.data == "approvals" or q.data.startswith("outreach:resume:")
         else "manager"
         if q.data in {"meta_brain", "system_admin", "simulator", "marketing_invoices", "improvements"}
         or q.data == "ceo"
@@ -1871,6 +1897,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif q.data == "agents": await dashboard(update, context)
         elif q.data == "improvements": await improvement_queue(update, context)
         elif q.data == "outreach": await outreach_dashboard(update, context)
+        elif q.data.startswith("outreach:resume:"):
+            match = re.fullmatch(r"outreach:resume:(default|[1-9][0-9]{0,9})", q.data)
+            if not match:
+                await update.effective_message.reply_text("Кнопка восстановления почты недействительна.")
+            else:
+                await outreach_resume_transport(update, context, match.group(1))
         elif q.data == "outreach:campaigns": await outreach_campaigns(update, context)
         elif q.data == "outreach:help": await outreach_help(update, context)
     finally:

@@ -114,6 +114,16 @@ deduplicated Telegram progress update such as `1/50`, plus the cumulative progre
 for the approved recipient file. Suppression, unsubscribe, consent and exact owner
 approval checks remain mandatory.
 
+SMTP authentication failures and explicit provider blocks put the affected transport
+(`default` or one `SenderMailbox`) into a persistent database quarantine. Queued
+messages remain intact and no further login or delivery attempt is made until the
+owner fixes the mailbox and presses `Повторно проверить почту` in `/outreach` (or
+calls `POST /api/outreach/mailboxes/{mailbox_key}/resume`). A transient SMTP 421/454
+or quota response uses a separate automatic cooldown, 24 hours by default through
+`OUTREACH_RATE_LIMIT_COOLDOWN_HOURS`; it never rotates to another mailbox to evade a
+provider restriction. The resume endpoint only requeues existing approved messages
+and does not bypass consent, suppression, unsubscribe or daily limits.
+
 Set `LLM_API_KEY` for OpenAI and/or `ANTHROPIC_API_KEY` for Claude. The default
 `LLM_PROVIDER=auto` assigns aggregate CEO/business synthesis to Claude, request and
 product capability analysis to OpenAI, and falls back to the other configured

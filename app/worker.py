@@ -18,7 +18,7 @@ from .config import settings
 from .chat import redact_sensitive_text
 from .db import SessionLocal
 from .orchestrator import run_next
-from .models import AuditLog, OutboundMessage, SenderMailbox, Suppression
+from .models import AuditLog, MailTransportState, OutboundMessage, SenderMailbox, Suppression
 from .platform import process_next_event
 from .notifications import queue_owner_notification, send_next_owner_notification
 from .inbound_mail import collect_inbound_replies
@@ -28,7 +28,9 @@ from .social_runtime import generate_next_social_visual, publish_next_social_pos
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("cleaningai.worker")
 
-SMTP_AUTH_RETRY_DELAY = timedelta(minutes=15)
+SMTP_AUTH_REASON = "SMTP authentication failed; verify the mailbox application password"
+SMTP_PROVIDER_BLOCK_REASON = "SMTP provider blocked the sender mailbox; verify provider status"
+SMTP_RATE_LIMIT_REASON = "SMTP provider rate-limited the sender mailbox; delivery is cooling down"
 
 
 def _safe_worker_error(exc: Exception) -> str:
@@ -42,6 +44,58 @@ def _safe_worker_error(exc: Exception) -> str:
             value = value.replace(secret, "<redacted>")
     detail = value.strip()[:1000]
     return f"{type(exc).__name__}: {detail or 'email delivery failed'}"
+
+
+def _mailbox_key(mailbox_id: int | None) -> str:
+    return str(mailbox_id) if mailbox_id is not None else "default"
+
+
+def _set_transport_failure(
+    db,
+    *,
+    mailbox_id: int | None,
+    status: str,
+    reason: str,
+    now: datetime,
+    retry_after: datetime | None = None,
+) -> MailTransportState:
+    key = _mailbox_key(mailbox_id)
+    state = db.get(MailTransportState, key)
+    if state is None:
+        state = MailTransportState(mailbox_key=key)
+        db.add(state)
+    state.status = status
+    state.reason = reason
+    state.consecutive_failures = int(state.consecutive_failures or 0) + 1
+    state.blocked_at = now
+    state.retry_after = retry_after
+    state.updated_at = now
+    return state
+
+
+def _transport_ready(db, *, mailbox_id: int | None, now: datetime) -> bool:
+    """Return whether SMTP may be attempted without defeating the circuit breaker."""
+    key = _mailbox_key(mailbox_id)
+    state = db.get(MailTransportState, key)
+    if state is None or state.status == "ready":
+        return True
+    if state.status == "rate_limited" and state.retry_after and state.retry_after <= now:
+        previous_failures = int(state.consecutive_failures or 0)
+        state.status = "ready"
+        state.reason = ""
+        state.retry_after = None
+        state.updated_at = now
+        db.add(
+            AuditLog(
+                actor="worker",
+                action="outreach.smtp_cooldown_completed",
+                resource_type="sender_mailbox",
+                resource_id=key,
+                details={"previous_failures": previous_failures},
+            )
+        )
+        return True
+    return False
 
 
 def outreach_delivery_window(now: datetime) -> tuple[datetime | None, datetime]:
@@ -150,27 +204,31 @@ def _defer_mailbox_after_auth_failure(
     recipient. Deferring the whole mailbox prevents a bad application password
     from turning every queued recipient into an immediate permanent failure.
     """
-    retry_at = now + SMTP_AUTH_RETRY_DELAY
     mailbox_scope = (
         OutboundMessage.mailbox_id == row.mailbox_id
         if row.mailbox_id is not None
         else OutboundMessage.mailbox_id.is_(None)
     )
-    safe_error = "SMTP authentication failed; verify the mailbox application password"
+    safe_error = SMTP_AUTH_REASON
     db.execute(
         update(OutboundMessage)
         .where(
             mailbox_scope,
             OutboundMessage.status.in_(["queued", "waiting_configuration"]),
-            OutboundMessage.scheduled_at < retry_at,
         )
         .values(
             status="waiting_configuration",
-            scheduled_at=retry_at,
             error=safe_error,
         )
     )
-    mailbox_key = str(row.mailbox_id or "default")
+    mailbox_key = _mailbox_key(row.mailbox_id)
+    _set_transport_failure(
+        db,
+        mailbox_id=row.mailbox_id,
+        status="credentials_required",
+        reason=safe_error,
+        now=now,
+    )
     queue_owner_notification(
         db,
         idempotency_key=f"outreach-smtp-auth:{mailbox_key}:{now.date().isoformat()}:telegram",
@@ -180,13 +238,14 @@ def _defer_mailbox_after_auth_failure(
         subject="📨 Рассылка приостановлена: SMTP",
         body=(
             "Почтовый сервер отклонил авторизацию. Очередь сохранена и не будет "
-            "массово помечена ошибочной. Проверьте пароль приложения отправителя; "
-            f"следующая безопасная проверка после {retry_at.isoformat()}."
+            "массово помечена ошибочной. Проверьте пароль приложения отправителя, "
+            "затем нажмите кнопку повторной проверки в панели рассылок. До этого "
+            "worker не будет повторять вход с неверным паролем."
         ),
         data={
             "mailbox_id": row.mailbox_id,
             "status": "credentials_required",
-            "retry_at": retry_at.isoformat(),
+            "retry_at": None,
         },
         correlation_id=f"mailbox:{mailbox_key}",
     )
@@ -198,18 +257,18 @@ def _defer_mailbox_after_auth_failure(
             resource_id=mailbox_key,
             details={
                 "status": "credentials_required",
-                "retry_at": retry_at.isoformat(),
+                "retry_at": None,
             },
         )
     )
 
 
-def _is_provider_mailbox_block(exc: smtplib.SMTPResponseException) -> bool:
+def _provider_failure_kind(exc: smtplib.SMTPResponseException) -> str | None:
     response = exc.smtp_error
     if isinstance(response, bytes):
         response = response.decode("utf-8", errors="replace")
     message = str(response).lower()
-    markers = (
+    blocked_markers = (
         "account is blocked",
         "account blocked",
         "account disabled",
@@ -217,13 +276,28 @@ def _is_provider_mailbox_block(exc: smtplib.SMTPResponseException) -> bool:
         "mailbox blocked",
         "spam detected",
         "spam policy",
+        "rejected under suspicion of spam",
+        "access denied",
+    )
+    rate_limit_markers = (
         "sending limit",
         "rate limit",
         "too many messages",
         "temporarily locked",
-        "access denied",
+        "quota exceeded",
+        "daily user sending quota",
+        "4.7.28",
     )
-    return int(exc.smtp_code or 0) in {421, 454} or any(marker in message for marker in markers)
+    if any(marker in message for marker in blocked_markers):
+        return "provider_blocked"
+    if int(exc.smtp_code or 0) in {421, 454} or any(marker in message for marker in rate_limit_markers):
+        return "rate_limited"
+    return None
+
+
+def _is_provider_mailbox_block(exc: smtplib.SMTPResponseException) -> bool:
+    """Backward-compatible predicate for callers that only need handled/unhandled."""
+    return _provider_failure_kind(exc) is not None
 
 
 def _defer_mailbox_after_provider_block(
@@ -231,51 +305,83 @@ def _defer_mailbox_after_provider_block(
     row: OutboundMessage,
     *,
     now: datetime,
+    failure_kind: str,
 ) -> None:
-    retry_at = now + SMTP_AUTH_RETRY_DELAY
+    if failure_kind not in {"provider_blocked", "rate_limited"}:
+        raise ValueError("Unsupported SMTP provider failure kind")
+    retry_at = (
+        now + timedelta(hours=settings.outreach_rate_limit_cooldown_hours)
+        if failure_kind == "rate_limited"
+        else None
+    )
     mailbox_scope = (
         OutboundMessage.mailbox_id == row.mailbox_id
         if row.mailbox_id is not None
         else OutboundMessage.mailbox_id.is_(None)
     )
-    safe_error = "SMTP provider blocked or rate-limited the sender mailbox; verify provider status"
+    safe_error = SMTP_RATE_LIMIT_REASON if failure_kind == "rate_limited" else SMTP_PROVIDER_BLOCK_REASON
+    values = {"status": "waiting_configuration", "error": safe_error}
+    if retry_at is not None:
+        values["scheduled_at"] = retry_at
     db.execute(
         update(OutboundMessage)
         .where(
             mailbox_scope,
             OutboundMessage.status.in_(["queued", "waiting_configuration"]),
-            OutboundMessage.scheduled_at < retry_at,
         )
-        .values(status="waiting_configuration", scheduled_at=retry_at, error=safe_error)
+        .values(**values)
     )
-    mailbox_key = str(row.mailbox_id or "default")
+    mailbox_key = _mailbox_key(row.mailbox_id)
+    _set_transport_failure(
+        db,
+        mailbox_id=row.mailbox_id,
+        status=failure_kind,
+        reason=safe_error,
+        now=now,
+        retry_after=retry_at,
+    )
+    is_rate_limit = failure_kind == "rate_limited"
     queue_owner_notification(
         db,
-        idempotency_key=f"outreach-smtp-provider-block:{mailbox_key}:{now.date().isoformat()}:telegram",
+        idempotency_key=f"outreach-smtp-{failure_kind}:{mailbox_key}:{now.date().isoformat()}:telegram",
         channel="telegram",
         resource_type="sender_mailbox",
         resource_id=mailbox_key,
-        subject="📨 Рассылка приостановлена почтовым провайдером",
+        subject=(
+            "📨 Рассылка временно охлаждается"
+            if is_rate_limit
+            else "📨 Рассылка приостановлена почтовым провайдером"
+        ),
         body=(
-            "Почтовый провайдер заблокировал или ограничил отправителя. Очередь сохранена, "
-            "повторная массовая отправка не выполняется. Проверьте статус ящика и правила "
-            f"провайдера; следующая безопасная проверка после {retry_at.isoformat()}."
+            (
+                "Провайдер временно ограничил частоту. Очередь сохранена; worker не будет "
+                f"повторять отправку до {retry_at.isoformat()}. После паузы работа возобновится автоматически."
+            )
+            if is_rate_limit
+            else (
+                "Почтовый провайдер заблокировал отправителя. Очередь сохранена, повторная "
+                "отправка полностью остановлена. После разблокировки нажмите кнопку повторной "
+                "проверки в панели рассылок."
+            )
         ),
         data={
             "mailbox_id": row.mailbox_id,
-            "status": "provider_blocked",
-            "retry_at": retry_at.isoformat(),
+            "status": failure_kind,
+            "retry_at": retry_at.isoformat() if retry_at else None,
         },
-        severity="critical",
+        severity="high" if is_rate_limit else "critical",
         correlation_id=f"mailbox:{mailbox_key}",
     )
     db.add(
         AuditLog(
             actor="worker",
-            action="outreach.smtp_provider_blocked",
+            action=("outreach.smtp_rate_limited" if is_rate_limit else "outreach.smtp_provider_blocked"),
             resource_type="sender_mailbox",
             resource_id=mailbox_key,
-            details={"status": "provider_blocked", "retry_at": retry_at.isoformat()},
+            details={
+                "status": failure_kind,
+                "retry_at": retry_at.isoformat() if retry_at else None,
+            },
         )
     )
 
@@ -302,6 +408,15 @@ def send_next_email(db, *, now: datetime | None = None) -> bool:
     row = None
     for candidate in candidates:
         candidate_mailbox = db.get(SenderMailbox, candidate.mailbox_id) if candidate.mailbox_id else None
+        if not _transport_ready(db, mailbox_id=candidate.mailbox_id, now=now):
+            state = db.get(MailTransportState, _mailbox_key(candidate.mailbox_id))
+            candidate.status = "waiting_configuration"
+            candidate.error = state.reason if state else "SMTP transport is quarantined"
+            continue
+        if candidate_mailbox and not candidate_mailbox.active:
+            candidate.status = "waiting_configuration"
+            candidate.error = "sender mailbox is inactive"
+            continue
         if candidate_mailbox:
             candidate_password = os.environ.get(candidate_mailbox.secret_ref, "") if candidate_mailbox.secret_ref else ""
             if not all([candidate_mailbox.smtp_host, candidate_mailbox.username or candidate_mailbox.address, candidate_password, candidate_mailbox.address]):
@@ -332,7 +447,7 @@ def send_next_email(db, *, now: datetime | None = None) -> bool:
     smtp_password = os.environ.get(mailbox.secret_ref, "") if mailbox and mailbox.secret_ref else settings.smtp_password
     from_email = mailbox.address if mailbox else settings.smtp_from_email
     if mailbox and not mailbox.active:
-        row.status = "failed"; row.error = "mailbox is inactive"; db.commit(); return True
+        row.status = "waiting_configuration"; row.error = "sender mailbox is inactive"; db.commit(); return True
     if not all([smtp_host, smtp_username, smtp_password, from_email]):
         row.status = "waiting_configuration"; row.error = "SMTP credentials are not configured"; db.commit(); return True
     unsubscribe_query = urlencode({"email": row.recipient, "token": unsubscribe_token(row.recipient)})
@@ -377,8 +492,9 @@ def send_next_email(db, *, now: datetime | None = None) -> bool:
         _defer_mailbox_after_auth_failure(db, row, now=now)
         log.warning("SMTP authentication failed for mailbox %s; queue deferred", row.mailbox_id or "default")
     except smtplib.SMTPResponseException as exc:
-        if _is_provider_mailbox_block(exc):
-            _defer_mailbox_after_provider_block(db, row, now=now)
+        failure_kind = _provider_failure_kind(exc)
+        if failure_kind:
+            _defer_mailbox_after_provider_block(db, row, now=now, failure_kind=failure_kind)
             log.warning("SMTP provider blocked mailbox %s; queue deferred", row.mailbox_id or "default")
         else:
             row.status = "failed"

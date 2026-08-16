@@ -91,7 +91,8 @@ The operational APIs include `/api/events`, `/api/brain`, `/api/agent-runs`,
 `/api/finance/site-economics`, `/api/simulations`, `/api/tenders/{id}/score`,
 `/api/imports/leads`, `/api/inbox`, `/api/hr/staffing`, `/api/finance/payment-calendar`,
 `/api/marketing/content`, `/api/operations/quality` and
-`/api/outreach/campaigns/launch`. Apply migrations through `0011` before deploying.
+`/api/outreach/campaigns/launch`. Apply every migration through the current Alembic
+`head` before deploying (currently `0016`).
 
 Domain records now have guarded lifecycle transitions through `PATCH /api/records/{id}`.
 CRM touches are stored through `/api/records/{id}/contacts`. Domain events use a
