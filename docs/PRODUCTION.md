@@ -181,6 +181,10 @@ through the originating mailbox when its SMTP secret is ready, so a separate def
 SMTP account is optional; the default SMTP remains the fallback transport. SMTP port
 465 uses implicit TLS and other configured ports use STARTTLS. The Telegram outreach
 panel reports receiving and forwarding readiness without returning any secret values.
+An IMAP connection or authentication failure creates one deduplicated critical
+Telegram alert per mailbox/day plus a redacted audit event. Only the exception type
+is persisted; the provider response and application password are never copied into
+the notification, audit log or AI prompt.
 
 The `/mailing` Telegram wizard accepts the recipient registry first, then consent
 evidence, subject and body. Its preview can include one PDF, Word, Excel, ODT, CSV,

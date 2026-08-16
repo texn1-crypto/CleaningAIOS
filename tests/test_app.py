@@ -4691,6 +4691,74 @@ def test_smtp_auth_failure_defers_entire_mailbox_queue(client, monkeypatch):
         db.commit()
 
 
+def test_inbound_mail_failure_creates_redacted_owner_alert(client, monkeypatch):
+    from sqlalchemy import func, select, update
+
+    from app import inbound_mail
+    from app.db import SessionLocal
+    from app.models import AuditLog, OwnerNotification, SenderMailbox
+
+    secret = "imap-secret-must-not-appear"
+
+    class IMAP:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def login(self, username, password):
+            raise inbound_mail.imaplib.IMAP4.error(f"authentication failed: {secret}")
+
+    monkeypatch.setattr(inbound_mail.imaplib, "IMAP4_SSL", IMAP)
+    monkeypatch.setenv("IMAP_FAILURE_ALERT_TEST", secret)
+
+    with SessionLocal() as db:
+        db.execute(update(SenderMailbox).values(active=False))
+        mailbox = SenderMailbox(
+            name="Inbound alert",
+            address="inbound-alert@example.com",
+            active=True,
+            imap_host="imap.example.com",
+            imap_username="inbound-alert@example.com",
+            imap_secret_ref="IMAP_FAILURE_ALERT_TEST",
+            inbound_enabled=True,
+        )
+        db.add(mailbox)
+        db.commit()
+
+        first = inbound_mail.collect_inbound_replies(db)
+        second = inbound_mail.collect_inbound_replies(db)
+        assert first["failed"] == 1
+        assert second["failed"] == 1
+        alerts = db.scalars(
+            select(OwnerNotification).where(
+                OwnerNotification.idempotency_key.like(
+                    f"inbound-mail-failed:{mailbox.id}:%"
+                )
+            )
+        ).all()
+        assert len(alerts) == 1
+        assert alerts[0].severity == "critical"
+        assert alerts[0].data["status"] == "inbound_unavailable"
+        assert secret not in str(alerts[0].body)
+        assert secret not in str(alerts[0].data)
+        audits = db.scalars(
+            select(AuditLog).where(
+                AuditLog.action == "inbound_mail.collection_failed",
+                AuditLog.resource_id == str(mailbox.id),
+            )
+        ).all()
+        assert len(audits) == 2
+        assert all(secret not in str(row.details) for row in audits)
+        assert db.scalar(
+            select(func.count()).select_from(OwnerNotification).where(
+                OwnerNotification.idempotency_key.like(
+                    f"inbound-mail-failed:{mailbox.id}:%"
+                )
+            )
+        ) == 1
+        mailbox.active = False
+        db.commit()
+
+
 def test_smtp_provider_mailbox_block_defers_queue_and_records_incident(client, monkeypatch):
     from datetime import datetime
 

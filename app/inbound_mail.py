@@ -4,6 +4,7 @@ import email
 import imaplib
 import logging
 import os
+from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.policy import default
 from email.utils import parseaddr
@@ -11,7 +12,7 @@ from email.utils import parseaddr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import InboxMessage, SenderMailbox
+from .models import AuditLog, InboxMessage, SenderMailbox
 from .notifications import queue_owner_notification
 
 
@@ -118,6 +119,41 @@ def collect_inbound_replies(db: Session) -> dict:
         except Exception as exc:
             failed += 1
             log.warning("inbound mailbox %s failed: %s", mailbox.id, type(exc).__name__)
+            queue_owner_notification(
+                db,
+                idempotency_key=(
+                    f"inbound-mail-failed:{mailbox.id}:"
+                    f"{datetime.now(timezone.utc).date().isoformat()}:telegram"
+                ),
+                channel="telegram",
+                resource_type="sender_mailbox",
+                resource_id=str(mailbox.id),
+                subject="📥 Входящие ответы не проверяются",
+                body=(
+                    f"Не удалось проверить входящие ответы почтового ящика #{mailbox.id}. "
+                    "Проверьте доступность IMAP и пароль приложения. Исходные тексты ошибок "
+                    "и секреты в уведомление не включены. Рассылка не перезапускается."
+                ),
+                data={
+                    "mailbox_id": mailbox.id,
+                    "status": "inbound_unavailable",
+                    "error_type": type(exc).__name__,
+                },
+                severity="critical",
+                correlation_id=f"mailbox:{mailbox.id}:inbound",
+            )
+            db.add(
+                AuditLog(
+                    actor="worker",
+                    action="inbound_mail.collection_failed",
+                    resource_type="sender_mailbox",
+                    resource_id=str(mailbox.id),
+                    details={
+                        "status": "inbound_unavailable",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            )
     db.commit()
     return {
         "mailboxes": len(mailboxes),
