@@ -120,9 +120,14 @@ PRICE_ROWS = (
 )
 
 
-def _price(reference: int) -> int:
+def published_price(reference: int) -> int:
     """Return a whole price strictly lower, with a discount no greater than 5%."""
     return min(reference - 1, ceil(reference * 0.95))
+
+
+def _price(reference: int) -> int:
+    """Backward-compatible alias for the published site price."""
+    return published_price(reference)
 
 
 def _social_links() -> str:
@@ -188,7 +193,7 @@ def service_html(slug: str) -> str | None:
 
 def prices_html() -> str:
     rows = "".join(
-        f"<tr><th scope='row'>{escape(name)}</th><td>от {_price(general)} ₽</td><td>от {_price(regular)} ₽</td><td>от {_price(after)} ₽</td><td><a href='/#request'>Расчёт →</a></td></tr>"
+        f"<tr><th scope='row'>{escape(name)}</th><td>от {published_price(general)} ₽</td><td>от {published_price(regular)} ₽</td><td>от {published_price(after)} ₽</td><td><a href='/#request'>Расчёт →</a></td></tr>"
         for name, general, regular, after in PRICE_ROWS
     )
     body = f"""<section class="page-hero"><p class="eyebrow"><span></span> Прайс-лист</p><h1>Цены на клининг для бизнеса.</h1><p>Ориентиры указаны за м² и округлены до целых рублей. Итоговая смета зависит от площади, графика, покрытий и состава работ.</p></section>

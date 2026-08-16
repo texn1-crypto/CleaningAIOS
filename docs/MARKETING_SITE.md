@@ -5,7 +5,7 @@
 - `/` is the public responsive website; `/services`, service detail pages, `/prices`, `/about`, `/contacts` and `/journal` form the public multi-page catalogue. `/mission-control` keeps the existing internal dashboard.
 - The same-origin lead form validates consent and contact details, uses a honeypot and a database-backed hourly rate limit, and never accepts bank credentials.
 - The public Telegram `/start` and `/estimate` Lead Autopilot uses the same legal-readiness gate, asks for consent before contact data, rate-limits a keyed pseudonymous requester, creates an idempotent CRM/inbox contact and a Sales follow-up task, and exposes no internal Control Center data to the visitor.
-- Telegram lead qualification and optional preliminary pricing are deterministic. Pricing remains disabled until the owner supplies the three `LEAD_ESTIMATE_*` values; a generated range is explicitly non-binding and requires a site survey. Customer PII is not passed to an AI provider.
+- Telegram lead qualification and preliminary pricing are deterministic. The calculator imports the same `PRICE_ROWS` and published-price function that render `/prices`, asks for cleaning kind, and returns a single published “from” rate multiplied by area. It does not infer a visit/month multiplier from frequency. The result is explicitly non-binding and requires a site survey. Customer PII is not passed to an AI provider.
 - A valid submission creates or updates the shared CRM lead, records an inbound contact and inbox message, preserves UTM attribution and emits a domain event.
 - Deterministic scoring marks urgent/high-value requests as qualified. A hot lead creates a high-priority Sales Agent task and an owner email notification. The notification waits visibly for SMTP credentials instead of pretending delivery.
 - Published `website` content from the shared content plan appears in the News section. Content can be updated and published through `/api/marketing/content/{id}`.
@@ -30,9 +30,6 @@ COMPANY_ADDRESS=
 COMPANY_SERVICE_AREA=
 PRIVACY_CONTACT_EMAIL=
 OWNER_NOTIFICATION_EMAIL=
-LEAD_ESTIMATE_MIN_RUB_PER_SQM=0
-LEAD_ESTIMATE_MAX_RUB_PER_SQM=0
-LEAD_ESTIMATE_MIN_ORDER_RUB=0
 PUBLIC_BASE_URL=https://your-domain.ru
 SOCIAL_TELEGRAM_URL=
 SOCIAL_VK_URL=

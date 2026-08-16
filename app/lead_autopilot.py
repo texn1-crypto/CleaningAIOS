@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from typing import Any
 
 from sqlalchemy import func, select
@@ -16,15 +15,25 @@ from .notifications import queue_owner_notification
 from .orchestrator import audit
 from .platform import event_bus
 from .schemas import LeadAutopilotCreate
+from .site_pages import PRICE_ROWS, published_price
 from .task_state import record_task_created
 
 
 SERVICE_LABELS = {
     "mcd": "ЖК / МКД",
     "business_center": "Бизнес-центр",
+    "office": "Офис",
+    "retail": "Магазин / торговый центр",
     "commercial": "Коммерческий объект",
+    "industrial": "Производственное помещение",
+    "warehouse": "Склад",
     "general": "Генеральная уборка",
     "other": "Другой объект",
+}
+CLEANING_KIND_LABELS = {
+    "maintenance": "Поддерживающая уборка",
+    "general": "Генеральная уборка",
+    "post_construction": "После ремонта",
 }
 FREQUENCY_LABELS = {
     "once": "Разовая уборка",
@@ -79,46 +88,57 @@ def qualify_lead(payload: LeadAutopilotCreate) -> dict[str, Any]:
     }
 
 
-def _rounded_rubles(value: Decimal) -> int:
-    return int(math.ceil(float(value) / 100.0) * 100)
+_PUBLISHED_PRICE_ROWS = {name: values for name, *values in PRICE_ROWS}
+_CLEANING_KIND_COLUMN = {"general": 0, "maintenance": 1, "post_construction": 2}
+_SERVICE_PRICE_ROW = {
+    "business_center": "Уборка бизнес-центров",
+    "office": "Уборка офисов",
+    "retail": "Уборка торговых центров",
+    "commercial": "Уборка офисов",
+    "industrial": "Уборка производственных помещений",
+    "warehouse": "Уборка складских помещений",
+}
+_GENERIC_PRICE_ROW = {
+    "maintenance": "Поддерживающая уборка",
+    "general": "Генеральная уборка",
+    "post_construction": "Строительный клининг",
+}
+
+
+def _effective_cleaning_kind(payload: LeadAutopilotCreate) -> str:
+    return "general" if payload.service == "general" else payload.cleaning_kind
+
+
+def _published_rate(payload: LeadAutopilotCreate) -> tuple[int, str, str, str]:
+    cleaning_kind = _effective_cleaning_kind(payload)
+    row_name = _SERVICE_PRICE_ROW.get(payload.service) or _GENERIC_PRICE_ROW[cleaning_kind]
+    references = _PUBLISHED_PRICE_ROWS[row_name]
+    rate = published_price(references[_CLEANING_KIND_COLUMN[cleaning_kind]])
+    basis = "object_specific" if payload.service in _SERVICE_PRICE_ROW else "generic_cleaning_kind"
+    return rate, row_name, basis, cleaning_kind
 
 
 def preliminary_estimate(payload: LeadAutopilotCreate) -> dict[str, Any]:
-    minimum_rate = Decimal(str(settings.lead_estimate_min_rub_per_sqm or 0))
-    maximum_rate = Decimal(str(settings.lead_estimate_max_rub_per_sqm or 0))
-    minimum_order = Decimal(str(settings.lead_estimate_min_order_rub or 0))
-    if minimum_rate <= 0 or maximum_rate < minimum_rate:
-        return {
-            "status": "pricing_configuration_required",
-            "reason": "owner_approved_price_book_missing",
-            "site_survey_required": True,
-            "is_offer": False,
-        }
-    frequency_factor = {
-        "once": Decimal("1"),
-        "weekly": Decimal("4"),
-        "weekdays": Decimal("22"),
-        "daily": Decimal("30"),
-    }.get(payload.frequency)
-    if frequency_factor is None:
-        return {
-            "status": "schedule_required",
-            "reason": "custom_frequency_requires_review",
-            "site_survey_required": True,
-            "is_offer": False,
-        }
+    rate, row_name, basis, cleaning_kind = _published_rate(payload)
     area = Decimal(str(payload.object_area))
-    estimate_min = max(minimum_order, area * minimum_rate * frequency_factor)
-    estimate_max = max(minimum_order, area * maximum_rate * frequency_factor)
+    estimate_from = int((area * Decimal(rate)).to_integral_value(rounding=ROUND_CEILING))
     return {
         "status": "preliminary",
         "currency": "RUB",
-        "period": "visit" if payload.frequency == "once" else "month",
-        "min_rub": _rounded_rubles(estimate_min),
-        "max_rub": _rounded_rubles(estimate_max),
+        "source": "published_site_price_book",
+        "source_path": "/prices",
+        "price_row": row_name,
+        "price_basis": basis,
+        "cleaning_kind": cleaning_kind,
+        "published_rate_rub_per_sqm": rate,
+        "from_rub": estimate_from,
+        "frequency_included": False,
         "site_survey_required": True,
         "is_offer": False,
-        "disclaimer": "Предварительный диапазон, не оферта; итог после обследования объекта.",
+        "disclaimer": (
+            "Ориентир «от» по опубликованному прайс-листу; график и состав работ "
+            "уточняются после обследования. Не является публичной офертой."
+        ),
     }
 
 
@@ -131,6 +151,7 @@ def _notification_body(payload: LeadAutopilotCreate, lead: BusinessRecord, quali
         f"Контакт: {contact}\n"
         f"Telegram: {telegram}\n"
         f"Объект: {SERVICE_LABELS[payload.service]}, {payload.object_area:g} м²\n"
+        f"Вид уборки: {CLEANING_KIND_LABELS[_effective_cleaning_kind(payload)]}\n"
         f"Локация: {payload.location}\n"
         f"График: {FREQUENCY_LABELS[payload.frequency]}\n"
         f"Старт: {URGENCY_LABELS[payload.urgency]}\n"
@@ -201,6 +222,7 @@ def intake_telegram_lead(
         "email": email,
         "telegram_username": payload.telegram_username,
         "service": payload.service,
+        "cleaning_kind": _effective_cleaning_kind(payload),
         "object_area": payload.object_area,
         "location": payload.location,
         "frequency": payload.frequency,
@@ -232,7 +254,8 @@ def intake_telegram_lead(
             lead.status = "qualified"
 
     contact_summary = (
-        f"{SERVICE_LABELS[payload.service]}; {payload.object_area:g} м²; "
+        f"{SERVICE_LABELS[payload.service]}; {CLEANING_KIND_LABELS[_effective_cleaning_kind(payload)]}; "
+        f"{payload.object_area:g} м²; "
         f"{payload.location}; {FREQUENCY_LABELS[payload.frequency]}; "
         f"{URGENCY_LABELS[payload.urgency]}. {payload.message}"
     ).strip()

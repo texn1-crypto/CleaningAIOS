@@ -22,7 +22,7 @@ from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandl
 
 from .chat import understand_russian_message
 from .config import settings
-from .lead_autopilot import FREQUENCY_LABELS, SERVICE_LABELS, URGENCY_LABELS, normalize_phone
+from .lead_autopilot import CLEANING_KIND_LABELS, FREQUENCY_LABELS, SERVICE_LABELS, URGENCY_LABELS, normalize_phone
 from .recipient_import import EMAIL_PATTERN, SUPPORTED_RECIPIENT_SUFFIXES, extract_recipient_emails
 
 logging.basicConfig(level=logging.INFO)
@@ -739,6 +739,7 @@ async def _lead_submit(update: Update, context: ContextTypes.DEFAULT_TYPE, draft
                 "email": draft.get("email") or None,
                 "telegram_username": username,
                 "service": draft["service"],
+                "cleaning_kind": draft["cleaning_kind"],
                 "object_area": draft["object_area"],
                 "location": draft["location"],
                 "frequency": draft["frequency"],
@@ -755,11 +756,16 @@ async def _lead_submit(update: Update, context: ContextTypes.DEFAULT_TYPE, draft
     context.user_data.pop("lead_draft", None)
     estimate = result.get("estimate") or {}
     if estimate.get("status") == "preliminary":
-        period = "за выезд" if estimate.get("period") == "visit" else "в месяц"
+        price_basis = "общая строка" if estimate.get("price_basis") == "generic_cleaning_kind" else "строка"
+        price_row = estimate.get("price_row") or "опубликованный прайс"
+        price_url = f"{settings.public_base_url.rstrip('/')}/prices"
+        estimate_from = f"{estimate['from_rub']:,}".replace(",", " ")
         estimate_line = (
-            f"Предварительный диапазон: {estimate['min_rub']:,}–{estimate['max_rub']:,} ₽ {period}. "
-            "Это не оферта; итог определяется после обследования объекта."
-        ).replace(",", " ")
+            f"Ориентир по прайс-листу сайта: от {estimate_from} ₽ "
+            f"({estimate['published_rate_rub_per_sqm']} ₽/м², {price_basis} «{price_row}»).\n"
+            f"Прайс: {price_url}\n"
+            "График, состав работ и итоговая цена уточняются после обследования; это не публичная оферта."
+        )
     else:
         estimate_line = (
             "Точную цену специалист рассчитает после уточнения состава работ и обследования объекта; "
@@ -796,12 +802,22 @@ async def lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Какой объект нужно убирать?",
             reply_markup=_lead_buttons(draft, "service", [
                 [("ЖК / МКД", "mcd"), ("Бизнес-центр", "business_center")],
-                [("Коммерческий", "commercial"), ("Генеральная", "general")],
+                [("Офис", "office"), ("Магазин / ТЦ", "retail")],
+                [("Производство", "industrial"), ("Склад", "warehouse")],
                 [("Другое", "other")],
             ]),
         )
     elif action == "service" and step == "service" and value in SERVICE_LABELS:
-        draft.update({"service": value, "step": "area"})
+        draft.update({"service": value, "step": "cleaning_kind"})
+        await update.effective_message.reply_text(
+            "Какой вид уборки нужен?",
+            reply_markup=_lead_buttons(draft, "cleaning_kind", [
+                [("Поддерживающая", "maintenance"), ("Генеральная", "general")],
+                [("После ремонта", "post_construction")],
+            ]),
+        )
+    elif action == "cleaning_kind" and step == "cleaning_kind" and value in CLEANING_KIND_LABELS:
+        draft.update({"cleaning_kind": value, "step": "area"})
         await update.effective_message.reply_text("Укажите площадь объекта в квадратных метрах, например: 1250")
     elif action == "frequency" and step == "frequency" and value in FREQUENCY_LABELS:
         draft.update({"frequency": value, "step": "urgency"})
@@ -847,7 +863,7 @@ async def lead_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
         await lead_start(update, context)
         return True
     step = draft.get("step")
-    if step in {"consent", "service", "frequency", "urgency"}:
+    if step in {"consent", "service", "cleaning_kind", "frequency", "urgency"}:
         await update.effective_message.reply_text("Выберите один из вариантов кнопкой под последним вопросом или используйте /cancel.")
         return True
     if step == "area":

@@ -401,7 +401,8 @@ class LeadAutopilotCreate(BaseModel):
     email: Optional[EmailStr] = None
     company: str = Field(default="", max_length=255)
     telegram_username: str = Field(default="", max_length=64, pattern=r"^$|^[A-Za-z0-9_]{5,32}$")
-    service: str = Field(pattern="^(mcd|business_center|commercial|general|other)$")
+    service: str = Field(pattern="^(mcd|business_center|office|retail|industrial|warehouse|commercial|general|other)$")
+    cleaning_kind: str = Field(default="maintenance", pattern="^(maintenance|general|post_construction)$")
     object_area: float = Field(gt=0, le=10_000_000)
     location: str = Field(min_length=2, max_length=500)
     frequency: str = Field(pattern="^(once|weekly|weekdays|daily|custom)$")

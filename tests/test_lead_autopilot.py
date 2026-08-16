@@ -15,6 +15,7 @@ def _payload(**overrides):
         "email": None,
         "telegram_username": "ivan_clean_test",
         "service": "business_center",
+        "cleaning_kind": "maintenance",
         "object_area": 3200,
         "location": "Санкт-Петербург, Петроградский район",
         "frequency": "daily",
@@ -31,8 +32,6 @@ def test_lead_autopilot_creates_crm_task_notifications_and_is_idempotent(client,
     from app.db import SessionLocal
     from app.models import AuditLog, BusinessRecord, ContactEvent, InboxMessage, OwnerNotification, Task
 
-    monkeypatch.setattr(settings, "lead_estimate_min_rub_per_sqm", 0)
-    monkeypatch.setattr(settings, "lead_estimate_max_rub_per_sqm", 0)
     monkeypatch.setattr(settings, "owner_telegram_id", "9100001")
     monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token")
     response = client.post("/api/leads/autopilot", headers={"X-Role": "operator"}, json=_payload())
@@ -40,12 +39,13 @@ def test_lead_autopilot_creates_crm_task_notifications_and_is_idempotent(client,
     result = response.json()
     assert result["accepted"] is True
     assert result["hot"] is True
-    assert result["estimate"] == {
-        "status": "pricing_configuration_required",
-        "reason": "owner_approved_price_book_missing",
-        "site_survey_required": True,
-        "is_offer": False,
-    }
+    assert result["estimate"]["status"] == "preliminary"
+    assert result["estimate"]["source"] == "published_site_price_book"
+    assert result["estimate"]["price_row"] == "Уборка бизнес-центров"
+    assert result["estimate"]["published_rate_rub_per_sqm"] == 38
+    assert result["estimate"]["from_rub"] == 121_600
+    assert result["estimate"]["frequency_included"] is False
+    assert result["estimate"]["is_offer"] is False
     assert result["owner_notifications"]["telegram"] == "queued"
 
     with SessionLocal() as db:
@@ -165,14 +165,10 @@ def test_lead_autopilot_rate_limits_pseudonymous_requester(client, monkeypatch):
     assert "Too many requests" in blocked.json()["detail"]
 
 
-def test_owner_configured_price_book_produces_non_offer_range(monkeypatch):
-    from app.config import settings
+def test_published_site_price_book_produces_non_offer_estimate():
     from app.lead_autopilot import preliminary_estimate
     from app.schemas import LeadAutopilotCreate
 
-    monkeypatch.setattr(settings, "lead_estimate_min_rub_per_sqm", 10)
-    monkeypatch.setattr(settings, "lead_estimate_max_rub_per_sqm", 15)
-    monkeypatch.setattr(settings, "lead_estimate_min_order_rub", 5000)
     payload = LeadAutopilotCreate(**_payload(
         conversation_id="lead_price_test_001",
         object_area=100,
@@ -180,11 +176,64 @@ def test_owner_configured_price_book_produces_non_offer_range(monkeypatch):
     ))
     estimate = preliminary_estimate(payload)
     assert estimate["status"] == "preliminary"
-    assert estimate["min_rub"] == 5000
-    assert estimate["max_rub"] == 6000
-    assert estimate["period"] == "month"
+    assert estimate["published_rate_rub_per_sqm"] == 38
+    assert estimate["from_rub"] == 3800
+    assert estimate["price_row"] == "Уборка бизнес-центров"
+    assert estimate["source_path"] == "/prices"
+    assert estimate["frequency_included"] is False
     assert estimate["is_offer"] is False
     assert estimate["site_survey_required"] is True
+
+
+def test_site_price_book_uses_generic_published_row_when_object_has_no_exact_row():
+    from app.lead_autopilot import preliminary_estimate
+    from app.schemas import LeadAutopilotCreate
+
+    payload = LeadAutopilotCreate(**_payload(
+        conversation_id="lead_generic_price_001",
+        service="mcd",
+        cleaning_kind="post_construction",
+        object_area=100,
+    ))
+    estimate = preliminary_estimate(payload)
+    assert estimate["price_basis"] == "generic_cleaning_kind"
+    assert estimate["price_row"] == "Строительный клининг"
+    assert estimate["published_rate_rub_per_sqm"] == 72
+    assert estimate["from_rub"] == 7200
+
+
+@pytest.mark.parametrize(("service", "cleaning_kind", "row", "rate"), [
+    ("office", "general", "Уборка офисов", 53),
+    ("retail", "post_construction", "Уборка торговых центров", 72),
+    ("industrial", "maintenance", "Уборка производственных помещений", 48),
+    ("warehouse", "general", "Уборка складских помещений", 57),
+])
+def test_site_price_book_maps_bot_objects_to_exact_published_rows(service, cleaning_kind, row, rate):
+    from app.lead_autopilot import preliminary_estimate
+    from app.schemas import LeadAutopilotCreate
+
+    estimate = preliminary_estimate(LeadAutopilotCreate(**_payload(
+        conversation_id=f"lead_{service}_price_001",
+        service=service,
+        cleaning_kind=cleaning_kind,
+        object_area=10,
+    )))
+    assert estimate["price_basis"] == "object_specific"
+    assert estimate["price_row"] == row
+    assert estimate["published_rate_rub_per_sqm"] == rate
+    assert estimate["from_rub"] == rate * 10
+
+
+def test_legacy_general_service_keeps_general_cleaning_semantics():
+    from app.lead_autopilot import preliminary_estimate
+    from app.schemas import LeadAutopilotCreate
+
+    data = _payload(conversation_id="lead_legacy_general_001", service="general", object_area=10)
+    data.pop("cleaning_kind")
+    estimate = preliminary_estimate(LeadAutopilotCreate(**data))
+    assert estimate["cleaning_kind"] == "general"
+    assert estimate["price_row"] == "Генеральная уборка"
+    assert estimate["published_rate_rub_per_sqm"] == 62
 
 
 def test_public_telegram_lead_wizard_submits_only_consented_business_fields(monkeypatch):
@@ -202,7 +251,13 @@ def test_public_telegram_lead_wizard_submits_only_consented_business_fields(monk
             "status": "qualified",
             "score": 83,
             "hot": True,
-            "estimate": {"status": "pricing_configuration_required"},
+            "estimate": {
+                "status": "preliminary",
+                "published_rate_rub_per_sqm": 38,
+                "from_rub": 57_000,
+                "price_basis": "object_specific",
+                "price_row": "Уборка бизнес-центров",
+            },
             "owner_notifications": {"telegram": "queued", "email": "queued"},
             "idempotent_replay": False,
         }
@@ -251,6 +306,7 @@ def test_public_telegram_lead_wizard_submits_only_consented_business_fields(monk
 
     click("consent", "yes")
     click("service", "business_center")
+    click("cleaning_kind", "maintenance")
     update.effective_message.text = "1500"
     assert asyncio.run(bot.lead_input(update, context)) is True
     update.effective_message.text = "Санкт-Петербург, Московский район"
@@ -271,11 +327,14 @@ def test_public_telegram_lead_wizard_submits_only_consented_business_fields(monk
     sent = calls[0][2]["json"]
     assert sent["consent"] is True
     assert sent["service"] == "business_center"
+    assert sent["cleaning_kind"] == "maintenance"
     assert sent["frequency"] == "weekdays"
     assert sent["telegram_username"] == "client_test"
     assert "user_id" not in sent and "chat_id" not in sent
     assert "request-analysis" not in calls[0][1]
     assert "Заявка #812 принята" in update.effective_message.replies[-1][0]
+    assert "38 ₽/м²" in update.effective_message.replies[-1][0]
+    assert "Уборка бизнес-центров" in update.effective_message.replies[-1][0]
 
 
 def test_telegram_application_registers_public_estimate_command(monkeypatch):

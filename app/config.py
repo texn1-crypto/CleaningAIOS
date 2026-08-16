@@ -68,9 +68,6 @@ class Settings(BaseSettings):
     hot_lead_score: int = 70
     public_lead_rate_limit_per_hour: int = 5
     public_lead_rate_secret: str = ""
-    lead_estimate_min_rub_per_sqm: float = 0
-    lead_estimate_max_rub_per_sqm: float = 0
-    lead_estimate_min_order_rub: float = 0
     yandex_direct_token: str = ""
     yandex_search_api_key: str = ""
     yandex_cloud_folder_id: str = ""
