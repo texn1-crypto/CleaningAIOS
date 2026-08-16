@@ -1252,6 +1252,8 @@ def test_russian_chat_reads_existing_sections():
     assert understand_russian_message("Меню") == {"kind": "menu"}
     assert understand_russian_message("Открой меню") == {"kind": "menu"}
     assert understand_russian_message("Покажи текущие задачи")["kind"] == "tasks"
+    assert understand_russian_message("Что ожидает подтверждения?")["kind"] == "approvals"
+    assert understand_russian_message("Что ждёт одобрения?")["kind"] == "approvals"
     assert understand_russian_message("Что с тендерами?")["record_type"] == "tender"
     assert understand_russian_message("Покажи финансы")["module"] == "finance"
     assert understand_russian_message("Как дела у системы?")["kind"] == "dashboard"
@@ -1311,6 +1313,143 @@ def test_menu_request_is_supported_and_does_not_create_an_improvement(client, mo
     assert analysis["classification"] == "supported"
     assert analysis["fully_supported"] is True
     assert analysis["improvement_id"] is None
+
+
+def test_pending_approvals_phrase_is_supported_and_audited(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "Что ожидает подтверждения?"
+    intent = understand_russian_message(message)
+    response = client.post(
+        "/api/request-analysis",
+        json={"message": message, "intent": intent},
+    )
+    assert response.status_code == 200
+    analysis = response.json()
+    assert intent == {"kind": "approvals"}
+    assert analysis["classification"] == "supported"
+    assert analysis["fully_supported"] is True
+    assert analysis["improvement_id"] is None
+    assert any(
+        row["action"] == "request.analyzed"
+        and row["resource_id"] == str(analysis["analysis_task_id"])
+        for row in client.get("/api/audit").json()
+    )
+
+
+def test_telegram_pending_approvals_phrase_returns_actual_cards(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/telegram/control/approvals":
+            return {
+                "items": [
+                    {
+                        "id": 901,
+                        "action_kind": "bulk_outreach",
+                        "resource_type": "task",
+                        "resource_id": "72",
+                        "risk": "high",
+                        "amount": None,
+                        "rationale": "Нужно решение владельца",
+                        "expires_at": None,
+                        "callbacks": {
+                            "approve": "tc1.approve",
+                            "reject": "tc1.reject",
+                            "request_changes": "tc1.changes",
+                        },
+                    }
+                ]
+            }
+        raise AssertionError(path)
+
+    class Message:
+        text = "Что ожидает подтверждения?"
+        reply_to_message = None
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Chat:
+        id = 456
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+        effective_chat = Chat()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+
+    text, kwargs = Update.effective_message.replies[-1]
+    assert "#901 · bulk_outreach" in text
+    assert "task #72" in text
+    callbacks = [
+        button.callback_data
+        for row in kwargs["reply_markup"].inline_keyboard
+        for button in row
+    ]
+    assert callbacks == ["tc1.approve", "tc1.reject", "tc1.changes"]
+    assert [path for _, path, _ in calls] == [
+        "/api/request-analysis",
+        "/api/telegram/control/approvals",
+    ]
+
+
+def test_telegram_pending_approvals_phrase_reports_api_failure(monkeypatch):
+    import httpx
+
+    from app import bot
+
+    async def fake_api(method, path, **kwargs):
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/telegram/control/approvals":
+            raise httpx.ConnectError(
+                "control API unavailable",
+                request=httpx.Request("POST", "https://api.example/approvals"),
+            )
+        raise AssertionError(path)
+
+    class Message:
+        text = "Что ожидает подтверждения?"
+        reply_to_message = None
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Chat:
+        id = 456
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+        effective_chat = Chat()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    assert "Не удалось связаться" in Update.effective_message.replies[-1]
 
 
 def test_telegram_menu_phrase_opens_interactive_menu(monkeypatch):
