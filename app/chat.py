@@ -160,7 +160,11 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
     if (
         "отчет" in text
         and _contains(text, "проделан", "сделано", "выполнен", "работ")
-    ) or _contains(text, "что было сделано", "что уже сделано", "результаты работы системы"):
+    ) or _contains(text, "что было сделано", "что уже сделано", "результаты работы системы") or (
+        "работ" in text
+        and _contains(text, "проделан", "сделан", "выполнен")
+        and _contains(text, "скажи", "покажи", "какая", "какую", "что")
+    ):
         return {"kind": "activity_report", "period_hours": 24}
     if _contains(
         text,

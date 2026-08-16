@@ -1256,6 +1256,10 @@ def test_russian_chat_reads_existing_sections():
     assert understand_russian_message("Покажи финансы")["module"] == "finance"
     assert understand_russian_message("Как дела у системы?")["kind"] == "dashboard"
     assert understand_russian_message("Пришли отчет о проделанной работе")["kind"] == "activity_report"
+    assert understand_russian_message("Скажи какая работа сегодня была проделана") == {
+        "kind": "activity_report",
+        "period_hours": 24,
+    }
     assert understand_russian_message("Запусти весь функционал чат бота")["kind"] == "system_self_check"
     assert understand_russian_message("Сколько нужно времени на выполнение задачи?") == {
         "kind": "task_eta",
@@ -1746,7 +1750,7 @@ def test_activity_report_is_a_real_audited_orchestrator_result(client, monkeypat
     from app.config import settings
 
     monkeypatch.setattr(settings, "llm_api_key", "")
-    message = "Пришли отчёт о проделанной работе"
+    message = "Скажи какая работа сегодня была проделана"
     intent = understand_russian_message(message)
     analysis = client.post("/api/request-analysis", json={"message": message, "intent": intent}).json()
     assert analysis["classification"] == "supported"
@@ -1809,7 +1813,7 @@ def test_telegram_activity_report_returns_actual_result(monkeypatch):
         raise AssertionError(path)
 
     class Message:
-        text = "Пришли отчет о проделанной работе"
+        text = "Скажи какая работа сегодня была проделана"
         replies = []
 
         async def reply_text(self, value, **kwargs):
@@ -1830,6 +1834,41 @@ def test_telegram_activity_report_returns_actual_result(monkeypatch):
     task_payload = next(kwargs["json"] for method, path, kwargs in calls if path == "/api/tasks")
     assert task_payload["payload"]["action"] == "system_activity_report"
     assert task_payload["max_attempts"] == 1
+
+
+def test_telegram_activity_report_preserves_failed_result(monkeypatch):
+    from app import bot
+
+    async def fake_api(method, path, **kwargs):
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 402, "agent_type": "orchestrator", "title": "Отчёт"}
+        if path == "/api/tasks/402/run":
+            return {"status": "failed", "result": {"error": "database unavailable"}}
+        raise AssertionError(path)
+
+    class Message:
+        text = "Скажи какая работа сегодня была проделана"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    assert "Не удалось сформировать отчёт" in Update.effective_message.replies[-1]
+    assert "failed" in Update.effective_message.replies[-1]
 
 
 def test_scheduled_activity_report_is_30_minutes_and_notification_is_idempotent(client):
