@@ -197,6 +197,27 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
         text, "бот", "систем"
     ):
         return {"kind": "system_self_check"}
+    if _contains(
+        text,
+        "запусти все возможные процессы",
+        "запусти все доступные процессы",
+        "делай все возможное без меня",
+        "сделай все возможное без меня",
+        "выполни все что можешь без меня",
+    ):
+        return {
+            "kind": "task",
+            "title": "Запустить все безопасные процессы CleaningAIOS",
+            "agent_type": "orchestrator",
+            "priority": "high",
+            "payload": {
+                "action": "run_safe_operations_cycle",
+                "source": "telegram_natural_language",
+                "original_message": safe_original[:4000],
+                "protected_scope": "excluded",
+            },
+            "protected": False,
+        }
 
     image_action = _contains(
         text,

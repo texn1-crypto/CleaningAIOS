@@ -1292,6 +1292,51 @@ def format_system_self_check(result: dict) -> str:
     return "\n".join(lines)
 
 
+def format_safe_operations_cycle(result: dict, task_id: int) -> str:
+    summary = result.get("summary") or {}
+    lines = [
+        "🚀 Безопасный автономный цикл CleaningAI OS",
+        f"Задача #{task_id}: {'завершена' if result.get('outcome') == 'completed' else 'завершена частично'}.",
+        (
+            f"Фактически выполнено: {summary.get('completed', 0)} · "
+            f"не завершено: {summary.get('incomplete', 0)} · "
+            f"активных задач: {summary.get('active_tasks', 0)}."
+        ),
+        "",
+    ]
+    status_icons = {
+        "done": "✅",
+        "completed": "✅",
+        "ready": "✅",
+        "partial": "⚙️",
+        "queued": "⏳",
+        "running": "🔄",
+        "blocked": "⛔",
+        "failed": "❌",
+        "not_executed": "🔐",
+        "not_found": "❌",
+    }
+    processes = result.get("processes") or []
+    for item in processes[:10]:
+        task_label = f" #{item['task_id']}" if item.get("task_id") else ""
+        detail = str(item.get("detail") or item.get("name") or "").strip()
+        if len(detail) > 220:
+            detail = detail[:217] + "..."
+        lines.append(f"{status_icons.get(item.get('status'), '•')} {item.get('name')}{task_label}: {detail}")
+    if len(processes) > 10:
+        lines.append(f"• Ещё процессов в полном отчёте задачи: {len(processes) - 10}.")
+    blockers = result.get("configuration_blockers") or []
+    if blockers:
+        shown = ", ".join(str(item) for item in blockers[:8])
+        suffix = f" и ещё {len(blockers) - 8}" if len(blockers) > 8 else ""
+        lines.append(f"\nНужны настройки для недоступных интеграций: {shown}{suffix}.")
+    lines.append(
+        "\nНе выполнялись без отдельного подтверждения: платежи, договоры, подача тендеров, "
+        "массовые рассылки, публикации/рекламные расходы и окончательные кадровые решения."
+    )
+    return "\n".join(lines)
+
+
 async def system_self_check(update: Update):
     task = await api("POST", "/api/tasks", json={
         "title": "Безопасная самопроверка функционала чат-бота",
@@ -1632,7 +1677,7 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "priority": intent["priority"],
                 "payload": intent["payload"],
                 "max_attempts": 1
-                if action in {"generate_proposal", "improve_referenced_text", "review_previous_text", "prepare_social_account_setup", "generate_image"}
+                if action in {"generate_proposal", "improve_referenced_text", "review_previous_text", "prepare_social_account_setup", "generate_image", "run_safe_operations_cycle"}
                 else 3,
             })
             protection = " Критическое действие будет остановлено до вашего подтверждения." if intent["protected"] else ""
@@ -1693,6 +1738,19 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "error": result.get("error") or f"статус задачи {completed.get('status', 'unknown')}",
                     }
                 await update.effective_message.reply_text(format_social_account_setup(result, data["id"]))
+            elif action == "run_safe_operations_cycle":
+                completed = await api("POST", f"/api/tasks/{data['id']}/run")
+                result = completed.get("result") or {}
+                if completed.get("status") == "done" and result.get("report_kind") == "safe_operations_cycle":
+                    await update.effective_message.reply_text(
+                        format_safe_operations_cycle(result, data["id"])
+                    )
+                else:
+                    await update.effective_message.reply_text(
+                        f"Безопасный цикл не завершился. Задача #{data['id']} сохранена с фактическим статусом "
+                        f"{completed.get('status', 'unknown')}; ошибка: "
+                        f"{result.get('error') or result.get('reason') or 'не указана'}."
+                    )
             elif analysis.get("improvement_id"):
                 await update.effective_message.reply_text(
                     f"Я сохранил запрос как задачу #{data['id']}, но текущая версия не может гарантировать полный результат. "

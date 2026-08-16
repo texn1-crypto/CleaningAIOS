@@ -54,6 +54,10 @@ class DataCollectorAgent:
 class OrchestratorAgent:
     name = "orchestrator"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "run_safe_operations_cycle":
+            from .safe_operations import run_safe_operations_cycle
+
+            return run_safe_operations_cycle(db, registered_agents=sorted(AGENTS))
         if payload.get("action") == "marketing_sales_coordination":
             from .marketing_coordination import run_marketing_sales_coordination
 

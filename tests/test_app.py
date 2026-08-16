@@ -1264,6 +1264,12 @@ def test_russian_chat_reads_existing_sections():
         "kind": "system_admin_report"
     }
     assert understand_russian_message("Запусти весь функционал чат бота")["kind"] == "system_self_check"
+    safe_cycle = understand_russian_message("Запусти все возможные процессы")
+    assert safe_cycle["kind"] == "task"
+    assert safe_cycle["agent_type"] == "orchestrator"
+    assert safe_cycle["payload"]["action"] == "run_safe_operations_cycle"
+    assert safe_cycle["protected"] is False
+    assert understand_russian_message("Делай все возможное без меня")["payload"]["action"] == "run_safe_operations_cycle"
     assert understand_russian_message("Сколько нужно времени на выполнение задачи?") == {
         "kind": "task_eta",
         "task_id": None,
@@ -1844,6 +1850,174 @@ def test_telegram_system_self_check_preserves_failed_status(monkeypatch):
     asyncio.run(bot.natural_language(Update(), None))
     assert "не завершилась" in Update.effective_message.replies[-1]
     assert "failed" in Update.effective_message.replies[-1]
+
+
+def test_safe_operations_cycle_executes_allowlisted_work_without_external_actions(client, monkeypatch):
+    from sqlalchemy import func, select
+
+    from app.chat import understand_russian_message
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import ApprovalRequest, OutboundMessage
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "Запусти все возможные процессы"
+    intent = understand_russian_message(message)
+    analysis = client.post(
+        "/api/request-analysis",
+        json={"message": message, "intent": intent},
+    ).json()
+    assert analysis["classification"] == "supported"
+    assert analysis["improvement_id"] is None
+
+    with SessionLocal() as db:
+        outbound_before = int(db.scalar(select(func.count()).select_from(OutboundMessage)) or 0)
+        approvals_before = int(db.scalar(select(func.count()).select_from(ApprovalRequest)) or 0)
+
+    task = client.post(
+        "/api/tasks",
+        json={
+            "title": intent["title"],
+            "agent_type": intent["agent_type"],
+            "priority": intent["priority"],
+            "payload": intent["payload"],
+            "max_attempts": 1,
+        },
+    ).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+    result = completed["result"]
+
+    assert completed["status"] == "done"
+    assert result["report_kind"] == "safe_operations_cycle"
+    assert result["outcome"] in {"completed", "partial"}
+    assert {row["name"] for row in result["processes"]} >= {
+        "system_readiness",
+        "marketing_sales_coordination",
+        "coordination_action",
+    }
+    assert any(
+        row.get("task_id") and row["status"] == "done"
+        for row in result["processes"]
+    )
+    assert result["safety"] == {
+        "protected_actions_executed": False,
+        "external_messages_sent": False,
+        "financial_commitments_created": False,
+        "owner_approval_bypassed": False,
+        "outbound_messages_created": 0,
+        "approval_requests_created": 0,
+    }
+    assert all(row["status"] == "not_executed" for row in result["protected_operations"])
+    with SessionLocal() as db:
+        assert int(db.scalar(select(func.count()).select_from(OutboundMessage)) or 0) == outbound_before
+        assert int(db.scalar(select(func.count()).select_from(ApprovalRequest)) or 0) == approvals_before
+    audits = client.get("/api/audit").json()
+    assert any(row["action"] == "safe_operations.cycle_completed" for row in audits)
+    assert any(
+        row["action"] == "task.completed" and row["resource_id"] == str(task["id"])
+        for row in audits
+    )
+
+
+def test_telegram_safe_operations_cycle_returns_actual_result(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 503, "agent_type": "orchestrator"}
+        if path == "/api/tasks/503/run":
+            return {
+                "status": "done",
+                "result": {
+                    "outcome": "partial",
+                    "report_kind": "safe_operations_cycle",
+                    "summary": {"completed": 3, "incomplete": 0, "active_tasks": 2},
+                    "processes": [
+                        {
+                            "name": "system_readiness",
+                            "status": "partial",
+                            "detail": "Готово модулей: 10 из 14.",
+                        },
+                        {
+                            "name": "coordination_action",
+                            "task_id": 504,
+                            "status": "done",
+                            "detail": "Стратегия подготовлена.",
+                        },
+                    ],
+                    "configuration_blockers": ["LLM_API_KEY"],
+                },
+            }
+        raise AssertionError(path)
+
+    class Message:
+        text = "Делай все возможное без меня"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    reply = Update.effective_message.replies[-1]
+    assert "Фактически выполнено: 3" in reply
+    assert "Стратегия подготовлена" in reply
+    assert "Не выполнялись без отдельного подтверждения" in reply
+    task_payload = next(kwargs["json"] for _, path, kwargs in calls if path == "/api/tasks")
+    assert task_payload["payload"]["action"] == "run_safe_operations_cycle"
+    assert task_payload["max_attempts"] == 1
+
+
+def test_telegram_safe_operations_cycle_preserves_failed_status(monkeypatch):
+    from app import bot
+
+    async def fake_api(method, path, **kwargs):
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/tasks":
+            return {"id": 505, "agent_type": "orchestrator"}
+        if path == "/api/tasks/505/run":
+            return {"status": "failed", "result": {"error": "controlled failure"}}
+        raise AssertionError(path)
+
+    class Message:
+        text = "Запусти все возможные процессы"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append(value)
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    reply = Update.effective_message.replies[-1]
+    assert "не завершился" in reply
+    assert "failed" in reply
+    assert "controlled failure" in reply
 
 
 def test_activity_report_is_a_real_audited_orchestrator_result(client, monkeypatch):
