@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     smtp_from_email: str = ""
     unsubscribe_secret: str = ""
     outreach_per_minute: int = 10
-    outreach_per_day: int = 100
+    outreach_per_day: int = 7
     outreach_timezone: str = "Europe/Moscow"
     outreach_daily_start_hour: int = 9
     outreach_rate_limit_cooldown_hours: int = 24

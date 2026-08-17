@@ -223,7 +223,7 @@ class MailboxCreate(BaseModel):
     imap_secret_ref: str = Field(default="", pattern="^$|^IMAP_[A-Z0-9_]+$")
     inbound_enabled: bool = False
     per_minute: int = Field(default=10, ge=1, le=1000)
-    per_day: int = Field(default=100, ge=1, le=100000)
+    per_day: int = Field(default=7, ge=1, le=100000)
 
 
 class TemplateCreate(BaseModel):

@@ -391,7 +391,7 @@ class SenderMailbox(Base):
     inbound_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     last_imap_uid: Mapped[int] = mapped_column(Integer, default=0)
     per_minute: Mapped[int] = mapped_column(Integer, default=10)
-    per_day: Mapped[int] = mapped_column(Integer, default=100)
+    per_day: Mapped[int] = mapped_column(Integer, default=7)
     sent_today: Mapped[int] = mapped_column(Integer, default=0)
     last_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

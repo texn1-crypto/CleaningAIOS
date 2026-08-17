@@ -636,6 +636,21 @@ def test_import_size_limit_and_mailbox_secret_reference(client, monkeypatch):
     assert invalid_secret.status_code == 422
 
 
+def test_new_sender_mailbox_defaults_to_seven_messages_per_day(client):
+    created = client.post(
+        "/api/outreach/mailboxes",
+        json={"name": "Consent mailbox", "address": "consent-mailbox@example.com"},
+    )
+    assert created.status_code == 201
+
+    mailbox = next(
+        row
+        for row in client.get("/api/outreach/mailboxes").json()
+        if row["id"] == created.json()["id"]
+    )
+    assert mailbox["per_day"] == 7
+
+
 def test_structured_decision_creates_bound_approval(client):
     decision = client.post("/api/structured-decisions", json={"title": "Подписать договор", "problem": "Новый объект", "requires_approval": True, "approval_kind": "contract"}).json()
     assert decision["approval_id"] is not None
