@@ -108,8 +108,10 @@ invalidates links that have already been sent.
 
 `OUTREACH_PER_DAY` limits messages in one local delivery window rather than a
 rolling 24-hour period. `OUTREACH_TIMEZONE=Europe/Moscow` and
-`OUTREACH_DAILY_START_HOUR=9` open a fresh window at 09:00 Moscow time; before that
-hour delivery remains paused. After every accepted SMTP message the worker queues a
+`OUTREACH_DAILY_START_HOUR=9` and `OUTREACH_DAILY_END_HOUR=18` open a fresh
+09:00–18:00 Moscow delivery window. `OUTREACH_MIN_INTERVAL_MINUTES=30` prevents
+two accepted messages from being sent less than 30 minutes apart. Outside the
+window delivery remains paused. After every accepted SMTP message the worker queues a
 deduplicated Telegram progress update such as `1/50`, plus the cumulative progress
 for the approved recipient file. Suppression, unsubscribe, consent and exact owner
 approval checks remain mandatory.

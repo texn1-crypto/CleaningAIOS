@@ -1048,6 +1048,7 @@ def test_worker_supports_smtp_implicit_tls_on_port_465(client, monkeypatch):
     monkeypatch.setattr(settings, "smtp_username", "implicit-tls@example.com")
     monkeypatch.setattr(settings, "smtp_password", "test-secret")
     monkeypatch.setattr(settings, "smtp_from_email", "implicit-tls@example.com")
+    monkeypatch.setattr(settings, "outreach_min_interval_minutes", 0)
     with SessionLocal() as db:
         db.execute(update(OutboundMessage).where(OutboundMessage.status.in_(["queued", "waiting_configuration"])).values(status="sent"))
         row = OutboundMessage(
@@ -1072,6 +1073,7 @@ def test_outreach_delivery_window_opens_at_nine_moscow(monkeypatch):
 
     monkeypatch.setattr(settings, "outreach_timezone", "Europe/Moscow")
     monkeypatch.setattr(settings, "outreach_daily_start_hour", 9)
+    monkeypatch.setattr(settings, "outreach_daily_end_hour", 18)
 
     before_start, next_start = worker.outreach_delivery_window(datetime(2026, 8, 13, 5, 59))
     assert before_start is None
@@ -1081,9 +1083,68 @@ def test_outreach_delivery_window_opens_at_nine_moscow(monkeypatch):
     assert window_start == datetime(2026, 8, 13, 6, 0)
     assert next_start == datetime(2026, 8, 14, 6, 0)
 
+    end_start, next_start = worker.outreach_delivery_window(datetime(2026, 8, 13, 15, 0))
+    assert end_start is None
+    assert next_start == datetime(2026, 8, 14, 6, 0)
+
     overnight_start, next_start = worker.outreach_delivery_window(datetime(2026, 8, 13, 22, 0))
     assert overnight_start is None
     assert next_start == datetime(2026, 8, 14, 6, 0)
+
+
+def test_worker_enforces_thirty_minute_delivery_interval(client, monkeypatch):
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import update
+
+    from app import worker
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import OutboundMessage
+
+    class SMTP:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def starttls(self): return None
+        def login(self, username, password): return None
+        def send_message(self, message): return None
+
+    monkeypatch.setattr(worker.smtplib, "SMTP", SMTP)
+    for field, value in {
+        "smtp_host": "smtp.example",
+        "smtp_port": 587,
+        "smtp_username": "sender@example.com",
+        "smtp_password": "secret",
+        "smtp_from_email": "sender@example.com",
+        "outreach_timezone": "Europe/Moscow",
+        "outreach_daily_start_hour": 9,
+        "outreach_daily_end_hour": 18,
+        "outreach_min_interval_minutes": 30,
+        "outreach_per_minute": 10,
+        "outreach_per_day": 10,
+    }.items():
+        monkeypatch.setattr(settings, field, value)
+
+    now = datetime(2026, 8, 13, 6, 0)
+    with SessionLocal() as db:
+        db.execute(update(OutboundMessage).values(status="sent", sent_at=None))
+        db.add_all([
+            OutboundMessage(
+                campaign_key="interval-test",
+                recipient=f"interval-{index}@example.com",
+                subject="Interval",
+                body="Body",
+                status="queued",
+                scheduled_at=now,
+            )
+            for index in range(1, 3)
+        ])
+        db.commit()
+
+        assert worker.send_next_email(db, now=now) is True
+        assert worker.send_next_email(db, now=now + timedelta(minutes=29)) is False
+        assert worker.send_next_email(db, now=now + timedelta(minutes=30)) is True
 
 
 def test_worker_reports_each_daily_delivery_and_stops_at_limit(client, monkeypatch):
@@ -1130,6 +1191,8 @@ def test_worker_reports_each_daily_delivery_and_stops_at_limit(client, monkeypat
         "telegram_bot_token": "123456:test-token",
         "outreach_timezone": "Europe/Moscow",
         "outreach_daily_start_hour": 9,
+        "outreach_daily_end_hour": 18,
+        "outreach_min_interval_minutes": 0,
         "outreach_per_minute": 10,
         "outreach_per_day": 2,
     }.items():

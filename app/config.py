@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     outreach_per_day: int = 7
     outreach_timezone: str = "Europe/Moscow"
     outreach_daily_start_hour: int = 9
+    outreach_daily_end_hour: int = 18
+    outreach_min_interval_minutes: int = 30
     outreach_rate_limit_cooldown_hours: int = 24
     inbound_mail_poll_seconds: int = 60
     llm_api_key: str = ""

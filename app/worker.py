@@ -99,14 +99,13 @@ def _transport_ready(db, *, mailbox_id: int | None, now: datetime) -> bool:
 
 
 def outreach_delivery_window(now: datetime) -> tuple[datetime | None, datetime]:
-    """Return the current 09:00-local delivery window and its next start.
-
-    Email delivery is closed before the configured local start hour.  After the
-    hour it stays open until local midnight; the next window always begins at
-    the configured hour on the following local calendar day.
-    """
+    """Return the current configured local delivery window and its next start."""
     if not 0 <= settings.outreach_daily_start_hour <= 23:
         raise ValueError("OUTREACH_DAILY_START_HOUR must be between 0 and 23")
+    if not 1 <= settings.outreach_daily_end_hour <= 23:
+        raise ValueError("OUTREACH_DAILY_END_HOUR must be between 1 and 23")
+    if settings.outreach_daily_start_hour >= settings.outreach_daily_end_hour:
+        raise ValueError("OUTREACH_DAILY_START_HOUR must be before OUTREACH_DAILY_END_HOUR")
     local_zone = ZoneInfo(settings.outreach_timezone)
     aware_utc = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
     local_now = aware_utc.astimezone(local_zone)
@@ -116,9 +115,17 @@ def outreach_delivery_window(now: datetime) -> tuple[datetime | None, datetime]:
         second=0,
         microsecond=0,
     )
+    today_end = local_now.replace(
+        hour=settings.outreach_daily_end_hour,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
     if local_now < today_start:
         return None, today_start.astimezone(timezone.utc).replace(tzinfo=None)
     tomorrow_start = today_start + timedelta(days=1)
+    if local_now >= today_end:
+        return None, tomorrow_start.astimezone(timezone.utc).replace(tzinfo=None)
     return (
         today_start.astimezone(timezone.utc).replace(tzinfo=None),
         tomorrow_start.astimezone(timezone.utc).replace(tzinfo=None),
@@ -395,6 +402,8 @@ def send_next_email(db, *, now: datetime | None = None) -> bool:
     sent_day = db.scalar(select(func.count(OutboundMessage.id)).where(OutboundMessage.sent_at >= window_start, OutboundMessage.sent_at <= now)) or 0
     if sent_minute >= settings.outreach_per_minute or sent_day >= settings.outreach_per_day:
         return False
+    if settings.outreach_min_interval_minutes < 0:
+        raise ValueError("OUTREACH_MIN_INTERVAL_MINUTES must not be negative")
     candidates = db.scalars(
         select(OutboundMessage)
         .where(
@@ -408,6 +417,23 @@ def send_next_email(db, *, now: datetime | None = None) -> bool:
     row = None
     for candidate in candidates:
         candidate_mailbox = db.get(SenderMailbox, candidate.mailbox_id) if candidate.mailbox_id else None
+        candidate_mailbox_scope = (
+            OutboundMessage.mailbox_id == candidate.mailbox_id
+            if candidate.mailbox_id is not None
+            else OutboundMessage.mailbox_id.is_(None)
+        )
+        last_sent_at = db.scalar(
+            select(func.max(OutboundMessage.sent_at)).where(
+                candidate_mailbox_scope,
+                OutboundMessage.sent_at >= window_start,
+                OutboundMessage.sent_at <= now,
+            )
+        )
+        if (
+            last_sent_at is not None
+            and now - last_sent_at < timedelta(minutes=settings.outreach_min_interval_minutes)
+        ):
+            continue
         if not _transport_ready(db, mailbox_id=candidate.mailbox_id, now=now):
             state = db.get(MailTransportState, _mailbox_key(candidate.mailbox_id))
             candidate.status = "waiting_configuration"
