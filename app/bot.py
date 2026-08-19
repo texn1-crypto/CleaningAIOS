@@ -585,7 +585,7 @@ async def outreach_dashboard(update: Update, _: ContextTypes.DEFAULT_TYPE):
     manual_recovery = [
         item
         for item in ((data.get("transports") or {}).get("items") or [])
-        if item.get("status") in {"provider_blocked", "credentials_required"}
+        if item.get("status") in {"provider_blocked", "credentials_required", "unavailable"}
     ]
     for item in manual_recovery[:5]:
         key = str(item.get("mailbox_key") or "")
@@ -624,8 +624,20 @@ async def outreach_help(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 async def outreach_resume_transport(update: Update, _: ContextTypes.DEFAULT_TYPE, mailbox_key: str):
     result = await api("POST", f"/api/outreach/mailboxes/{mailbox_key}/resume")
+    if not result.get("authenticated"):
+        status_labels = {
+            "credentials_required": "провайдер отклонил логин или пароль приложения",
+            "provider_blocked": "почтовый провайдер заблокировал SMTP-доступ",
+            "unavailable": "SMTP-сервер временно недоступен",
+        }
+        reason = status_labels.get(result.get("status"), "проверка SMTP не пройдена")
+        await update.effective_message.reply_text(
+            f"❌ Почта не прошла проверку: {reason}.\n"
+            "Очередь не возобновлена, письма не отправлялись. Исправьте доступ к почте и нажмите проверку ещё раз."
+        )
+        return
     await update.effective_message.reply_text(
-        "✅ Почтовый транспорт снова разрешён к проверке. "
+        "✅ Вход в SMTP проверен без отправки тестового письма. "
         f"В очередь возвращено писем: {result.get('requeued', 0)}. "
         "Если провайдер снова отклонит отправку, защита немедленно вернёт ящик в карантин."
     )

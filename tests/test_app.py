@@ -3117,6 +3117,132 @@ def test_russian_chat_opens_outreach_panel_without_creating_a_task():
     assert understand_russian_message("Рассылки") == {"kind": "outreach"}
 
 
+def test_outreach_resume_button_reports_preflight_result(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    class Message:
+        replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append((value, kwargs))
+
+    class Update:
+        effective_message = Message()
+
+    async def failed_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {"status": "credentials_required", "authenticated": False, "requeued": 0}
+
+    monkeypatch.setattr(bot, "api", failed_api)
+    asyncio.run(bot.outreach_resume_transport(Update(), None, "7"))
+    assert calls == [("POST", "/api/outreach/mailboxes/7/resume", {})]
+    assert "Очередь не возобновлена" in Update.effective_message.replies[-1][0]
+    assert "письма не отправлялись" in Update.effective_message.replies[-1][0]
+
+    async def successful_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {"status": "ready", "authenticated": True, "requeued": 3}
+
+    monkeypatch.setattr(bot, "api", successful_api)
+    asyncio.run(bot.outreach_resume_transport(Update(), None, "7"))
+    assert "Вход в SMTP проверен без отправки тестового письма" in Update.effective_message.replies[-1][0]
+    assert "В очередь возвращено писем: 3" in Update.effective_message.replies[-1][0]
+
+
+def test_mailbox_resume_authenticates_without_sending_before_requeue(client, monkeypatch):
+    from datetime import datetime
+
+    from sqlalchemy import select, update
+
+    from app import api_v2
+    from app.db import SessionLocal
+    from app.models import AuditLog, MailTransportState, OutboundMessage, SenderMailbox
+
+    smtp_calls = []
+
+    class SMTP:
+        def __init__(self, host, port, timeout):
+            smtp_calls.append(("connect", host, port, timeout))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self):
+            smtp_calls.append(("starttls",))
+
+        def login(self, username, password):
+            smtp_calls.append(("login", username, password))
+
+        def send_message(self, message):
+            raise AssertionError("SMTP preflight must never send a message")
+
+    monkeypatch.setattr(api_v2.smtplib, "SMTP_SSL", SMTP)
+    monkeypatch.setenv("SMTP_PREFLIGHT_SUCCESS_TEST", "application-password")
+    campaign_key = "smtp-preflight-success-test"
+    with SessionLocal() as db:
+        db.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.status.in_(["queued", "waiting_configuration", "retry"]))
+            .values(status="sent", sent_at=None)
+        )
+        mailbox = SenderMailbox(
+            name="Preflight success",
+            address="preflight-success@example.com",
+            smtp_host="smtp.example.com",
+            smtp_port=465,
+            username="preflight-success@example.com",
+            secret_ref="SMTP_PREFLIGHT_SUCCESS_TEST",
+        )
+        db.add(mailbox)
+        db.flush()
+        mailbox_key = str(mailbox.id)
+        db.add(MailTransportState(mailbox_key=mailbox_key, status="credentials_required"))
+        db.add(OutboundMessage(
+            campaign_key=campaign_key,
+            recipient="recipient@example.com",
+            subject="Preflight",
+            body="Body",
+            mailbox_id=mailbox.id,
+            status="waiting_configuration",
+            scheduled_at=datetime(2040, 1, 1, 12, 0),
+        ))
+        db.commit()
+
+        resumed = client.post(f"/api/outreach/mailboxes/{mailbox_key}/resume")
+        assert resumed.status_code == 200
+        assert resumed.json()["authenticated"] is True
+        assert resumed.json()["previous_status"] == "credentials_required"
+        assert resumed.json()["requeued"] == 1
+        db.expire_all()
+        assert db.scalar(
+            select(OutboundMessage.status).where(OutboundMessage.campaign_key == campaign_key)
+        ) == "queued"
+        assert db.get(MailTransportState, mailbox_key).status == "ready"
+        assert db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "outreach.smtp_transport_resumed",
+                AuditLog.resource_id == mailbox_key,
+            )
+        ) is not None
+
+        db.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.campaign_key == campaign_key)
+            .values(status="sent", sent_at=None)
+        )
+        db.commit()
+
+    assert smtp_calls == [
+        ("connect", "smtp.example.com", 465, 20),
+        ("login", "preflight-success@example.com", "application-password"),
+    ]
+
+
 def test_customer_requested_campaign_records_consent_and_requires_exact_owner_approval(client, monkeypatch):
     from app.config import settings
 
@@ -5118,7 +5244,7 @@ def test_smtp_auth_failure_defers_entire_mailbox_queue(client, monkeypatch):
     from app import worker
     from app.config import settings
     from app.db import SessionLocal
-    from app.models import MailTransportState, OutboundMessage, OwnerNotification, SenderMailbox
+    from app.models import AuditLog, MailTransportState, OutboundMessage, OwnerNotification, SenderMailbox
 
     class SMTP:
         def __init__(self, *args, **kwargs): pass
@@ -5199,10 +5325,26 @@ def test_smtp_auth_failure_defers_entire_mailbox_queue(client, monkeypatch):
         ).status_code == 403
         resumed = client.post(f"/api/outreach/mailboxes/{mailbox.id}/resume")
         assert resumed.status_code == 200
+        assert resumed.json()["authenticated"] is False
+        assert resumed.json()["status"] == "credentials_required"
         assert resumed.json()["previous_status"] == "credentials_required"
-        assert resumed.json()["requeued"] == 2
+        assert resumed.json()["requeued"] == 0
         db.expire_all()
-        assert db.get(MailTransportState, str(mailbox.id)).status == "ready"
+        assert db.get(MailTransportState, str(mailbox.id)).status == "credentials_required"
+        preflight_audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "outreach.smtp_preflight_failed",
+                AuditLog.resource_id == str(mailbox.id),
+            )
+        )
+        assert preflight_audit is not None
+        assert "wrong-application-password" not in str(preflight_audit.details)
+        assert {
+            row.status
+            for row in db.scalars(
+                select(OutboundMessage).where(OutboundMessage.campaign_key == campaign_key)
+            ).all()
+        } == {"waiting_configuration"}
 
         db.execute(
             update(OutboundMessage)

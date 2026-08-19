@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import os
+import smtplib
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -804,29 +805,26 @@ def resume_mailbox_transport(
     db: Session = Depends(get_db),
     actor: Principal = Depends(principal),
 ):
-    """Owner-controlled recovery after credentials/provider status were fixed."""
+    """Authenticate without sending, then recover a quarantined SMTP queue."""
     require_role(actor, "owner")
     mailbox_id: int | None
     if mailbox_key == "default":
         mailbox_id = None
-        configured = bool(
-            settings.smtp_host
-            and settings.smtp_username
-            and settings.smtp_password
-            and settings.smtp_from_email
-        )
+        smtp_host = settings.smtp_host
+        smtp_port = settings.smtp_port
+        smtp_username = settings.smtp_username
+        smtp_password = settings.smtp_password
+        configured = bool(smtp_host and smtp_username and smtp_password and settings.smtp_from_email)
     elif mailbox_key.isdigit() and str(int(mailbox_key)) == mailbox_key:
         mailbox_id = int(mailbox_key)
         mailbox = db.get(SenderMailbox, mailbox_id)
         if mailbox is None:
             raise HTTPException(404, "Mailbox not found")
-        configured = bool(
-            mailbox.active
-            and mailbox.smtp_host
-            and (mailbox.username or mailbox.address)
-            and mailbox.secret_ref
-            and os.environ.get(mailbox.secret_ref)
-        )
+        smtp_host = mailbox.smtp_host
+        smtp_port = mailbox.smtp_port
+        smtp_username = mailbox.username or mailbox.address
+        smtp_password = os.environ.get(mailbox.secret_ref, "") if mailbox.secret_ref else ""
+        configured = bool(mailbox.active and smtp_host and smtp_username and smtp_password)
     else:
         raise HTTPException(404, "Mailbox not found")
     if not configured:
@@ -835,6 +833,68 @@ def resume_mailbox_transport(
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     state = db.get(MailTransportState, mailbox_key)
     previous_status = state.status if state else "ready"
+
+    try:
+        smtp_factory = smtplib.SMTP_SSL if smtp_port == 465 else smtplib.SMTP
+        with smtp_factory(smtp_host, smtp_port, timeout=20) as smtp:
+            if smtp_port != 465:
+                smtp.starttls()
+            smtp.login(smtp_username, smtp_password)
+    except smtplib.SMTPAuthenticationError:
+        status = "credentials_required"
+        reason = "SMTP authentication failed; verify the mailbox application password"
+    except smtplib.SMTPResponseException:
+        status = "provider_blocked"
+        reason = "SMTP provider rejected the authentication preflight"
+    except (OSError, TimeoutError, smtplib.SMTPException):
+        status = "unavailable"
+        reason = "SMTP authentication preflight is temporarily unavailable"
+    else:
+        status = "ready"
+        reason = ""
+
+    mailbox_scope = (
+        OutboundMessage.mailbox_id == mailbox_id
+        if mailbox_id is not None
+        else OutboundMessage.mailbox_id.is_(None)
+    )
+    if status != "ready":
+        if state is None:
+            state = MailTransportState(mailbox_key=mailbox_key)
+            db.add(state)
+        state.status = status
+        state.reason = reason
+        state.consecutive_failures = (state.consecutive_failures or 0) + 1
+        state.blocked_at = now
+        state.retry_after = None
+        state.updated_at = now
+        paused = db.execute(
+            update(OutboundMessage)
+            .where(mailbox_scope, OutboundMessage.status.in_(["queued", "retry"]))
+            .values(status="waiting_configuration", error=reason)
+        )
+        audit(
+            db,
+            actor.subject,
+            "outreach.smtp_preflight_failed",
+            "sender_mailbox",
+            mailbox_key,
+            {
+                "status": status,
+                "previous_status": previous_status,
+                "paused": int(paused.rowcount or 0),
+            },
+        )
+        db.commit()
+        return {
+            "mailbox_key": mailbox_key,
+            "status": status,
+            "authenticated": False,
+            "previous_status": previous_status,
+            "requeued": 0,
+            "reason": reason,
+        }
+
     if state is None:
         state = MailTransportState(mailbox_key=mailbox_key)
         db.add(state)
@@ -844,11 +904,6 @@ def resume_mailbox_transport(
     state.blocked_at = None
     state.retry_after = None
     state.updated_at = now
-    mailbox_scope = (
-        OutboundMessage.mailbox_id == mailbox_id
-        if mailbox_id is not None
-        else OutboundMessage.mailbox_id.is_(None)
-    )
     result = db.execute(
         update(OutboundMessage)
         .where(mailbox_scope, OutboundMessage.status == "waiting_configuration")
@@ -867,6 +922,7 @@ def resume_mailbox_transport(
     return {
         "mailbox_key": mailbox_key,
         "status": "ready",
+        "authenticated": True,
         "previous_status": previous_status,
         "requeued": requeued,
     }
