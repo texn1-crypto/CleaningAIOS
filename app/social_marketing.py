@@ -473,6 +473,123 @@ def _ensure_visual_workflow(db: Session, batch: BusinessRecord, items: list[Cont
     return assets
 
 
+def refresh_latest_social_visuals(db: Session, *, request_key: str = "") -> dict:
+    """Supersede the latest unpublished visuals and queue unique replacements."""
+    batch = db.scalar(
+        select(BusinessRecord)
+        .where(
+            BusinessRecord.record_type == "social_content_batch",
+            BusinessRecord.status.in_(["visuals_pending", "pending_visual_approval"]),
+        )
+        .order_by(BusinessRecord.id.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    if batch is None:
+        return {
+            "status": "no_pending_visuals",
+            "action": "refresh_social_visuals",
+            "refreshed": 0,
+            "publication_started": False,
+            "owner_approval_preserved": True,
+            "message": "Нет незавершённого контент-плана, в котором можно заменить визуалы.",
+            "evidence": [{"type": "social_visual_refresh_check", "pending_batch_found": False}],
+        }
+
+    request_key = request_key[:255]
+    previous_refresh = (batch.data or {}).get("last_visual_refresh") or {}
+    if request_key and previous_refresh.get("request_key") == request_key:
+        return {
+            "status": "visuals_queued",
+            "action": "refresh_social_visuals",
+            "batch_id": batch.id,
+            "refreshed": len(previous_refresh.get("new_visual_asset_ids") or []),
+            "old_visual_asset_ids": previous_refresh.get("old_visual_asset_ids") or [],
+            "new_visual_asset_ids": previous_refresh.get("new_visual_asset_ids") or [],
+            "publication_started": False,
+            "owner_approval_preserved": True,
+            "idempotent_replay": True,
+            "message": "Повторный Telegram-запрос найден; новая замена визуалов не запускалась.",
+            "evidence": [{"type": "social_visual_refresh_reused", "batch_id": batch.id}],
+        }
+
+    items = _batch_items(db, batch)
+    old_assets = _batch_assets(db, batch)
+    old_asset_ids = [asset.id for asset in old_assets]
+    prior_approval_id = (batch.data or {}).get("visual_approval_id") or (batch.data or {}).get("approval_id")
+    refreshed_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    for asset in old_assets:
+        asset.status = "superseded"
+        asset.metadata_json = {
+            **(asset.metadata_json or {}),
+            "superseded_reason": "owner_requested_unique_visual",
+            "superseded_at": refreshed_at,
+        }
+    for item in items:
+        metrics = dict(item.metrics or {})
+        metrics.pop("visual_asset_id", None)
+        metrics.pop("approval_id", None)
+        item.status = "visual_pending"
+        item.metrics = {
+            **metrics,
+            "publication_status": "visual_generation_pending",
+        }
+
+    batch.data = {
+        **(batch.data or {}),
+        "visual_approval_version": 0,
+        "visual_asset_ids": [],
+        "visual_approval_id": None,
+        "approval_id": prior_approval_id,
+    }
+    new_assets = _ensure_visual_workflow(db, batch, items)
+    new_asset_ids = [asset.id for asset in new_assets]
+    batch.data = {
+        **(batch.data or {}),
+        "last_visual_refresh": {
+            "request_key": request_key,
+            "old_visual_asset_ids": old_asset_ids,
+            "new_visual_asset_ids": new_asset_ids,
+            "refreshed_at": refreshed_at,
+        },
+    }
+    event_bus.publish(
+        db,
+        "marketing.social_visuals_refreshed",
+        "social_content_batch",
+        str(batch.id),
+        {
+            "old_visual_asset_ids": old_asset_ids,
+            "new_visual_asset_ids": new_asset_ids,
+            "prior_approval_id": prior_approval_id,
+            "publication_started": False,
+        },
+        idempotency_key=f"social-visual-refresh:{batch.id}:{'-'.join(map(str, new_asset_ids))}",
+    )
+    db.flush()
+    return {
+        "status": "visuals_queued",
+        "action": "refresh_social_visuals",
+        "batch_id": batch.id,
+        "refreshed": len(new_assets),
+        "old_visual_asset_ids": old_asset_ids,
+        "new_visual_asset_ids": new_asset_ids,
+        "publication_started": False,
+        "owner_approval_preserved": True,
+        "idempotent_replay": False,
+        "message": "Старые визуалы сохранены как superseded; уникальные замены поставлены в очередь.",
+        "evidence": [
+            {
+                "type": "social_visuals_refreshed",
+                "batch_id": batch.id,
+                "old_visual_asset_ids": old_asset_ids,
+                "new_visual_asset_ids": new_asset_ids,
+                "publication_started": False,
+            }
+        ],
+    }
+
+
 def prepare_daily_social_plan(db: Session, *, day: datetime | None = None) -> dict:
     now = day or datetime.now(timezone.utc)
     aware_now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now

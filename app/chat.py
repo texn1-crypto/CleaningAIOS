@@ -219,6 +219,27 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
             "protected": False,
         }
 
+    visual_complaint = _contains(
+        text,
+        "повтор", "одинаков", "те же фото", "те же картин", "плохие фото",
+        "плохие картин", "фото отстой", "фотографии отстой", "визуалы отстой",
+    )
+    if visual_complaint and _contains(text, "изображен", "картин", "иллюстрац", "визуал", "фото", "фотограф"):
+        return {
+            "kind": "task",
+            "title": "Заменить повторяющиеся визуалы социальных сетей",
+            "agent_type": "marketing",
+            "priority": "high",
+            "payload": {
+                "action": "refresh_social_visuals",
+                "source": "telegram_natural_language",
+                "original_message": safe_original[:4000],
+                "unique_visual_required": True,
+                "external_publish": False,
+            },
+            "protected": False,
+        }
+
     image_action = _contains(
         text,
         "создай", "сделай", "сгенерируй", "нарисуй", "подготовь",

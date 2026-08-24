@@ -28,6 +28,10 @@ LOCAL_SOCIAL_MEDIA_POOL = (
     "services/facade-territory-v1.jpg",
     "social/2026-08-13-business-center.png",
     "social/2026-08-13-checklist-quality.png",
+    "social/2026-08-24-atrium-floorcare-v1.jpg",
+    "social/2026-08-24-residential-entrance-v1.jpg",
+    "social/2026-08-24-warehouse-scrubber-v1.jpg",
+    "social/2026-08-24-refill-station-v1.jpg",
 )
 
 PRIVATE_IMAGE_PROMPT_PATTERN = re.compile(
@@ -35,6 +39,14 @@ PRIVATE_IMAGE_PROMPT_PATTERN = re.compile(
     r"|(?<!\d)(?:(?:\+?7|8)[\s()\-]*)?(?:\d[\s()\-]*){10}(?!\d)"
     r"|(?<!\d)\d{20}(?!\d)"
 )
+
+
+class DuplicateVisualError(ValueError):
+    """A provider returned bytes that were already used by another visual."""
+
+
+class LocalVisualPoolExhausted(ValueError):
+    """Every original fallback visual has already been used."""
 
 
 def now_utc() -> datetime:
@@ -64,11 +76,34 @@ def _image_extension(raw: bytes) -> str:
     raise ValueError("Image provider returned an unsupported file type")
 
 
-def _store_verified_image(asset: MediaAsset, raw: bytes, *, provider: str, metadata: dict) -> None:
+def _used_visual_hashes(db: Session, *, exclude_asset_id: int) -> set[str]:
+    values = db.scalars(
+        select(MediaAsset.metadata_json).where(
+            MediaAsset.kind == "image",
+            MediaAsset.id != exclude_asset_id,
+        )
+    ).all()
+    return {
+        digest
+        for value in values
+        if (digest := str((value or {}).get("sha256") or ""))
+    }
+
+
+def _store_verified_image(
+    db: Session,
+    asset: MediaAsset,
+    raw: bytes,
+    *,
+    provider: str,
+    metadata: dict,
+) -> None:
     if not raw or len(raw) > settings.max_attachment_bytes:
         raise ValueError("Generated image is empty or exceeds the configured size limit")
     extension = _image_extension(raw)
     digest = hashlib.sha256(raw).hexdigest()
+    if digest in _used_visual_hashes(db, exclude_asset_id=asset.id):
+        raise DuplicateVisualError("The visual has already been used")
     root = Path(settings.document_storage_path).resolve()
     directory = root / "social-media"
     directory.mkdir(parents=True, exist_ok=True)
@@ -93,16 +128,27 @@ def _store_verified_image(asset: MediaAsset, raw: bytes, *, provider: str, metad
     }
 
 
-def _use_local_media_pool(asset: MediaAsset, metadata: dict) -> None:
+def _use_local_media_pool(db: Session, asset: MediaAsset, metadata: dict) -> None:
     slot = int(metadata.get("slot") or 1)
     batch_id = int(metadata.get("batch_id") or 0)
-    relative_path = LOCAL_SOCIAL_MEDIA_POOL[(batch_id + slot - 1) % len(LOCAL_SOCIAL_MEDIA_POOL)]
-    source = (Path(__file__).resolve().parent / "static" / relative_path).resolve()
-    raw = source.read_bytes()
-    _store_verified_image(asset, raw, provider="local_media_pool", metadata={
+    start = (batch_id + slot - 1) % len(LOCAL_SOCIAL_MEDIA_POOL)
+    used_hashes = _used_visual_hashes(db, exclude_asset_id=asset.id)
+    selected: tuple[str, bytes] | None = None
+    for offset in range(len(LOCAL_SOCIAL_MEDIA_POOL)):
+        relative_path = LOCAL_SOCIAL_MEDIA_POOL[(start + offset) % len(LOCAL_SOCIAL_MEDIA_POOL)]
+        source = (Path(__file__).resolve().parent / "static" / relative_path).resolve()
+        raw = source.read_bytes()
+        if hashlib.sha256(raw).hexdigest() not in used_hashes:
+            selected = relative_path, raw
+            break
+    if selected is None:
+        raise LocalVisualPoolExhausted("Every original fallback visual has already been used")
+    relative_path, raw = selected
+    _store_verified_image(db, asset, raw, provider="local_media_pool", metadata={
         **metadata,
         "media_pool_source": relative_path,
         "rights_basis": "original_project_asset",
+        "unique_visual_enforced": True,
         "model": None,
     })
 
@@ -281,7 +327,7 @@ def generate_next_social_visual(db: Session) -> bool:
         return True
     if asset.provider == "local_media_pool" or (not direct_request and not social_generation_configured):
         try:
-            _use_local_media_pool(asset, metadata)
+            _use_local_media_pool(db, asset, metadata)
             batch_id = int(metadata.get("batch_id") or 0)
             if batch_id:
                 finalize_social_preview_batch(db, batch_id)
@@ -294,6 +340,38 @@ def generate_next_social_visual(db: Session) -> bool:
                 idempotency_key=f"social-visual-generated:{asset.id}:{asset.metadata_json['sha256']}",
             )
             audit(db, "social_image_agent", "marketing.social_visual_generated", "media_asset", str(asset.id), {"provider": "local_media_pool", "sha256": asset.metadata_json["sha256"]})
+        except LocalVisualPoolExhausted as exc:
+            asset.status = "credentials_required"
+            asset.metadata_json = {
+                **metadata,
+                "generation_status": "credentials_required",
+                "error_type": type(exc).__name__,
+                "credentials_required": ["IMAGE_GENERATION_API_KEY", "SOCIAL_IMAGE_GENERATION_ENABLED"],
+                "unique_visual_enforced": True,
+            }
+            batch_id = int(metadata.get("batch_id") or 0)
+            audit(
+                db,
+                "social_image_agent",
+                "marketing.social_visual_failed",
+                "media_asset",
+                str(asset.id),
+                {"generation_status": asset.status, "error_type": type(exc).__name__},
+            )
+            queue_owner_notification(
+                db,
+                idempotency_key=f"social-visual-pool-exhausted:{batch_id or asset.id}",
+                channel="telegram",
+                resource_type="media_asset",
+                resource_id=str(asset.id),
+                subject="⚠️ Нужен новый источник уникальных изображений",
+                body=(
+                    "Все оригинальные fallback-фотографии уже использованы. Повтор не допущен; "
+                    "для следующего визуала настройте IMAGE_GENERATION_API_KEY и "
+                    "SOCIAL_IMAGE_GENERATION_ENABLED=true."
+                ),
+                data={"generation_status": asset.status, "batch_id": batch_id},
+            )
         except (OSError, ValueError) as exc:
             asset.status = "generation_failed"
             asset.metadata_json = {**metadata, "generation_status": "generation_failed", "error_type": type(exc).__name__}
@@ -322,10 +400,11 @@ def generate_next_social_visual(db: Session) -> bool:
         encoded = str(response.json()["data"][0]["b64_json"])
         raw = base64.b64decode(encoded, validate=True)
         provider_request_id = str(getattr(response, "headers", {}).get("x-request-id") or "")[:128]
-        _store_verified_image(asset, raw, provider="openai_images", metadata={
+        _store_verified_image(db, asset, raw, provider="openai_images", metadata={
             **metadata,
             "model": settings.image_generation_model,
             "provider_request_id": provider_request_id,
+            "unique_visual_enforced": True,
         })
         digest = str(asset.metadata_json["sha256"])
         batch_id = int(metadata.get("batch_id") or 0)

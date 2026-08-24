@@ -132,6 +132,93 @@ def test_image_agent_uses_original_local_photo_pool_without_paid_key(client, mon
         assert client.get(asset.public_url).status_code == 200
 
 
+def test_local_photo_pool_skips_hash_used_by_superseded_visual(monkeypatch, tmp_path):
+    from app import social_runtime
+
+    first = b"\x89PNG\r\n\x1a\nfirst-original-photo"
+    second = b"\x89PNG\r\n\x1a\nsecond-original-photo"
+    first_path = tmp_path / "first.png"
+    second_path = tmp_path / "second.png"
+    first_path.write_bytes(first)
+    second_path.write_bytes(second)
+    monkeypatch.setattr(social_runtime, "LOCAL_SOCIAL_MEDIA_POOL", (str(first_path), str(second_path)))
+    monkeypatch.setattr(settings, "social_image_generation_enabled", False)
+    monkeypatch.setattr(settings, "image_generation_api_key", "")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path / "storage"))
+
+    with SessionLocal() as db:
+        db.execute(update(MediaAsset).where(MediaAsset.status == "queued").values(status="test_skipped"))
+        used = MediaAsset(
+            kind="image",
+            title="Previously used",
+            provider="local_media_pool",
+            status="superseded",
+            metadata_json={"sha256": hashlib.sha256(first).hexdigest()},
+        )
+        queued = MediaAsset(
+            kind="image",
+            title="Needs a unique photo",
+            provider="openai_images",
+            prompt="Safe prompt",
+            status="queued",
+            metadata_json={"slot": 1, "batch_id": 0},
+        )
+        db.add_all([used, queued])
+        db.commit()
+        assert generate_next_social_visual(db) is True
+        db.refresh(queued)
+        assert queued.status == "ready"
+        assert queued.metadata_json["sha256"] == hashlib.sha256(second).hexdigest()
+        assert queued.metadata_json["unique_visual_enforced"] is True
+
+
+def test_local_photo_pool_exhaustion_blocks_repeat_and_notifies_owner(monkeypatch, tmp_path):
+    from app import social_runtime
+
+    raw = b"\x89PNG\r\n\x1a\nonly-original-photo"
+    source = tmp_path / "only.png"
+    source.write_bytes(raw)
+    monkeypatch.setattr(social_runtime, "LOCAL_SOCIAL_MEDIA_POOL", (str(source),))
+    monkeypatch.setattr(settings, "social_image_generation_enabled", False)
+    monkeypatch.setattr(settings, "image_generation_api_key", "")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path / "storage"))
+    monkeypatch.setattr(settings, "owner_telegram_id", "999")
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token")
+
+    with SessionLocal() as db:
+        db.execute(update(MediaAsset).where(MediaAsset.status == "queued").values(status="test_skipped"))
+        used = MediaAsset(
+            kind="image",
+            title="Used original",
+            provider="local_media_pool",
+            status="superseded",
+            metadata_json={"sha256": hashlib.sha256(raw).hexdigest()},
+        )
+        queued = MediaAsset(
+            kind="image",
+            title="Must not repeat",
+            provider="openai_images",
+            prompt="Safe prompt",
+            status="queued",
+            metadata_json={"slot": 1, "batch_id": 99101},
+        )
+        db.add_all([used, queued])
+        db.commit()
+        assert generate_next_social_visual(db) is True
+        db.refresh(queued)
+        assert queued.status == "credentials_required"
+        assert queued.public_url == ""
+        assert queued.metadata_json["error_type"] == "LocalVisualPoolExhausted"
+        assert queued.metadata_json["unique_visual_enforced"] is True
+        notification = db.scalar(
+            select(OwnerNotification).where(
+                OwnerNotification.idempotency_key == "social-visual-pool-exhausted:99101"
+            )
+        )
+        assert notification is not None
+        assert "Повтор не допущен" in notification.body
+
+
 def test_image_agent_consumes_legacy_imagegen_job(client, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "social_image_generation_enabled", False)
     monkeypatch.setattr(settings, "image_generation_api_key", "")

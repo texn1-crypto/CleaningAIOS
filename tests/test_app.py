@@ -1450,6 +1450,94 @@ def test_russian_chat_reads_existing_sections():
     assert image["payload"]["action"] == "generate_image"
     assert image["payload"]["external_publish"] is False
 
+    refresh = understand_russian_message(
+        "Фотографии отстой, плохие и они уже повторяются, мне каждый раз нужны новые фотографии"
+    )
+    assert refresh["kind"] == "task"
+    assert refresh["agent_type"] == "marketing"
+    assert refresh["payload"]["action"] == "refresh_social_visuals"
+    assert refresh["payload"]["unique_visual_required"] is True
+    assert refresh["payload"]["external_publish"] is False
+    assert refresh["protected"] is False
+
+
+def test_visual_refresh_phrase_is_supported_and_executes_with_audit(client, monkeypatch):
+    from datetime import datetime
+
+    from app.chat import understand_russian_message
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import AuditLog, BusinessRecord, MediaAsset
+    from app.social_marketing import prepare_daily_social_plan
+    from sqlalchemy import select
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "Фотографии отстой, плохие и они повторяются — каждый раз нужны новые фотографии"
+    intent = understand_russian_message(message)
+    analysis = client.post(
+        "/api/request-analysis",
+        json={"message": message, "intent": intent},
+    )
+    assert analysis.status_code == 200
+    assert analysis.json()["classification"] == "supported"
+    assert analysis.json()["improvement_id"] is None
+
+    with SessionLocal() as db:
+        plan = prepare_daily_social_plan(db, day=datetime(2047, 8, 24, 7))
+        db.commit()
+        batch_id = plan["batch_id"]
+        old_asset_ids = plan["media_asset_ids"]
+
+    task = client.post(
+        "/api/tasks",
+        json={
+            "title": intent["title"],
+            "agent_type": intent["agent_type"],
+            "priority": intent["priority"],
+            "payload": {**intent["payload"], "request_key": "telegram:owner:visual-refresh-1"},
+            "max_attempts": 1,
+        },
+    ).json()
+    completed = client.post(f"/api/tasks/{task['id']}/run")
+    assert completed.status_code == 200
+    result = completed.json()["result"]
+    assert completed.json()["status"] == "done"
+    assert result["status"] == "visuals_queued"
+    assert result["batch_id"] == batch_id
+    assert result["publication_started"] is False
+    assert result["owner_approval_preserved"] is True
+    assert set(result["old_visual_asset_ids"]) == set(old_asset_ids)
+    assert set(result["new_visual_asset_ids"]).isdisjoint(old_asset_ids)
+
+    with SessionLocal() as db:
+        batch = db.get(BusinessRecord, batch_id)
+        assert batch.status == "visuals_pending"
+        assert batch.data["visual_asset_ids"] == result["new_visual_asset_ids"]
+        assert all(db.get(MediaAsset, asset_id).status == "superseded" for asset_id in old_asset_ids)
+        assert all(db.get(MediaAsset, asset_id).status == "queued" for asset_id in result["new_visual_asset_ids"])
+        audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "task.completed",
+                AuditLog.resource_id == str(task["id"]),
+            )
+        )
+        assert audit is not None
+        assert audit.details["publication_started"] is False
+
+    replay_task = client.post(
+        "/api/tasks",
+        json={
+            "title": intent["title"],
+            "agent_type": intent["agent_type"],
+            "priority": intent["priority"],
+            "payload": {**intent["payload"], "request_key": "telegram:owner:visual-refresh-1"},
+            "max_attempts": 1,
+        },
+    ).json()
+    replay = client.post(f"/api/tasks/{replay_task['id']}/run").json()["result"]
+    assert replay["idempotent_replay"] is True
+    assert replay["new_visual_asset_ids"] == result["new_visual_asset_ids"]
+
 
 def test_sensitive_text_redacts_telegram_token_inside_api_url():
     from app.chat import redact_sensitive_text

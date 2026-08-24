@@ -402,6 +402,10 @@ class MarketingAgent:
             from .social_marketing import prepare_social_account_setup
 
             return prepare_social_account_setup(db, channels=payload.get("channels") or [])
+        if payload.get("action") == "refresh_social_visuals":
+            from .social_marketing import refresh_latest_social_visuals
+
+            return refresh_latest_social_visuals(db, request_key=str(payload.get("request_key") or ""))
         if payload.get("action") == "prepare_daily_social_plan":
             from .social_marketing import prepare_daily_social_plan
 

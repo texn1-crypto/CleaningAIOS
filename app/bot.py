@@ -1517,6 +1517,27 @@ def format_social_account_setup(result: dict, task_id: int) -> str:
     return "\n".join(lines)
 
 
+def format_social_visual_refresh(result: dict, task_id: int) -> str:
+    if result.get("status") == "no_pending_visuals":
+        return (
+            f"Нечего заменять: задача #{task_id} проверила базу, но незавершённого контент-плана нет. "
+            "Публикация не запускалась."
+        )
+    if result.get("status") != "visuals_queued":
+        return (
+            f"Не удалось заменить визуалы. Задача #{task_id}: "
+            f"{result.get('error') or result.get('reason') or result.get('status') or 'неизвестная ошибка'}."
+        )
+    replay = "Повторный запрос распознан; новая копия не создавалась. " if result.get("idempotent_replay") else ""
+    return (
+        f"🖼 Новые визуалы поставлены в очередь: {result.get('refreshed', 0)}. "
+        f"Задача #{task_id}, контент-план #{result.get('batch_id', '—')}. "
+        f"{replay}"
+        "Старые файлы помечены как superseded и больше не будут выбраны повторно. "
+        "Публикация не запускалась: после генерации бот покажет новый preview и снова попросит подтверждение."
+    )
+
+
 async def module_summary(update: Update, module: str, title: str):
     data = (await api("GET", "/api/modules/summary"))[module]
     await update.effective_message.reply_text(title + "\n" + "\n".join(f"{key}: {value}" for key, value in data.items()))
@@ -1688,13 +1709,16 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if action == "generate_image":
                 await _execute_image_generation(update, intent)
                 return
+            task_payload = dict(intent["payload"])
+            if action == "refresh_social_visuals":
+                task_payload["request_key"] = _image_request_key(update)
             data = await api("POST", "/api/tasks", json={
                 "title": intent["title"],
                 "agent_type": intent["agent_type"],
                 "priority": intent["priority"],
-                "payload": intent["payload"],
+                "payload": task_payload,
                 "max_attempts": 1
-                if action in {"generate_proposal", "improve_referenced_text", "review_previous_text", "prepare_social_account_setup", "generate_image", "run_safe_operations_cycle"}
+                if action in {"generate_proposal", "improve_referenced_text", "review_previous_text", "prepare_social_account_setup", "refresh_social_visuals", "generate_image", "run_safe_operations_cycle"}
                 else 3,
             })
             protection = " Критическое действие будет остановлено до вашего подтверждения." if intent["protected"] else ""
@@ -1755,6 +1779,16 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "error": result.get("error") or f"статус задачи {completed.get('status', 'unknown')}",
                     }
                 await update.effective_message.reply_text(format_social_account_setup(result, data["id"]))
+            elif action == "refresh_social_visuals":
+                completed = await api("POST", f"/api/tasks/{data['id']}/run")
+                result = completed.get("result") or {}
+                if completed.get("status") != "done":
+                    result = {
+                        **result,
+                        "status": "failed",
+                        "error": result.get("error") or f"статус задачи {completed.get('status', 'unknown')}",
+                    }
+                await update.effective_message.reply_text(format_social_visual_refresh(result, data["id"]))
             elif action == "run_safe_operations_cycle":
                 completed = await api("POST", f"/api/tasks/{data['id']}/run")
                 result = completed.get("result") or {}
