@@ -43,6 +43,11 @@ def integration_status() -> dict[str, Any]:
                     "status": llm_advisor.provider_statuses()["anthropic_messages"],
                     "model": settings.anthropic_model or None,
                 },
+                "perplexity_sonar": {
+                    "status": llm_advisor.provider_statuses()["perplexity_sonar"],
+                    "model": settings.perplexity_model or None,
+                    "role": "aggregate_agent_quality_research_only",
+                },
             },
         },
         "workspace_agent_handoff": {

@@ -671,7 +671,11 @@ def test_integration_status_is_truthful(client):
         "version_configuration_required",
     }
     assert status["llm"]["provider"] == "multi_provider_advisory_router"
-    assert set(status["llm"]["providers"]) == {"openai_responses", "anthropic_messages"}
+    assert set(status["llm"]["providers"]) == {
+        "openai_responses",
+        "anthropic_messages",
+        "perplexity_sonar",
+    }
 
 
 def test_llm_adapter_uses_structured_responses_contract(monkeypatch):
@@ -765,6 +769,56 @@ def test_anthropic_adapter_uses_native_messages_structured_output(monkeypatch):
     assert "Authorization" not in captured["headers"]
 
 
+def test_perplexity_agent_coach_is_structured_and_advisory_only(monkeypatch):
+    import json
+    from app import llm
+    from app.config import settings
+
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+        def json(self):
+            output = {
+                "summary": "Нужна более строгая оценка качества",
+                "findings": ["Недостаточно измеренных исходов"],
+                "recommendations": [{
+                    "agent_type": "sales",
+                    "change": "Добавить регрессионный набор",
+                    "expected_effect": "Меньше ошибочных маршрутов",
+                    "validation": "Сравнить точность на фиксированном наборе",
+                    "requires_human_review": False,
+                }],
+            }
+            return {
+                "model": "sonar-test",
+                "choices": [{"message": {"content": json.dumps(output)}}],
+                "usage": {"total_tokens": 30},
+                "citations": ["https://docs.example/evals"],
+            }
+
+    class Client:
+        def __init__(self, *args, **kwargs): captured["headers"] = kwargs["headers"]
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, url, json): captured.update({"url": url, "payload": json}); return Response()
+
+    monkeypatch.setattr(llm.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "perplexity_api_key", "test-perplexity-secret")
+    monkeypatch.setattr(settings, "perplexity_base_url", "https://api.perplexity.example")
+    monkeypatch.setattr(settings, "perplexity_model", "sonar-test")
+    result = llm.llm_advisor.coach_agents({
+        "agents_evaluated": 4,
+        "personal_data_included": False,
+    })
+    assert result["status"] == "succeeded"
+    assert result["provider"] == "perplexity_sonar"
+    assert result["recommendations"][0]["requires_human_review"] is True
+    assert captured["url"] == "https://api.perplexity.example/v1/sonar"
+    assert captured["payload"]["response_format"]["type"] == "json_schema"
+    assert captured["headers"]["Authorization"] == "Bearer test-perplexity-secret"
+
+
 def test_multi_provider_router_assigns_tasks_and_falls_back(monkeypatch):
     from app.config import settings
     from app import llm
@@ -828,6 +882,38 @@ def test_ai_ceo_creates_only_safe_llm_tasks(client, monkeypatch):
     assert "LLM protected commitment unique" not in created
     queued = {x["title"]: x for x in client.get("/api/tasks").json()}
     assert queued["LLM safe finance analysis unique"]["payload"]["advisory_only"] is True
+
+
+def test_meta_brain_sends_only_aggregate_telemetry_to_agent_coach(client, monkeypatch):
+    from app.agents import llm_advisor
+
+    captured = {}
+
+    def coach(snapshot):
+        captured.update(snapshot)
+        return {
+            "status": "succeeded",
+            "provider": "perplexity_sonar",
+            "model": "sonar-test",
+            "recommendations": [{
+                "agent_type": "sales",
+                "change": "Добавить тест маршрутизации",
+                "requires_human_review": True,
+            }],
+        }
+
+    monkeypatch.setattr(llm_advisor, "coach_agents", coach)
+    task = client.post(
+        "/api/tasks",
+        json={"title": "Meta Brain aggregate coach test", "agent_type": "meta_brain"},
+    ).json()
+    result = client.post(f"/api/tasks/{task['id']}/run").json()["result"]
+    assert result["ai_coaching"]["provider"] == "perplexity_sonar"
+    assert "Добавить тест маршрутизации" in result["recommendations"]
+    assert captured["constraints"]["personal_data_included"] is False
+    assert captured["constraints"]["secrets_included"] is False
+    assert "last_error" not in captured
+    assert "metrics" not in captured
 
 
 def test_research_agent_runs_real_collector_contract(client, monkeypatch):
@@ -2646,6 +2732,12 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         assert reports[0].payload["notification_idempotency_key"].startswith(
             "owner-activity-report:"
         )
+
+
+def test_system_administrator_default_report_interval_is_daily():
+    from app.config import Settings
+
+    assert Settings.model_fields["system_admin_interval_minutes"].default == 1440
 
 
 def test_ceo_keeps_safe_deduplicated_development_backlog():

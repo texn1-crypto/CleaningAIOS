@@ -81,6 +81,190 @@ def test_critical_event_creates_one_correlated_alert_and_consumer_receipt(monkey
         ) == 1
 
 
+def test_non_task_approval_event_gets_buttons_notification_fallback(monkeypatch):
+    from app.config import settings
+    from app.models import ApprovalRequest, OwnerNotification
+    from app.platform import event_bus, process_next_event
+
+    monkeypatch.setattr(settings, "owner_telegram_id", "70004")
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token")
+    sessions = _isolated_session()
+    with sessions() as db:
+        approval = ApprovalRequest(
+            action_kind="bulk_outreach",
+            resource_type="outreach_campaign",
+            resource_id="campaign-42",
+            rationale="Owner must approve the campaign",
+            status="pending",
+            payload={},
+        )
+        db.add(approval)
+        db.flush()
+        event = event_bus.publish(
+            db,
+            "approval.requested",
+            "campaign",
+            "campaign-42",
+            {"approval_id": approval.id},
+            idempotency_key="non-task-approval-buttons-test",
+        )
+        db.commit()
+
+        process_next_event(db)
+        alert = db.scalar(
+            select(OwnerNotification).where(
+                OwnerNotification.idempotency_key
+                == f"critical-event:{event.event_id}:telegram"
+            )
+        )
+        assert alert is not None
+        assert alert.data["approval_id"] == approval.id
+        assert alert.status == "queued"
+
+
+def test_approval_event_reuses_existing_explicit_notification(monkeypatch):
+    from app.config import settings
+    from app.models import ApprovalRequest, OwnerNotification
+    from app.notifications import queue_owner_notification
+    from app.platform import event_bus, process_next_event
+
+    monkeypatch.setattr(settings, "owner_telegram_id", "70005")
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token")
+    sessions = _isolated_session()
+    with sessions() as db:
+        approval = ApprovalRequest(
+            action_kind="social_publication",
+            resource_type="social_content_batch",
+            resource_id="batch-7",
+            rationale="Review content",
+            status="pending",
+            payload={},
+        )
+        db.add(approval)
+        db.flush()
+        explicit = queue_owner_notification(
+            db,
+            idempotency_key="explicit-social-approval-test",
+            channel="telegram",
+            resource_type="social_content_batch",
+            resource_id="batch-7",
+            subject="Review posts",
+            body="Approval required",
+            data={"approval_id": approval.id},
+        )
+        event = event_bus.publish(
+            db,
+            "approval.requested",
+            "social_content_batch",
+            "batch-7",
+            {"approval_id": approval.id},
+            idempotency_key="explicit-social-approval-event-test",
+        )
+        db.commit()
+
+        process_next_event(db)
+        rows = db.scalars(select(OwnerNotification)).all()
+        approval_rows = [
+            row
+            for row in rows
+            if isinstance(row.data, dict)
+            and row.data.get("approval_id") == approval.id
+        ]
+        assert [row.id for row in approval_rows] == [explicit.id]
+        assert db.scalar(
+            select(OwnerNotification).where(
+                OwnerNotification.idempotency_key
+                == f"critical-event:{event.event_id}:telegram"
+            )
+        ) is None
+
+
+def test_pending_approval_reconciliation_restores_missing_button_card(monkeypatch):
+    from app.config import settings
+    from app.models import ApprovalRequest, OwnerNotification
+    from app.notifications import queue_missing_approval_notifications
+
+    monkeypatch.setattr(settings, "owner_telegram_id", "70006")
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token")
+    sessions = _isolated_session()
+    with sessions() as db:
+        approval = ApprovalRequest(
+            action_kind="tender_participation",
+            resource_type="tender",
+            resource_id="99",
+            rationale="Owner decision is required",
+            status="pending",
+            expires_at=datetime.now(timezone.utc).replace(tzinfo=None)
+            + timedelta(hours=2),
+            payload={},
+        )
+        db.add(approval)
+        db.commit()
+
+        first = queue_missing_approval_notifications(db)
+        second = queue_missing_approval_notifications(db)
+        assert len(first) == 1
+        assert second == []
+        row = db.scalar(
+            select(OwnerNotification).where(
+                OwnerNotification.idempotency_key
+                == f"approval-reconciliation:{approval.id}:telegram"
+            )
+        )
+        assert row.data["approval_id"] == approval.id
+        assert row.status == "queued"
+
+
+def test_pending_approval_reconciliation_revives_dead_letter_once(monkeypatch):
+    from app.config import settings
+    from app.models import ApprovalRequest, OwnerNotification
+    from app.notifications import queue_missing_approval_notifications
+
+    monkeypatch.setattr(settings, "owner_telegram_id", "70007")
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token")
+    sessions = _isolated_session()
+    with sessions() as db:
+        approval = ApprovalRequest(
+            action_kind="social_publication",
+            resource_type="social_content_batch",
+            resource_id="batch-dead-letter",
+            rationale="Review posts",
+            status="pending",
+            expires_at=datetime.now(timezone.utc).replace(tzinfo=None)
+            + timedelta(hours=2),
+            payload={},
+        )
+        db.add(approval)
+        db.flush()
+        notification = OwnerNotification(
+            idempotency_key="dead-letter-approval-card",
+            channel="telegram",
+            recipient="70007",
+            resource_type=approval.resource_type,
+            resource_id=approval.resource_id,
+            subject="Review posts",
+            body="Approval required",
+            data={"approval_id": approval.id},
+            status="dead_letter",
+            attempts=5,
+            last_error="transport failed",
+            dead_lettered_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+        db.add(notification)
+        db.commit()
+
+        recovered = queue_missing_approval_notifications(db)
+        assert [row.id for row in recovered] == [notification.id]
+        assert notification.status == "queued"
+        assert notification.attempts == 0
+        assert notification.last_error == ""
+        assert notification.data["approval_recovery_attempted"] is True
+
+        notification.status = "dead_letter"
+        db.flush()
+        assert queue_missing_approval_notifications(db) == []
+
+
 def test_critical_alert_retries_then_enters_dead_letter(monkeypatch):
     from app import notifications
     from app.config import settings

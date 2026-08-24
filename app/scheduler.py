@@ -7,6 +7,7 @@ from sqlalchemy import select
 from .config import settings
 from .db import SessionLocal
 from .models import BusinessRecord, OperatingEntity, Task
+from .notifications import queue_missing_approval_notifications
 from .operations import maintain_ceo_development_backlog
 from .platform import event_bus
 from .task_state import record_task_created
@@ -31,6 +32,7 @@ def schedule_cycle() -> None:
             now=now,
             cadence_hours=settings.ceo_development_cadence_hours,
         )
+        queue_missing_approval_notifications(db)
         social_day = now.date().isoformat()
         social_title = f"Daily cleaning news social plan · {social_day}"
         if not db.scalar(select(Task.id).where(Task.title == social_title)):

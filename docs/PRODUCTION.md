@@ -56,14 +56,20 @@ the report from PostgreSQL and the worker delivers it through the persisted owne
 notification queue. Set a value from 5 to 1440 minutes; delivery requires
 `TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID`.
 
-`SYSTEM_ADMIN_INTERVAL_MINUTES=5` enables the structured system-administrator
-agent. Each cycle correlates failed/blocked/stale tasks, outbound-email failures,
+`SYSTEM_ADMIN_INTERVAL_MINUTES=1440` enables one structured system-administrator
+report per UTC-aligned day. Each cycle correlates failed/blocked/stale tasks, outbound-email failures,
 owner-notification transport failures, agent state, Request Analyst traces,
 audit records and deduplicated improvement handoffs. The agent records whether
 an incident is new, still not fixed, repeated, or cleared by a later check. It
 never replays an outreach campaign or another protected business action. Use
 `SYSTEM_ADMIN_STALE_TASK_MINUTES=15` to define when a running task becomes an
 incident, and `/sysadmin` in Telegram to request the latest live check.
+
+`PERPLEXITY_API_KEY` enables the research-grounded agent coach used by Meta Brain.
+Only aggregate agent telemetry and measured outcome counts are sent. Perplexity may
+return review recommendations, but cannot call application tools, see credentials,
+change prompts, or execute a business action. Its result is stored with the audited
+Meta Brain task for later evaluation.
 
 Selected task-failure, agent-incident, overdue-payment, near-tender-deadline,
 outreach-complaint and task-approval events become deduplicated high/critical

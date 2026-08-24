@@ -518,7 +518,51 @@ class MetaBrainAgent:
         outcomes = db.scalars(select(DecisionOutcome)).all()
         measured = [x for x in outcomes if x.successful is not None]
         success_rate = round(sum(bool(x.successful) for x in measured) / len(measured) * 100, 2) if measured else None
-        return {"agents_evaluated": len(states), "data_gaps": gaps, "decision_outcomes_measured": len(measured), "decision_success_rate": success_rate, "recommendations": [f"Restore telemetry for {x}" for x in gaps] + (["Start measuring decision outcomes"] if not measured else []), "evidence": [{"decision_id": x.decision_id, "successful": x.successful} for x in measured]}
+        status_counts: dict[str, int] = {}
+        for state in states:
+            status_counts[state.status] = status_counts.get(state.status, 0) + 1
+        coaching = llm_advisor.coach_agents(
+            {
+                "review_kind": "agent_quality",
+                "agents_evaluated": len(states),
+                "agent_types": sorted(state.agent_type for state in states),
+                "agent_status_counts": status_counts,
+                "telemetry_gap_agent_types": sorted(gaps),
+                "decision_outcomes_measured": len(measured),
+                "decision_success_rate_percent": success_rate,
+                "constraints": {
+                    "advisory_only": True,
+                    "owner_approval_preserved": True,
+                    "personal_data_included": False,
+                    "secrets_included": False,
+                },
+            }
+        )
+        recommendations = [f"Restore telemetry for {x}" for x in gaps]
+        if not measured:
+            recommendations.append("Start measuring decision outcomes")
+        recommendations.extend(
+            str(item.get("change", ""))
+            for item in coaching.get("recommendations", [])
+            if isinstance(item, dict) and item.get("change")
+        )
+        return {
+            "agents_evaluated": len(states),
+            "data_gaps": gaps,
+            "decision_outcomes_measured": len(measured),
+            "decision_success_rate": success_rate,
+            "recommendations": recommendations,
+            "ai_coaching": coaching,
+            "evidence": [
+                {"decision_id": x.decision_id, "successful": x.successful}
+                for x in measured
+            ] + [{
+                "type": "agent_quality_research",
+                "provider": coaching.get("provider"),
+                "status": coaching.get("status"),
+                "automatic_changes_applied": False,
+            }],
+        }
 
 
 class SystemAdminAgent:

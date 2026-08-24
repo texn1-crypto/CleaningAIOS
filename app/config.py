@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     internal_api_url: str = ""
     worker_poll_seconds: float = 2.0
     scheduler_interval_seconds: int = 60
-    system_admin_interval_minutes: int = 5
+    system_admin_interval_minutes: int = 24 * 60
     system_admin_stale_task_minutes: int = 15
     ceo_review_interval_hours: int = 24
     owner_activity_report_interval_minutes: int = 30
@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
     anthropic_version: str = "2023-06-01"
     anthropic_timeout_seconds: int = 60
+    perplexity_api_key: str = ""
+    perplexity_base_url: str = "https://api.perplexity.ai"
+    perplexity_model: str = "sonar-pro"
+    perplexity_timeout_seconds: int = 60
     workspace_agent_trigger_id: str = ""
     workspace_agent_access_token: str = ""
     workspace_agent_timeout_seconds: int = 20

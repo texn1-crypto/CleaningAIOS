@@ -48,6 +48,21 @@ def provider_catalog() -> list[dict[str, Any]]:
             "forbidden": ["raw_personal_data", "banking_credentials", "unapproved_commitments", "application_tools"],
         },
         {
+            "capability": "agent_quality_research",
+            "provider": "perplexity_sonar",
+            "status": llm_advisor.provider_statuses()["perplexity_sonar"],
+            "routing": "meta_brain_research_coach",
+            "scopes": ["aggregate_agent_telemetry", "measured_outcome_counts"],
+            "forbidden": [
+                "raw_personal_data",
+                "raw_prompts",
+                "credentials",
+                "application_tools",
+                "automatic_prompt_changes",
+                "unapproved_actions",
+            ],
+        },
+        {
             "capability": "product_improvement",
             "provider": "chatgpt_workspace_agents",
             "status": workspace_agent_configuration_status(),

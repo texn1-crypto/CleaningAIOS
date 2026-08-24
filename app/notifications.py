@@ -155,6 +155,120 @@ def queue_owner_notification(
     return row
 
 
+def _approval_notifications(
+    db: Session,
+    approval_id: int,
+) -> list[OwnerNotification]:
+    since = now_utc() - timedelta(hours=max(settings.approval_ttl_hours, 1) + 1)
+    rows = db.scalars(
+        select(OwnerNotification)
+        .where(
+            OwnerNotification.channel == "telegram",
+            OwnerNotification.created_at >= since,
+        )
+        .order_by(OwnerNotification.id.desc())
+        .limit(500)
+    ).all()
+    return [
+        row
+        for row in rows
+        if isinstance(row.data, dict) and row.data.get("approval_id") == approval_id
+    ]
+
+
+def _existing_approval_notification(
+    db: Session,
+    approval_id: int,
+) -> OwnerNotification | None:
+    """Find a deliverable Telegram card before creating a generic fallback."""
+    return next(
+        (
+            row
+            for row in _approval_notifications(db, approval_id)
+            if row.status != "dead_letter"
+        ),
+        None,
+    )
+
+
+def queue_missing_approval_notifications(
+    db: Session,
+    *,
+    limit: int = 100,
+) -> list[OwnerNotification]:
+    """Reconcile pending approvals that never received a Telegram button card."""
+    current = now_utc()
+    approvals = db.scalars(
+        select(ApprovalRequest)
+        .where(
+            ApprovalRequest.status == "pending",
+            (
+                ApprovalRequest.expires_at.is_(None)
+                | (ApprovalRequest.expires_at > current)
+            ),
+        )
+        .order_by(ApprovalRequest.id)
+        .limit(max(1, min(limit, 500)))
+    ).all()
+    queued: list[OwnerNotification] = []
+    critical_actions = {
+        "financial",
+        "legal",
+        "contract",
+        "hr_final",
+        "tender_submission",
+    }
+    for approval in approvals:
+        linked = _approval_notifications(db, approval.id)
+        if any(row.status != "dead_letter" for row in linked):
+            continue
+        recoverable = next(
+            (
+                row
+                for row in linked
+                if row.status == "dead_letter"
+                and not (row.data or {}).get("approval_recovery_attempted")
+            ),
+            None,
+        )
+        if recoverable is not None:
+            recoverable.data = {
+                **(recoverable.data or {}),
+                "approval_recovery_attempted": True,
+            }
+            recoverable.status = "queued"
+            recoverable.attempts = 0
+            recoverable.last_error = ""
+            recoverable.available_at = current
+            recoverable.dead_lettered_at = None
+            queued.append(recoverable)
+            continue
+        if linked:
+            # One recovery is enough: a persistent transport failure must remain
+            # visible instead of producing an endless stream of replacement rows.
+            continue
+        queued.append(
+            queue_owner_notification(
+                db,
+                idempotency_key=f"approval-reconciliation:{approval.id}:telegram",
+                channel="telegram",
+                resource_type=approval.resource_type,
+                resource_id=approval.resource_id,
+                subject=f"Требуется согласование #{approval.id}",
+                body=(
+                    f"Действие: {approval.action_kind}\n"
+                    f"Объект: {approval.resource_type} #{approval.resource_id}\n"
+                    f"Причина: {approval.rationale or 'Нужно решение владельца.'}"
+                ),
+                data={"approval_id": approval.id, "approval_reconciled": True},
+                severity=(
+                    "critical" if approval.action_kind in critical_actions else "high"
+                ),
+            )
+        )
+    return queued
+
+
 def queue_critical_alert_for_event(
     db: Session,
     event: DomainEvent,
@@ -168,8 +282,11 @@ def queue_critical_alert_for_event(
         candidate = (event.payload or {}).get("approval_id")
         if isinstance(candidate, int):
             approval = db.get(ApprovalRequest, candidate)
-            if approval is None or approval.resource_type != "task":
+            if approval is None:
                 return None
+            existing = _existing_approval_notification(db, approval.id)
+            if existing is not None:
+                return existing
             approval_id = approval.id
             severity = (
                 "critical"
