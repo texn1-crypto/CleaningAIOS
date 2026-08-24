@@ -56,8 +56,10 @@ the report from PostgreSQL and the worker delivers it through the persisted owne
 notification queue. Set a value from 5 to 1440 minutes; delivery requires
 `TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID`.
 
-`SYSTEM_ADMIN_INTERVAL_MINUTES=1440` enables one structured system-administrator
-report per UTC-aligned day. Each cycle correlates failed/blocked/stale tasks, outbound-email failures,
+`SYSTEM_ADMIN_INTERVAL_MINUTES=5` keeps the structured system-administrator audit
+running continuously, while `SYSTEM_ADMIN_REPORT_INTERVAL_MINUTES=1440` deduplicates
+its owner summary to one Telegram report per UTC-aligned day. Each audit correlates
+failed/blocked/stale tasks, outbound-email failures,
 owner-notification transport failures, agent state, Request Analyst traces,
 audit records and deduplicated improvement handoffs. The agent records whether
 an incident is new, still not fixed, repeated, or cleared by a later check. It

@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     internal_api_url: str = ""
     worker_poll_seconds: float = 2.0
     scheduler_interval_seconds: int = 60
-    system_admin_interval_minutes: int = 24 * 60
+    system_admin_interval_minutes: int = 5
+    system_admin_report_interval_minutes: int = 24 * 60
     system_admin_stale_task_minutes: int = 15
     ceo_review_interval_hours: int = 24
     owner_activity_report_interval_minutes: int = 30

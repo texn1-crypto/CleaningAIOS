@@ -83,6 +83,14 @@ def schedule_cycle() -> None:
             min(settings.system_admin_interval_minutes, 24 * 60),
         )
         system_admin_window = owner_report_window(now, system_admin_interval)
+        system_admin_report_interval = max(
+            system_admin_interval,
+            min(settings.system_admin_report_interval_minutes, 24 * 60),
+        )
+        system_admin_report_window = owner_report_window(
+            now,
+            system_admin_report_interval,
+        )
         system_admin_title = (
             f"System administrator audit · {system_admin_window.isoformat()}"
         )
@@ -101,7 +109,7 @@ def schedule_cycle() -> None:
                     "stale_task_minutes": settings.system_admin_stale_task_minutes,
                     "scheduled_window_start": system_admin_window.isoformat(),
                     "notification_idempotency_key": (
-                        f"system-admin-report:{system_admin_window.isoformat()}:telegram"
+                        f"system-admin-report:{system_admin_report_window.isoformat()}:telegram"
                     ),
                 },
             )

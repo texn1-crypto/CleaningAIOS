@@ -2734,10 +2734,11 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         )
 
 
-def test_system_administrator_default_report_interval_is_daily():
+def test_system_administrator_runs_continuously_but_reports_daily():
     from app.config import Settings
 
-    assert Settings.model_fields["system_admin_interval_minutes"].default == 1440
+    assert Settings.model_fields["system_admin_interval_minutes"].default == 5
+    assert Settings.model_fields["system_admin_report_interval_minutes"].default == 1440
 
 
 def test_ceo_keeps_safe_deduplicated_development_backlog():
