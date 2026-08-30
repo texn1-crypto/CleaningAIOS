@@ -472,7 +472,17 @@ async def decisions(update: Update, _: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(text)
 
 
-async def approvals(update: Update, _: ContextTypes.DEFAULT_TYPE):
+async def approvals(
+    update: Update,
+    _: ContextTypes.DEFAULT_TYPE,
+    *,
+    bulk_requested: bool = False,
+):
+    if bulk_requested:
+        await update.effective_message.reply_text(
+            "Массовое одобрение не выполнено: каждое защищённое действие требует отдельного решения владельца. "
+            "Ниже показаны актуальные карточки с независимыми кнопками и описанием риска."
+        )
     data = await api(
         "POST",
         "/api/telegram/control/approvals",
@@ -1668,7 +1678,11 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif kind == "decisions":
             await decisions(update, context)
         elif kind == "approvals":
-            await approvals(update, context)
+            await approvals(
+                update,
+                context,
+                bulk_requested=bool(intent.get("bulk_requested")),
+            )
         elif kind == "records":
             await records(update, intent["record_type"], intent["title"])
         elif kind == "summary":

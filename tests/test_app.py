@@ -1591,6 +1591,102 @@ def test_pending_approvals_phrase_is_supported_and_audited(client, monkeypatch):
     )
 
 
+def test_bulk_approval_phrase_is_supported_but_never_bulk_executes(client, monkeypatch):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "Подтверди все что нужно подтвердить"
+    intent = understand_russian_message(message)
+    assert intent == {"kind": "approvals", "bulk_requested": True}
+    response = client.post(
+        "/api/request-analysis",
+        json={"message": message, "intent": intent},
+    )
+    assert response.status_code == 200
+    analysis = response.json()
+    assert analysis["classification"] == "supported"
+    assert analysis["fully_supported"] is True
+    assert analysis["improvement_id"] is None
+    assert any(
+        row["action"] == "request.analyzed"
+        and row["resource_id"] == str(analysis["analysis_task_id"])
+        for row in client.get("/api/audit").json()
+    )
+
+
+def test_telegram_bulk_approval_phrase_shows_individual_cards_without_decision(monkeypatch):
+    from app import bot
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {"classification": "supported", "improvement_id": None}
+        if path == "/api/telegram/control/approvals":
+            return {
+                "items": [
+                    {
+                        "id": 902,
+                        "action_kind": "contract_signing",
+                        "resource_type": "task",
+                        "resource_id": "81",
+                        "risk": "critical",
+                        "amount": None,
+                        "rationale": "Нужно отдельное решение владельца",
+                        "expires_at": None,
+                        "callbacks": {
+                            "approve": "tc2.approve",
+                            "reject": "tc2.reject",
+                            "request_changes": "tc2.changes",
+                        },
+                    }
+                ]
+            }
+        raise AssertionError(path)
+
+    class Message:
+        text = "Подтверди все что нужно подтвердить"
+        reply_to_message = None
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Chat:
+        id = 456
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+        effective_chat = Chat()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+
+    replies = Update.effective_message.replies
+    assert len(replies) == 2
+    assert "Массовое одобрение не выполнено" in replies[0][0]
+    assert "#902 · contract_signing" in replies[1][0]
+    callbacks = [
+        button.callback_data
+        for row in replies[1][1]["reply_markup"].inline_keyboard
+        for button in row
+    ]
+    assert callbacks == ["tc2.approve", "tc2.reject", "tc2.changes"]
+    assert [path for _, path, _ in calls] == [
+        "/api/request-analysis",
+        "/api/telegram/control/approvals",
+    ]
+
+
 def test_telegram_pending_approvals_phrase_returns_actual_cards(monkeypatch):
     from app import bot
 

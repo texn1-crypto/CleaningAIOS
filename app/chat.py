@@ -219,6 +219,15 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
             "protected": False,
         }
 
+    if _contains(
+        text,
+        "подтверди все", "подтвердить все", "одобри все", "одобрить все",
+    ) and _contains(text, "нужно", "надо", "подтверд", "одобр"):
+        return {
+            "kind": "approvals",
+            "bulk_requested": True,
+        }
+
     visual_complaint = _contains(
         text,
         "повтор", "одинаков", "те же фото", "те же картин", "плохие фото",

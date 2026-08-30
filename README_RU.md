@@ -80,6 +80,11 @@ final HR decisions and bulk outreach are blocked until the owner decides a dedic
 approval request. Every agent execution is recorded in `agent_runs`; durable company
 facts live in `company_knowledge` instead of prompts or chat history.
 
+Фраза в Telegram «Подтверди всё, что нужно подтвердить» открывает актуальные карточки
+approval. Массовое решение не выполняется: бот показывает риск и отдельные подписанные
+кнопки «Одобрить», «Отклонить» и «Запросить изменения» для каждого действия. Это
+сохраняет RBAC, audit log и независимое осознанное решение владельца.
+
 For tenders, `POST /api/tenders/{id}/evaluate` performs evidence-based base and
 conservative economics, working-capital and legal-risk checks. A viable result
 creates a protected `tender_participation` task. Approval of that task permits only
