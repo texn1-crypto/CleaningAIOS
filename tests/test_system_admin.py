@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base
 from app.models import (
     AgentRun,
+    ApprovalRequest,
     AuditLog,
     ImprovementRequest,
     OutboundMessage,
@@ -180,6 +181,99 @@ def test_system_admin_does_not_treat_owner_approval_as_technical_failure(monkeyp
             )
         )
         db.commit()
+        report = system_admin.run_system_admin_audit(db, now=now)
+        assert report["summary"]["active"] == 0
+
+
+def test_system_admin_resolves_historical_notification_failure_after_success(monkeypatch):
+    from app import system_admin
+
+    session_factory = _session_factory()
+    now = datetime(2040, 1, 1, 12, 0)
+    monkeypatch.setattr(
+        system_admin,
+        "retry_workspace_handoff",
+        lambda row: {"status": "credentials_required"},
+    )
+    with session_factory() as db:
+        failed = OwnerNotification(
+            idempotency_key="historical-telegram-failure",
+            channel="telegram",
+            recipient="owner",
+            status="dead_letter",
+            last_error="401 Unauthorized",
+            dead_lettered_at=now,
+            created_at=now,
+        )
+        db.add(failed)
+        db.commit()
+
+        detected = system_admin.run_system_admin_audit(db, now=now)
+        db.commit()
+        assert detected["summary"]["active"] == 1
+        improvement = db.scalar(select(ImprovementRequest))
+        assert improvement.status == "queued"
+
+        db.add(
+            OwnerNotification(
+                idempotency_key="later-telegram-success",
+                channel="telegram",
+                recipient="owner",
+                status="sent",
+                sent_at=now + timedelta(minutes=5),
+                created_at=now + timedelta(minutes=5),
+            )
+        )
+        db.commit()
+
+        recovered = system_admin.run_system_admin_audit(
+            db,
+            now=now + timedelta(minutes=10),
+        )
+        db.commit()
+        assert recovered["summary"]["active"] == 0
+        assert recovered["summary"]["resolved"] == 1
+        assert improvement.status == "implemented"
+        assert improvement.test_evidence[-1]["result"] == "condition_clear"
+        assert failed.status == "dead_letter"
+        assert db.scalar(
+            select(func.count()).select_from(AuditLog).where(
+                AuditLog.action == "system.incident_resolved"
+            )
+        ) == 1
+
+
+def test_system_admin_ignores_obsolete_approval_notification(monkeypatch):
+    from app import system_admin
+
+    session_factory = _session_factory()
+    now = datetime(2040, 1, 1, 12, 0)
+    monkeypatch.setattr(
+        system_admin,
+        "retry_workspace_handoff",
+        lambda row: {"status": "credentials_required"},
+    )
+    with session_factory() as db:
+        approval = ApprovalRequest(
+            action_kind="outreach_send",
+            status="approved",
+            expires_at=now + timedelta(hours=1),
+        )
+        db.add(approval)
+        db.flush()
+        db.add(
+            OwnerNotification(
+                idempotency_key="obsolete-approval-card",
+                channel="telegram",
+                recipient="owner",
+                status="waiting_configuration",
+                last_error="Approval callback tokens are unavailable",
+                data={"approval_id": approval.id},
+                created_at=now - timedelta(hours=1),
+            )
+        )
+        db.commit()
+
         report = system_admin.run_system_admin_audit(db, now=now)
         assert report["summary"]["active"] == 0
 

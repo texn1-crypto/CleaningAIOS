@@ -12,6 +12,7 @@ from .improvements import build_codex_prompt, retry_workspace_handoff
 from .models import (
     AgentRun,
     AgentState,
+    ApprovalRequest,
     AuditLog,
     ImprovementRequest,
     MailTransportState,
@@ -81,6 +82,32 @@ def _is_owner_approval_wait(task: Task, transition: TaskTransition | None) -> bo
             or (transition and transition.reason == "owner_approval_required")
         )
     )
+
+
+def _notification_failure_is_active(
+    db: Session,
+    row: OwnerNotification,
+    *,
+    now: datetime,
+    latest_sent_at: datetime | None,
+) -> bool:
+    data = row.data or {}
+    approval_id = data.get("approval_id")
+    if approval_id:
+        try:
+            approval_key = int(approval_id)
+        except (TypeError, ValueError):
+            return True
+        approval = db.get(ApprovalRequest, approval_key)
+        return bool(
+            approval
+            and approval.status == "pending"
+            and (approval.expires_at is None or approval.expires_at > now)
+        )
+    if row.status != "dead_letter" or latest_sent_at is None:
+        return True
+    failed_at = row.dead_lettered_at or row.created_at
+    return latest_sent_at <= failed_at
 
 
 def _incident(
@@ -219,27 +246,41 @@ def collect_incidents(
             )
         )
 
-    notification_groups = db.execute(
-        select(
-            OwnerNotification.channel,
-            OwnerNotification.status,
-            OwnerNotification.last_error,
-            func.count(OwnerNotification.id),
+    latest_sent_by_channel = {
+        str(channel): sent_at
+        for channel, sent_at in db.execute(
+            select(
+                OwnerNotification.channel,
+                func.max(OwnerNotification.sent_at),
+            )
+            .where(OwnerNotification.status == "sent")
+            .group_by(OwnerNotification.channel)
+        ).all()
+        if sent_at is not None
+    }
+    failed_notifications = db.scalars(
+        select(OwnerNotification).where(
+            OwnerNotification.status.in_(NOTIFICATION_FAILURE_STATUSES)
         )
-        .where(OwnerNotification.status.in_(NOTIFICATION_FAILURE_STATUSES))
-        .group_by(OwnerNotification.channel, OwnerNotification.status, OwnerNotification.last_error)
     ).all()
     channel_groups: dict[str, dict[str, Any]] = {}
-    for channel, status, error, count in notification_groups:
-        channel_key = str(channel or "unknown")
+    for row in failed_notifications:
+        channel_key = str(row.channel or "unknown")
+        if not _notification_failure_is_active(
+            db,
+            row,
+            now=now,
+            latest_sent_at=latest_sent_by_channel.get(channel_key),
+        ):
+            continue
         group = channel_groups.setdefault(
             channel_key,
             {"count": 0, "statuses": set(), "errors": set()},
         )
-        group["count"] += int(count)
-        group["statuses"].add(str(status))
-        if error:
-            group["errors"].add(_safe_text(error, 500))
+        group["count"] += 1
+        group["statuses"].add(str(row.status))
+        if row.last_error:
+            group["errors"].add(_safe_text(row.last_error, 500))
     for channel, group in channel_groups.items():
         errors = sorted(group["errors"])
         incidents.append(
