@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1613,6 +1614,85 @@ def test_bulk_approval_phrase_is_supported_but_never_bulk_executes(client, monke
         and row["resource_id"] == str(analysis["analysis_task_id"])
         for row in client.get("/api/audit").json()
     )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Подтверди все три базами",
+        "Подтверди все задачи",
+        "Подтверди все",
+    ],
+)
+def test_short_bulk_approval_phrases_are_supported_without_bulk_decision(
+    client,
+    monkeypatch,
+    message,
+):
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    intent = understand_russian_message(message)
+    assert intent == {"kind": "approvals", "bulk_requested": True}
+    analysis = client.post(
+        "/api/request-analysis",
+        json={"message": message, "intent": intent},
+    ).json()
+    assert analysis["classification"] == "supported"
+    assert analysis["fully_supported"] is True
+    assert analysis["improvement_id"] is None
+
+
+def test_management_company_contact_base_phrase_returns_existing_records(client, monkeypatch):
+    from app import bot
+    from app.chat import understand_russian_message
+
+    message = "Представь мне базу которую ты сам собрал контактов управляющих компаний"
+    intent = understand_russian_message(message)
+    assert intent == {
+        "kind": "records",
+        "record_type": "management_company",
+        "title": "🏢 База управляющих компаний и ТСЖ",
+    }
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "/api/request-analysis":
+            return {
+                "classification": "supported",
+                "fully_supported": True,
+                "improvement_id": None,
+                "resolved_intent": intent,
+            }
+        if path == "/api/records?record_type=management_company":
+            return [{"id": 17, "title": "УК Тест", "status": "active"}]
+        raise AssertionError(path)
+
+    class Message:
+        text = message
+        reply_to_message = None
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), SimpleNamespace(user_data={})))
+    assert "УК Тест" in Update.effective_message.replies[-1][0]
+    assert not any(path == "/api/tasks" for _, path, _ in calls)
 
 
 def test_telegram_bulk_approval_phrase_shows_individual_cards_without_decision(monkeypatch):

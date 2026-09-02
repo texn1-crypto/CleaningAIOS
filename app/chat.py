@@ -219,6 +219,17 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
             "protected": False,
         }
 
+    if (
+        _contains(text, "управляющ", "ук", "тсж")
+        and _contains(text, "баз", "контакт")
+        and _contains(text, "представ", "покаж", "вывед", "дай")
+    ):
+        return {
+            "kind": "records",
+            "record_type": "management_company",
+            "title": "🏢 База управляющих компаний и ТСЖ",
+        }
+
     if _contains(
         text,
         "подтверди все", "подтвердить все", "одобри все", "одобрить все",
