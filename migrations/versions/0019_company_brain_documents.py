@@ -15,6 +15,13 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    tables = set(sa.inspect(bind).get_table_names())
+    existing = {"knowledge_documents", "knowledge_chunks"} & tables
+    if existing == {"knowledge_documents", "knowledge_chunks"}:
+        return
+    if existing:
+        raise RuntimeError("Partial Company Brain document schema already exists")
     op.create_table(
         "knowledge_documents",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -95,6 +102,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    tables = set(sa.inspect(bind).get_table_names())
+    existing = {"knowledge_documents", "knowledge_chunks"} & tables
+    if not existing:
+        return
+    if existing != {"knowledge_documents", "knowledge_chunks"}:
+        raise RuntimeError("Partial Company Brain document schema cannot be downgraded safely")
     op.drop_index("ix_knowledge_chunks_content_hash", table_name="knowledge_chunks")
     op.drop_index("ix_knowledge_chunks_document_id", table_name="knowledge_chunks")
     op.drop_table("knowledge_chunks")
