@@ -542,6 +542,13 @@ class MetaBrainAgent:
                 },
             }
         )
+        from .improvements import record_agent_coaching_improvements
+
+        coaching_improvements = record_agent_coaching_improvements(
+            db,
+            coaching,
+            limit=settings.perplexity_max_improvements_per_cycle,
+        )
         recommendations = [f"Restore telemetry for {x}" for x in gaps]
         if not measured:
             recommendations.append("Start measuring decision outcomes")
@@ -557,6 +564,7 @@ class MetaBrainAgent:
             "decision_success_rate": success_rate,
             "recommendations": recommendations,
             "ai_coaching": coaching,
+            "coaching_improvements": coaching_improvements,
             "evidence": [
                 {"decision_id": x.decision_id, "successful": x.successful}
                 for x in measured

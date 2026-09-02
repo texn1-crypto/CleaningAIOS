@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     perplexity_model: str = "sonar-pro"
     perplexity_timeout_seconds: int = 60
     perplexity_coach_interval_minutes: int = 30
+    perplexity_max_improvements_per_cycle: int = 3
     workspace_agent_trigger_id: str = ""
     workspace_agent_access_token: str = ""
     workspace_agent_timeout_seconds: int = 20

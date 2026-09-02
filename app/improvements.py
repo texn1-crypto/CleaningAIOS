@@ -396,3 +396,73 @@ def record_execution_gap(db: Session, task: Task, reason: str, *, credentials_re
         "handoff_status": handoff["status"],
         "responsible_party": "owner_configuration" if credentials_required else "system_codex",
     }
+
+
+def record_agent_coaching_improvements(
+    db: Session,
+    coaching: dict[str, Any],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Turn bounded, advisory Perplexity findings into a deduplicated Codex backlog."""
+    if coaching.get("status") != "succeeded":
+        return []
+    recorded: list[dict[str, Any]] = []
+    for item in (coaching.get("recommendations") or [])[: max(0, min(limit, 10))]:
+        if not isinstance(item, dict):
+            continue
+        agent_type = re.sub(r"[^a-z0-9_-]", "", str(item.get("agent_type", "general")).lower())[:64] or "general"
+        change = redact_sensitive_text(str(item.get("change", "")).strip())[:2000]
+        validation = redact_sensitive_text(str(item.get("validation", "")).strip())[:2000]
+        expected_effect = redact_sensitive_text(str(item.get("expected_effect", "")).strip())[:2000]
+        if not change or not validation:
+            continue
+        signature = json.dumps(
+            {"provider": "perplexity_sonar", "agent_type": agent_type, "change": _normalize(change), "validation": _normalize(validation)},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        dedup_key = hashlib.sha256(signature.encode()).hexdigest()
+        row = db.scalar(select(ImprovementRequest).where(ImprovementRequest.dedup_key == dedup_key))
+        if row:
+            row.occurrence_count += 1
+            row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        else:
+            request_text = f"Perplexity agent-quality recommendation for {agent_type}: {change}"
+            assessment = {
+                "reason": expected_effect or "Research-grounded agent quality improvement",
+                "suggested_function": change,
+                "missing_capabilities": [f"{agent_type}_quality_improvement"],
+                "acceptance_criteria": [
+                    change,
+                    expected_effect or "The change produces a measurable improvement without weakening safety controls.",
+                    "RBAC, audit log and owner approval gates remain enforced.",
+                ],
+                "test_plan": [
+                    validation,
+                    "Add a deterministic regression test for the affected agent workflow.",
+                    "Run the complete test suite and production health checks before implementation status is set.",
+                ],
+            }
+            row = ImprovementRequest(
+                dedup_key=dedup_key,
+                source_channel="system",
+                source_user="perplexity_agent_coach",
+                request_text=request_text,
+                intent={"kind": "agent_quality_improvement", "agent_type": agent_type, "advisory_only": True},
+                capability_score=0.5,
+                classification="agent_quality_gap",
+                reason=assessment["reason"],
+                missing_capabilities=assessment["missing_capabilities"],
+                suggested_function=change,
+                codex_prompt=build_codex_prompt(request_text, assessment),
+                acceptance_criteria=assessment["acceptance_criteria"],
+                test_plan=assessment["test_plan"],
+                status="queued",
+                handoff_status="pending",
+            )
+            db.add(row)
+            db.flush()
+            row.codex_prompt = build_codex_prompt(request_text, assessment, row.id)
+        recorded.append({"id": row.id, "status": row.status, "agent_type": agent_type})
+    return recorded

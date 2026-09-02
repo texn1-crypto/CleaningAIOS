@@ -899,6 +899,8 @@ def test_meta_brain_sends_only_aggregate_telemetry_to_agent_coach(client, monkey
             "recommendations": [{
                 "agent_type": "sales",
                 "change": "Добавить тест маршрутизации",
+                "expected_effect": "Снизить число ошибочных маршрутов",
+                "validation": "Проверить маршрутизацию на фиксированном наборе запросов",
                 "requires_human_review": True,
             }],
         }
@@ -915,6 +917,22 @@ def test_meta_brain_sends_only_aggregate_telemetry_to_agent_coach(client, monkey
     assert captured["constraints"]["secrets_included"] is False
     assert "last_error" not in captured
     assert "metrics" not in captured
+    assert len(result["coaching_improvements"]) == 1
+    improvement_id = result["coaching_improvements"][0]["id"]
+    improvements = client.get("/api/improvements?status=queued").json()
+    improvement = next(row for row in improvements if row["id"] == improvement_id)
+    assert improvement["source_user"] == "perplexity_agent_coach"
+    assert improvement["intent"]["advisory_only"] is True
+    assert "Добавить тест маршрутизации" in improvement["request_text"]
+
+    repeated = client.post(
+        "/api/tasks",
+        json={"title": "Meta Brain repeated aggregate coach test", "agent_type": "meta_brain"},
+    ).json()
+    repeated_result = client.post(f"/api/tasks/{repeated['id']}/run").json()["result"]
+    assert repeated_result["coaching_improvements"][0]["id"] == improvement_id
+    refreshed = client.get("/api/improvements?status=queued").json()
+    assert next(row for row in refreshed if row["id"] == improvement_id)["occurrence_count"] == 2
 
 
 def test_research_agent_runs_real_collector_contract(client, monkeypatch):
