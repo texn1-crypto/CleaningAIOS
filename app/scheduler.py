@@ -169,6 +169,47 @@ def schedule_cycle() -> None:
             db.add(task)
             db.flush()
             record_task_created(db, task, actor="scheduler", reason="recurring_owner_activity_report")
+        perplexity_interval = max(
+            5,
+            min(settings.perplexity_coach_interval_minutes, 24 * 60),
+        )
+        perplexity_window = owner_report_window(now, perplexity_interval)
+        perplexity_title = f"Perplexity agent coaching · {perplexity_window.isoformat()}"
+        perplexity_active = db.scalar(
+            select(Task.id).where(
+                Task.agent_type == "meta_brain",
+                Task.status.in_(["open", "queued", "running"]),
+                Task.title.like("Perplexity agent coaching · %"),
+            )
+        )
+        if (
+            settings.perplexity_api_key
+            and not perplexity_active
+            and not db.scalar(select(Task.id).where(Task.title == perplexity_title))
+        ):
+            task = Task(
+                title=perplexity_title,
+                agent_type="meta_brain",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={
+                    "action": "perplexity_agent_coaching",
+                    "source": "scheduler",
+                    "advisory_only": True,
+                    "period_minutes": perplexity_interval,
+                    "scheduled_window_start": perplexity_window.isoformat(),
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(
+                db,
+                task,
+                actor="scheduler",
+                reason="recurring_perplexity_agent_coaching",
+            )
         active = db.scalar(select(Task.id).where(Task.agent_type == "ceo", Task.status.in_(["open", "queued", "running"])))
         recent = db.scalar(select(Task.id).where(Task.agent_type == "ceo", Task.created_at >= now - timedelta(hours=settings.ceo_review_interval_hours)))
         if not active and not recent:

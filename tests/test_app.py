@@ -2953,6 +2953,8 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
     monkeypatch.setattr(scheduler.settings, "owner_activity_report_interval_minutes", 30)
     monkeypatch.setattr(scheduler.settings, "tender_sources", "https://feed.example/tenders")
     monkeypatch.setattr(scheduler.settings, "tender_monitor_interval_minutes", 60)
+    monkeypatch.setattr(scheduler.settings, "perplexity_api_key", "configured")
+    monkeypatch.setattr(scheduler.settings, "perplexity_coach_interval_minutes", 30)
 
     scheduler.schedule_cycle()
     scheduler.schedule_cycle()
@@ -2971,6 +2973,9 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         system_admin_audits = db.scalars(
             select(Task).where(Task.title.like("System administrator audit · %"))
         ).all()
+        perplexity_coaching = db.scalars(
+            select(Task).where(Task.title.like("Perplexity agent coaching · %"))
+        ).all()
         development = [
             row for row in all_tasks if row.payload.get("origin") == "ceo_continuous_backlog"
         ]
@@ -2984,6 +2989,10 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         assert system_admin_audits[0].payload["notify_owner"] is True
         assert tender_monitors[0].payload["collection"] == "tenders"
         assert tender_monitors[0].payload["sources"] == ["https://feed.example/tenders"]
+        assert len(perplexity_coaching) == 1
+        assert perplexity_coaching[0].agent_type == "meta_brain"
+        assert perplexity_coaching[0].payload["advisory_only"] is True
+        assert perplexity_coaching[0].payload["period_minutes"] == 30
         assert len(development) == 4
         assert {row.payload["scope"] for row in development} == {
             "website",
