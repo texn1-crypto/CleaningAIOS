@@ -7,6 +7,13 @@ from urllib.parse import urlparse
 import httpx
 
 from .config import settings
+from .prompt_registry import (
+    PromptDeployment,
+    PromptRelease,
+    PromptSelection,
+    deployment_catalog,
+    select_prompt,
+)
 
 
 BUSINESS_REVIEW_SCHEMA: dict[str, Any] = {
@@ -195,6 +202,82 @@ suppression, unsubscribe, rate limits, CI or staged rollout. Mark owner_action_r
 concrete configuration, account, budget, credential or business decision supported by supplied facts.
 Do not claim that code, infrastructure, accounts or business actions were changed. Return only the
 requested JSON object in concise Russian."""
+
+
+BUSINESS_REVIEW_PROMPT_V2 = SYSTEM_PROMPT + """
+Distinguish observed facts from inference, state material data gaps explicitly, and never
+invent a metric that is absent from the snapshot. Prefer one reversible recommendation
+with a named validation signal over several speculative actions."""
+
+REQUEST_ANALYST_PROMPT_V2 = REQUEST_ANALYST_PROMPT + """
+Treat a capability as executable only when the catalog identifies a real entry point,
+persistence path, authorization boundary and observable result. A vague intent match is
+not sufficient evidence that the request can be completed."""
+
+AGENT_COACH_PROMPT_V2 = AGENT_COACH_PROMPT + """
+For every recommendation identify one baseline signal and one post-change signal. Prefer
+reversible changes that can first run in shadow or candidate mode."""
+
+EVOLUTION_RESEARCH_PROMPT_V2 = EVOLUTION_RESEARCH_PROMPT + """
+Reject recommendations based only on popularity. Prefer maintained sources with a clear
+license and explain the smallest locally testable adaptation instead of proposing a broad
+rewrite."""
+
+
+PROMPT_DEPLOYMENTS: dict[str, PromptDeployment] = {
+    "business_review": PromptDeployment(
+        stable=PromptRelease(
+            "business_review", "1.0.0", SYSTEM_PROMPT, "cleaning_business_review"
+        ),
+        candidate=PromptRelease(
+            "business_review", "2.0.0", BUSINESS_REVIEW_PROMPT_V2, "cleaning_business_review"
+        ),
+    ),
+    "request_analysis": PromptDeployment(
+        stable=PromptRelease(
+            "request_analysis", "1.0.0", REQUEST_ANALYST_PROMPT, "cleaning_request_analysis"
+        ),
+        candidate=PromptRelease(
+            "request_analysis", "2.0.0", REQUEST_ANALYST_PROMPT_V2, "cleaning_request_analysis"
+        ),
+    ),
+    "agent_coaching": PromptDeployment(
+        stable=PromptRelease(
+            "agent_coaching", "1.0.0", AGENT_COACH_PROMPT, "cleaning_agent_coaching"
+        ),
+        candidate=PromptRelease(
+            "agent_coaching", "2.0.0", AGENT_COACH_PROMPT_V2, "cleaning_agent_coaching"
+        ),
+    ),
+    "evolution_research": PromptDeployment(
+        stable=PromptRelease(
+            "evolution_research", "1.0.0", EVOLUTION_RESEARCH_PROMPT, "cleaning_evolution_research"
+        ),
+        candidate=PromptRelease(
+            "evolution_research", "2.0.0", EVOLUTION_RESEARCH_PROMPT_V2, "cleaning_evolution_research"
+        ),
+    ),
+}
+
+
+def _prompt(operation: str, subject: Any) -> PromptSelection:
+    return select_prompt(
+        PROMPT_DEPLOYMENTS[operation],
+        subject=subject,
+        candidate_rollout_percent=settings.prompt_candidate_rollout_percent,
+        rollout_seed=settings.prompt_rollout_seed,
+    )
+
+
+def prompt_deployment_catalog() -> dict[str, Any]:
+    return deployment_catalog(
+        PROMPT_DEPLOYMENTS,
+        candidate_rollout_percent=settings.prompt_candidate_rollout_percent,
+    )
+
+
+def _prompt_result(result: dict[str, Any], selection: PromptSelection) -> dict[str, Any]:
+    return {**result, "prompt": selection.metadata()}
 
 
 def _response_text(body: dict[str, Any]) -> str:
@@ -419,19 +502,23 @@ class OpenAIResponsesAdvisor:
         return "configured"
 
     def review(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        prompt = _prompt("business_review", snapshot)
         status = self.configuration_status()
         if status != "configured":
-            return {
-                "status": status,
-                "provider": self.provider,
-                "model": settings.llm_model or None,
-                "recommendations": [],
-            }
+            return _prompt_result(
+                {
+                    "status": status,
+                    "provider": self.provider,
+                    "model": settings.llm_model or None,
+                    "recommendations": [],
+                },
+                prompt,
+            )
 
         payload: dict[str, Any] = {
             "model": settings.llm_model,
             "input": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": prompt.release.content},
                 {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False, default=str)},
             ],
             "text": {
@@ -460,31 +547,46 @@ class OpenAIResponsesAdvisor:
             if body.get("status") == "incomplete":
                 raise ValueError("LLM response was incomplete")
             clean = _clean_business_review(json.loads(_response_text(body)))
-            return {
-                "status": "succeeded",
-                "provider": self.provider,
-                "model": body.get("model", settings.llm_model),
-                **clean,
-                "usage": body.get("usage", {}),
-            }
+            return _prompt_result(
+                {
+                    "status": "succeeded",
+                    "provider": self.provider,
+                    "model": body.get("model", settings.llm_model),
+                    **clean,
+                    "usage": body.get("usage", {}),
+                },
+                prompt,
+            )
         except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            return {
-                "status": "unavailable",
-                "provider": self.provider,
-                "model": settings.llm_model,
-                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
-                "recommendations": [],
-            }
+            return _prompt_result(
+                {
+                    "status": "unavailable",
+                    "provider": self.provider,
+                    "model": settings.llm_model,
+                    "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                    "recommendations": [],
+                },
+                prompt,
+            )
 
     def analyze_request(self, message: str, intent: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+        prompt_subject = {
+            "request": message,
+            "intent": intent,
+            "deterministic_baseline": baseline,
+        }
+        prompt = _prompt("request_analysis", prompt_subject)
         status = self.configuration_status()
         if status != "configured":
-            return {"status": status, "provider": self.provider, "model": settings.llm_model or None}
+            return _prompt_result(
+                {"status": status, "provider": self.provider, "model": settings.llm_model or None},
+                prompt,
+            )
         payload: dict[str, Any] = {
             "model": settings.llm_model,
             "input": [
-                {"role": "system", "content": REQUEST_ANALYST_PROMPT},
-                {"role": "user", "content": json.dumps({"request": message, "intent": intent, "deterministic_baseline": baseline}, ensure_ascii=False, default=str)},
+                {"role": "system", "content": prompt.release.content},
+                {"role": "user", "content": json.dumps(prompt_subject, ensure_ascii=False, default=str)},
             ],
             "text": {"format": {"type": "json_schema", "name": "cleaning_request_analysis", "strict": True, "schema": REQUEST_ANALYSIS_SCHEMA}},
             "max_output_tokens": settings.llm_max_output_tokens,
@@ -503,20 +605,26 @@ class OpenAIResponsesAdvisor:
             if body.get("status") == "incomplete":
                 raise ValueError("LLM response was incomplete")
             clean = _clean_request_analysis(json.loads(_response_text(body)))
-            return {
-                "status": "succeeded",
-                "provider": self.provider,
-                "model": body.get("model", settings.llm_model),
-                **clean,
-                "usage": body.get("usage", {}),
-            }
+            return _prompt_result(
+                {
+                    "status": "succeeded",
+                    "provider": self.provider,
+                    "model": body.get("model", settings.llm_model),
+                    **clean,
+                    "usage": body.get("usage", {}),
+                },
+                prompt,
+            )
         except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            return {
-                "status": "unavailable",
-                "provider": self.provider,
-                "model": settings.llm_model,
-                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
-            }
+            return _prompt_result(
+                {
+                    "status": "unavailable",
+                    "provider": self.provider,
+                    "model": settings.llm_model,
+                    "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                },
+                prompt,
+            )
 
 
 class AnthropicMessagesAdvisor:
@@ -554,57 +662,86 @@ class AnthropicMessagesAdvisor:
             return response.json()
 
     def review(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        prompt = _prompt("business_review", snapshot)
         status = self.configuration_status()
         if status != "configured":
-            return {"status": status, "provider": self.provider, "model": settings.anthropic_model or None, "recommendations": []}
+            return _prompt_result(
+                {"status": status, "provider": self.provider, "model": settings.anthropic_model or None, "recommendations": []},
+                prompt,
+            )
         try:
-            body = self._request(system=SYSTEM_PROMPT, content=snapshot, schema=BUSINESS_REVIEW_SCHEMA)
+            body = self._request(
+                system=prompt.release.content,
+                content=snapshot,
+                schema=BUSINESS_REVIEW_SCHEMA,
+            )
             if body.get("stop_reason") == "max_tokens":
                 raise ValueError("Claude response was incomplete")
             clean = _clean_business_review(json.loads(_anthropic_response_text(body)))
-            return {
-                "status": "succeeded",
-                "provider": self.provider,
-                "model": body.get("model", settings.anthropic_model),
-                **clean,
-                "usage": body.get("usage", {}),
-            }
+            return _prompt_result(
+                {
+                    "status": "succeeded",
+                    "provider": self.provider,
+                    "model": body.get("model", settings.anthropic_model),
+                    **clean,
+                    "usage": body.get("usage", {}),
+                },
+                prompt,
+            )
         except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            return {
-                "status": "unavailable",
-                "provider": self.provider,
-                "model": settings.anthropic_model,
-                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
-                "recommendations": [],
-            }
+            return _prompt_result(
+                {
+                    "status": "unavailable",
+                    "provider": self.provider,
+                    "model": settings.anthropic_model,
+                    "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                    "recommendations": [],
+                },
+                prompt,
+            )
 
     def analyze_request(self, message: str, intent: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+        prompt_subject = {
+            "request": message,
+            "intent": intent,
+            "deterministic_baseline": baseline,
+        }
+        prompt = _prompt("request_analysis", prompt_subject)
         status = self.configuration_status()
         if status != "configured":
-            return {"status": status, "provider": self.provider, "model": settings.anthropic_model or None}
+            return _prompt_result(
+                {"status": status, "provider": self.provider, "model": settings.anthropic_model or None},
+                prompt,
+            )
         try:
             body = self._request(
-                system=REQUEST_ANALYST_PROMPT,
-                content={"request": message, "intent": intent, "deterministic_baseline": baseline},
+                system=prompt.release.content,
+                content=prompt_subject,
                 schema=REQUEST_ANALYSIS_SCHEMA,
             )
             if body.get("stop_reason") == "max_tokens":
                 raise ValueError("Claude response was incomplete")
             clean = _clean_request_analysis(json.loads(_anthropic_response_text(body)))
-            return {
-                "status": "succeeded",
-                "provider": self.provider,
-                "model": body.get("model", settings.anthropic_model),
-                **clean,
-                "usage": body.get("usage", {}),
-            }
+            return _prompt_result(
+                {
+                    "status": "succeeded",
+                    "provider": self.provider,
+                    "model": body.get("model", settings.anthropic_model),
+                    **clean,
+                    "usage": body.get("usage", {}),
+                },
+                prompt,
+            )
         except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            return {
-                "status": "unavailable",
-                "provider": self.provider,
-                "model": settings.anthropic_model,
-                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
-            }
+            return _prompt_result(
+                {
+                    "status": "unavailable",
+                    "provider": self.provider,
+                    "model": settings.anthropic_model,
+                    "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                },
+                prompt,
+            )
 
 
 class PerplexityAgentCoach:
@@ -620,18 +757,22 @@ class PerplexityAgentCoach:
         return "configured"
 
     def coach_agents(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        prompt = _prompt("agent_coaching", snapshot)
         status = self.configuration_status()
         if status != "configured":
-            return {
-                "status": status,
-                "provider": self.provider,
-                "model": settings.perplexity_model or None,
-                "recommendations": [],
-            }
+            return _prompt_result(
+                {
+                    "status": status,
+                    "provider": self.provider,
+                    "model": settings.perplexity_model or None,
+                    "recommendations": [],
+                },
+                prompt,
+            )
         payload = {
             "model": settings.perplexity_model,
             "messages": [
-                {"role": "system", "content": AGENT_COACH_PROMPT},
+                {"role": "system", "content": prompt.release.content},
                 {
                     "role": "user",
                     "content": json.dumps(snapshot, ensure_ascii=False, default=str),
@@ -661,36 +802,46 @@ class PerplexityAgentCoach:
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("Perplexity response did not contain message content")
             clean = _clean_agent_coaching(json.loads(content))
-            return {
-                "status": "succeeded",
-                "provider": self.provider,
-                "model": body.get("model", settings.perplexity_model),
-                **clean,
-                "usage": body.get("usage", {}),
-                "citations": [str(item)[:1000] for item in body.get("citations", [])[:10]],
-            }
+            return _prompt_result(
+                {
+                    "status": "succeeded",
+                    "provider": self.provider,
+                    "model": body.get("model", settings.perplexity_model),
+                    **clean,
+                    "usage": body.get("usage", {}),
+                    "citations": [str(item)[:1000] for item in body.get("citations", [])[:10]],
+                },
+                prompt,
+            )
         except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            return {
-                "status": "unavailable",
-                "provider": self.provider,
-                "model": settings.perplexity_model,
-                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
-                "recommendations": [],
-            }
+            return _prompt_result(
+                {
+                    "status": "unavailable",
+                    "provider": self.provider,
+                    "model": settings.perplexity_model,
+                    "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                    "recommendations": [],
+                },
+                prompt,
+            )
 
     def research_evolution(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        prompt = _prompt("evolution_research", snapshot)
         status = self.configuration_status()
         if status != "configured":
-            return {
-                "status": status,
-                "provider": self.provider,
-                "model": settings.perplexity_model or None,
-                "recommendations": [],
-            }
+            return _prompt_result(
+                {
+                    "status": status,
+                    "provider": self.provider,
+                    "model": settings.perplexity_model or None,
+                    "recommendations": [],
+                },
+                prompt,
+            )
         payload = {
             "model": settings.perplexity_model,
             "messages": [
-                {"role": "system", "content": EVOLUTION_RESEARCH_PROMPT},
+                {"role": "system", "content": prompt.release.content},
                 {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False, default=str)},
             ],
             "response_format": {
@@ -717,22 +868,28 @@ class PerplexityAgentCoach:
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("Perplexity response did not contain message content")
             clean = _clean_evolution_research(json.loads(content))
-            return {
-                "status": "succeeded",
-                "provider": self.provider,
-                "model": body.get("model", settings.perplexity_model),
-                **clean,
-                "usage": body.get("usage", {}),
-                "citations": [str(item)[:1000] for item in body.get("citations", [])[:20]],
-            }
+            return _prompt_result(
+                {
+                    "status": "succeeded",
+                    "provider": self.provider,
+                    "model": body.get("model", settings.perplexity_model),
+                    **clean,
+                    "usage": body.get("usage", {}),
+                    "citations": [str(item)[:1000] for item in body.get("citations", [])[:20]],
+                },
+                prompt,
+            )
         except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            return {
-                "status": "unavailable",
-                "provider": self.provider,
-                "model": settings.perplexity_model,
-                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
-                "recommendations": [],
-            }
+            return _prompt_result(
+                {
+                    "status": "unavailable",
+                    "provider": self.provider,
+                    "model": settings.perplexity_model,
+                    "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                    "recommendations": [],
+                },
+                prompt,
+            )
 
 
 class LLMAdvisor:
@@ -804,7 +961,13 @@ class LLMAdvisor:
         }
         if operation == "review":
             result["recommendations"] = []
-        return result
+        operation_name = "business_review" if operation == "review" else "request_analysis"
+        subject = args[0] if operation == "review" else {
+            "request": args[0],
+            "intent": args[1],
+            "deterministic_baseline": args[2],
+        }
+        return _prompt_result(result, _prompt(operation_name, subject))
 
     def review(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         return self._run("review", snapshot)

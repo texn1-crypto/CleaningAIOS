@@ -136,6 +136,15 @@ rows link back to their source resource. Navigation never infers task state loca
   OpenAI for product/request capability analysis, and a transient provider failure
   falls back to the other configured provider. Decisions, scoring, approvals and
   simulations remain deterministic and auditable.
+- AI prompts are immutable releases with semantic versions and SHA-256 digests.
+  Stable/candidate selection is deterministic per canonical input, defaults to a
+  zero-percent candidate cohort and can be rolled back without rewriting run
+  history. Only prompt metadata, never raw prompt text, is exposed by the manager
+  API and persisted with advisory results.
+- Historical agent runs can be replayed only through a new idempotent task and a
+  fresh exact owner approval. Replay creation strips old approval artifacts and
+  credential-like fields, creates a new correlation ID and never executes work in
+  the request transaction. Approval only returns the task to the normal queue.
 - The provider router exposes task-specific, least-privilege scopes. Public content
   may reach image/video providers; CRM personal data, banking credentials and secrets
   are forbidden. Image/video adapter gaps are reported rather than simulated.

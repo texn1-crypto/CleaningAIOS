@@ -10,7 +10,7 @@ import time
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select, text
@@ -32,7 +32,7 @@ from .mission_control import MISSION_CONTROL_HTML
 from .public_site import PUBLIC_SITE_HTML, privacy_html
 from .site_pages import about_html, contacts_html, journal_html, prices_html, service_html, services_html
 from .agents import AGENTS
-from .llm import llm_advisor
+from .llm import llm_advisor, prompt_deployment_catalog
 from .readiness import integration_status
 from .task_state import InvalidTaskTransition, record_task_created, transition_task
 from .observability import agent_observability_snapshot, prometheus_metrics
@@ -44,6 +44,12 @@ from .approval_service import (
     ApprovalNotFound,
     ApprovalStale,
     decide_approval as decide_approval_service,
+)
+from .agent_replay import (
+    ReplayConflict,
+    ReplayError,
+    ReplayNotFound,
+    request_agent_replay,
 )
 
 
@@ -420,6 +426,37 @@ def agent_runs(db: Session = Depends(get_db), actor: Principal = Depends(princip
     require_role(actor, "manager")
     rows = db.scalars(select(AgentRun).order_by(AgentRun.id.desc()).limit(200)).all()
     return [{"id": x.id, "agent_type": x.agent_type, "task_id": x.task_id, "status": x.status, "output": x.output, "error": x.error, "started_at": x.started_at, "finished_at": x.finished_at} for x in rows]
+
+
+@app.post("/api/agent-runs/{run_id}/replay", status_code=201)
+def replay_agent_run(
+    run_id: int,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    try:
+        result = request_agent_replay(
+            db,
+            run_id=run_id,
+            idempotency_key=idempotency_key,
+            requested_by=actor.subject,
+        )
+    except ReplayNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ReplayConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ReplayError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    db.commit()
+    return result
+
+
+@app.get("/api/ai/prompts")
+def ai_prompt_deployments(actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    return prompt_deployment_catalog()
 
 
 @app.get("/api/observability/agents")

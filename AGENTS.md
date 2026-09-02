@@ -59,7 +59,7 @@ Run from the repository root:
 ```bash
 pytest -q
 ruff check .
-mypy --strict app/chat.py app/agent_evals.py app/observability.py app/logging_config.py
+mypy --strict app/chat.py app/agent_evals.py app/observability.py app/logging_config.py app/prompt_registry.py
 python scripts/run_agent_evals.py
 docker compose --env-file .env.example config
 ```

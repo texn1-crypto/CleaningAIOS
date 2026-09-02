@@ -22,6 +22,7 @@ class ApprovalKind(str, Enum):
     TENDER_SUBMISSION = "tender_submission"
     TENDER_PARTICIPATION = "tender_participation"
     BULK_OUTREACH = "bulk_outreach"
+    AGENT_REPLAY = "agent_replay"
 
 
 class Task(Base):
@@ -266,6 +267,30 @@ class AgentRun(Base):
     cost: Mapped[float] = mapped_column(Float, default=0)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AgentReplayRequest(Base):
+    """Idempotent, owner-approved request to reproduce one historical agent run."""
+
+    __tablename__ = "agent_replay_requests"
+    __table_args__ = (
+        UniqueConstraint("request_hash", name="uq_agent_replay_request_hash"),
+        UniqueConstraint("replay_task_id", name="uq_agent_replay_task"),
+        UniqueConstraint("approval_id", name="uq_agent_replay_approval"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_run_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="RESTRICT"), index=True
+    )
+    replay_task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="RESTRICT"), index=True
+    )
+    approval_id: Mapped[int] = mapped_column(
+        ForeignKey("approval_requests.id", ondelete="RESTRICT"), index=True
+    )
+    request_hash: Mapped[str] = mapped_column(String(64))
+    requested_by: Mapped[str] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class ApprovalRequest(Base):
