@@ -293,6 +293,35 @@ class AgentReplayRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class AgentToolCall(Base):
+    """Aggregate-only audit record for a policy-controlled read tool call."""
+
+    __tablename__ = "agent_tool_calls"
+    __table_args__ = (
+        CheckConstraint("mode = 'read_only'", name="ck_agent_tool_call_mode"),
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'denied', 'timed_out', 'failed')",
+            name="ck_agent_tool_call_status",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_run_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    agent_type: Mapped[str] = mapped_column(String(64), index=True)
+    tool_name: Mapped[str] = mapped_column(String(128), index=True)
+    mode: Mapped[str] = mapped_column(String(16), default="read_only")
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    input_digest: Mapped[str] = mapped_column(String(71))
+    duration_ms: Mapped[float] = mapped_column(Float, default=0)
+    result_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    error_category: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class ApprovalRequest(Base):
     __tablename__ = "approval_requests"
     id: Mapped[int] = mapped_column(primary_key=True)

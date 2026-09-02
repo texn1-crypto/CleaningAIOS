@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import AgentRun, ApprovalRequest, DomainEvent, Task
+from .models import AgentRun, AgentToolCall, ApprovalRequest, DomainEvent, Task
 
 
 MAX_RUN_SAMPLE = 10_000
@@ -153,6 +153,22 @@ def agent_observability_snapshot(
         )
         or 0
     )
+    tool_rows = db.execute(
+        select(
+            AgentToolCall.tool_name,
+            AgentToolCall.status,
+            func.count(AgentToolCall.id),
+        )
+        .where(AgentToolCall.created_at >= cutoff)
+        .group_by(AgentToolCall.tool_name, AgentToolCall.status)
+        .order_by(AgentToolCall.tool_name, AgentToolCall.status)
+    ).all()
+    tool_statuses: dict[str, int] = defaultdict(int)
+    per_tool: dict[str, dict[str, int]] = defaultdict(dict)
+    for tool_name, status, count in tool_rows:
+        value = int(count)
+        tool_statuses[str(status)] += value
+        per_tool[str(tool_name)][str(status)] = value
     return {
         "generated_at": generated_at.isoformat() + "Z",
         "window_hours": hours,
@@ -194,6 +210,15 @@ def agent_observability_snapshot(
             "tasks": task_statuses,
             "events": event_statuses,
             "pending_approvals": pending_approvals,
+        },
+        "tools": {
+            "mode": "read_only",
+            "total": sum(tool_statuses.values()),
+            "by_status": dict(sorted(tool_statuses.items())),
+            "per_tool": [
+                {"tool_name": name, "statuses": dict(sorted(statuses.items()))}
+                for name, statuses in sorted(per_tool.items())
+            ],
         },
     }
 
@@ -243,4 +268,15 @@ def prometheus_metrics(snapshot: dict[str, Any]) -> str:
         )
         for status, count in sorted(statuses.items()):
             lines.append(f'cleaningai_{family}{{status="{_label(status)}"}} {count}')
+    lines.extend(
+        [
+            "# HELP cleaningai_agent_tool_calls Read-only agent tool calls in the configured window.",
+            "# TYPE cleaningai_agent_tool_calls gauge",
+        ]
+    )
+    for item in snapshot["tools"]["per_tool"]:
+        for status, count in item["statuses"].items():
+            lines.append(
+                f'cleaningai_agent_tool_calls{{tool_name="{_label(item["tool_name"])}",status="{_label(status)}"}} {count}'
+            )
     return "\n".join(lines) + "\n"

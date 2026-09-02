@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     agent_slo_success_rate_percent: float = 95.0
     agent_slo_p95_duration_seconds: float = 300.0
     agent_stale_run_minutes: int = 15
+    agent_read_tool_max_calls_per_run: int = 4
+    agent_read_tool_timeout_seconds: float = 3.0
+    agent_read_tool_total_timeout_seconds: float = 10.0
+    agent_read_tool_max_result_bytes: int = 64_000
+    agent_mcp_read_servers_json: str = "[]"
+    agent_mcp_protocol_version: str = "2026-07-28"
     ceo_review_interval_hours: int = 24
     owner_activity_report_interval_minutes: int = 30
     ceo_development_cadence_hours: int = 24

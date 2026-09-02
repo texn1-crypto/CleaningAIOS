@@ -51,6 +51,7 @@ from .agent_replay import (
     ReplayNotFound,
     request_agent_replay,
 )
+from .agent_tools import agent_tool_catalog
 
 
 configure_logging("web")
@@ -457,6 +458,12 @@ def replay_agent_run(
 def ai_prompt_deployments(actor: Principal = Depends(principal)):
     require_role(actor, "manager")
     return prompt_deployment_catalog()
+
+
+@app.get("/api/agent-tools")
+def read_only_agent_tools(actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    return agent_tool_catalog()
 
 
 @app.get("/api/observability/agents")

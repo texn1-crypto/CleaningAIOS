@@ -42,6 +42,14 @@ receipt prevents the same consumer from executing the event again after a retry 
 restart. Agent Runtime records input, output, evidence, cost and errors. Failed work is retried with backoff
 up to `max_attempts`; exhausted work remains visible as failed.
 
+Optional agent tool requests pass through one default-deny read-only gateway.
+Each local or remote MCP tool has an exact agent allowlist, call/time/result-size
+budgets and a separate aggregate audit row. Production remote MCP endpoints must
+be HTTPS, stateless, explicitly configured and limited to named tools; shell,
+browser, filesystem, arbitrary HTTP and write operations are absent. Remote input
+is screened for credential, personal and financial data, and all returned content
+is marked untrusted.
+
 Task status changes go through the shared state machine. Every initial state and
 transition stores actor, reason, correlation, details and an idempotency key in
 `task_transitions`. The production database protects this ledger with an immutable

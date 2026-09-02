@@ -265,10 +265,46 @@ class AgentRuntime:
         heartbeat(db, task.agent_type, "running")
         db.flush()
         try:
-            raw_result = agent.execute(db, task.payload)
+            execution_payload = task.payload
+            tool_results: list[dict[str, Any]] = []
+            if "read_only_tools" in task.payload:
+                from .agent_tools import execute_read_only_tools
+
+                tool_results = execute_read_only_tools(
+                    db,
+                    run=run,
+                    task=task,
+                    requests=task.payload.get("read_only_tools"),
+                )
+                execution_payload = {
+                    **task.payload,
+                    "read_only_tool_results": tool_results,
+                }
+            raw_result = agent.execute(db, execution_payload)
             result = jsonable_encoder(raw_result)
             if not isinstance(result, dict):
                 raise TypeError("Agent result must be a JSON object")
+            if tool_results:
+                evidence = (
+                    result.get("evidence")
+                    if isinstance(result.get("evidence"), list)
+                    else []
+                )
+                result = {
+                    **result,
+                    "read_only_tool_results": tool_results,
+                    "evidence": [
+                        *evidence,
+                        *[
+                            {
+                                "type": "agent_read_tool_call",
+                                "tool_call_id": item["tool_call_id"],
+                                "tool_name": item["name"],
+                            }
+                            for item in tool_results
+                        ],
+                    ],
+                }
             run.output = result
             run.evidence = result.get("evidence", []) if isinstance(result.get("evidence", []), list) else []
             run.cost = float(result.get("cost", 0) or 0)
