@@ -165,6 +165,31 @@ def test_evolution_improvement_rejects_provider_citation_outside_reviewed_batch(
         assert db.scalar(select(ImprovementRequest)) is None
 
 
+def test_evolution_research_does_not_invent_analysis_without_sources(monkeypatch, tmp_path):
+    factory = session_factory()
+    monkeypatch.setattr(evolution_research.settings, "document_storage_path", str(tmp_path))
+    monkeypatch.setattr(evolution_research.settings, "evolution_research_queries", "missing topic")
+    monkeypatch.setattr(
+        evolution_research,
+        "collect_github_repositories",
+        lambda query, page, limit: ([], {"query": query, "page": page, "github_total_count": 0, "github_incomplete_results": False, "rate_limit_remaining": "50"}),
+    )
+
+    def unexpected_provider_call(snapshot):
+        raise AssertionError("Perplexity must not run without reviewed sources")
+
+    monkeypatch.setattr(evolution_research.llm_advisor, "research_evolution", unexpected_provider_call)
+    with factory() as db:
+        result = evolution_research.run_evolution_research(
+            db,
+            registered_agents=["evolution_researcher"],
+            now=datetime(2026, 9, 2, 15, 0, 0),
+        )
+    assert result["status"] == "no_sources"
+    assert result["improvements"] == []
+    assert (tmp_path / "reports" / "evolution" / result["report"]["filename"]).is_file()
+
+
 def test_github_collection_is_bounded_and_records_license_without_exposing_token(monkeypatch):
     calls = []
 

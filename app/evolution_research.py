@@ -422,31 +422,48 @@ def run_evolution_research(
             limit=settings.evolution_research_max_sources_per_cycle,
         )
     except (httpx.HTTPError, RuntimeError, TypeError, ValueError) as exc:
-        return {
-            "status": "source_unavailable",
-            "reason": f"{type(exc).__name__}: {str(exc)[:500]}",
+        repositories = []
+        collection = {
             "query": query,
             "page": page,
-            "evidence": [{"type": "github_collection_failure", "query": query, "page": page}],
+            "github_total_count": 0,
+            "github_incomplete_results": True,
+            "rate_limit_remaining": "unknown",
+            "error_type": type(exc).__name__,
         }
 
     for repository in repositories:
         _persist_source(db, repository, query=query, observed_at=current)
     db.flush()
-    project = build_project_snapshot(db, registered_agents=registered_agents)
-    research = llm_advisor.research_evolution(
-        {
-            "research_kind": "source_grounded_product_evolution",
-            "project": project,
-            "github_query": collection,
-            "github_sources": repositories,
-            "benchmark_targets": {
-                "global_companies": 10_000,
-                "russian_cleaning_companies": 100,
-                "status": "separate_source_corpus_required",
-            },
+    if repositories:
+        project = build_project_snapshot(db, registered_agents=registered_agents)
+        research = llm_advisor.research_evolution(
+            {
+                "research_kind": "source_grounded_product_evolution",
+                "project": project,
+                "github_query": collection,
+                "github_sources": repositories,
+                "benchmark_targets": {
+                    "global_companies": 10_000,
+                    "russian_cleaning_companies": 100,
+                    "status": "separate_source_corpus_required",
+                },
+            }
+        )
+    else:
+        source_status = "source_unavailable" if collection.get("error_type") else "no_sources"
+        research = {
+            "status": source_status,
+            "provider": None,
+            "model": None,
+            "summary": (
+                "GitHub-источники в этой партии недоступны; рекомендации не создавались."
+                if source_status == "source_unavailable"
+                else "Подходящие GitHub-источники в этой партии не найдены; рекомендации не создавались."
+            ),
+            "findings": [],
+            "recommendations": [],
         }
-    )
     improvements = record_evolution_research_improvements(
         db,
         research,
@@ -495,7 +512,7 @@ def run_evolution_research(
         or 0
     )
     return {
-        "status": "completed" if research.get("status") == "succeeded" else "analysis_unavailable",
+        "status": "completed" if research.get("status") == "succeeded" else research.get("status"),
         "research_status": research.get("status"),
         "provider": research.get("provider"),
         "model": research.get("model"),
