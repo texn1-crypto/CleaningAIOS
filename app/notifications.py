@@ -422,6 +422,31 @@ def _verified_media_attachment(asset: MediaAsset) -> tuple[bytes, str, str]:
     return raw, f"ai-image-{asset.id}{suffix}", content_type
 
 
+def _verified_document_attachment(data: dict[str, Any]) -> tuple[bytes, str, str]:
+    storage_path = str(data.get("document_path") or "")
+    if not storage_path:
+        raise RuntimeError("Owner report document is unavailable")
+    root = Path(settings.document_storage_path).resolve()
+    path = Path(storage_path).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("Owner report document is outside document storage") from exc
+    if path.suffix.lower() != ".pdf" or not path.is_file():
+        raise RuntimeError("Owner report document must be an available PDF")
+    raw = path.read_bytes()
+    if len(raw) > settings.max_attachment_bytes:
+        raise RuntimeError("Owner report document exceeds the attachment limit")
+    if not raw.startswith(b"%PDF"):
+        raise RuntimeError("Owner report document is not a valid PDF")
+    digest = str(data.get("document_sha256") or "")
+    if len(digest) != 64 or hashlib.sha256(raw).hexdigest() != digest:
+        raise RuntimeError("Owner report document checksum mismatch")
+    requested_name = Path(str(data.get("document_filename") or path.name)).name
+    filename = requested_name if requested_name.lower().endswith(".pdf") else path.name
+    return raw, filename[:180], "application/pdf"
+
+
 def _send_telegram(db: Session, row: OwnerNotification) -> None:
     if not all([row.recipient, settings.telegram_bot_token]):
         raise RuntimeError("Telegram owner credentials are not configured")
@@ -460,7 +485,20 @@ def _send_telegram(db: Session, row: OwnerNotification) -> None:
         )
     preview_posts = row.data.get("preview_posts") if isinstance(row.data, dict) else None
     media_asset_id = row.data.get("media_asset_id") if isinstance(row.data, dict) else None
+    document_path = row.data.get("document_path") if isinstance(row.data, dict) else None
     with httpx.Client(timeout=30) as client:
+        if document_path:
+            raw, filename, content_type = _verified_document_attachment(row.data)
+            caption = f"{row.subject}\n\n{row.body}"
+            if len(caption) > 1024:
+                caption = caption[:1023] + "…"
+            response = client.post(
+                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendDocument",
+                data={"chat_id": row.recipient, "caption": caption},
+                files={"document": (filename, raw, content_type)},
+            )
+            response.raise_for_status()
+            return
         if isinstance(media_asset_id, int):
             asset = db.get(MediaAsset, media_asset_id)
             if not asset or asset.status != "ready":

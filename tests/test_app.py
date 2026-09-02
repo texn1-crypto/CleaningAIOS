@@ -2973,6 +2973,9 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
     monkeypatch.setattr(scheduler.settings, "tender_monitor_interval_minutes", 60)
     monkeypatch.setattr(scheduler.settings, "perplexity_api_key", "configured")
     monkeypatch.setattr(scheduler.settings, "perplexity_coach_interval_minutes", 30)
+    monkeypatch.setattr(scheduler.settings, "evolution_research_queries", "agent evaluation")
+    monkeypatch.setattr(scheduler.settings, "evolution_research_daily_hour", 0)
+    monkeypatch.setattr(scheduler.settings, "evolution_research_timezone", "Europe/Moscow")
 
     scheduler.schedule_cycle()
     scheduler.schedule_cycle()
@@ -2994,6 +2997,9 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         perplexity_coaching = db.scalars(
             select(Task).where(Task.title.like("Perplexity agent coaching · %"))
         ).all()
+        evolution_research = db.scalars(
+            select(Task).where(Task.title.like("AI evolution research · %"))
+        ).all()
         development = [
             row for row in all_tasks if row.payload.get("origin") == "ceo_continuous_backlog"
         ]
@@ -3011,6 +3017,10 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         assert perplexity_coaching[0].agent_type == "meta_brain"
         assert perplexity_coaching[0].payload["advisory_only"] is True
         assert perplexity_coaching[0].payload["period_minutes"] == 30
+        assert len(evolution_research) == 1
+        assert evolution_research[0].agent_type == "evolution_researcher"
+        assert evolution_research[0].payload["advisory_only"] is True
+        assert evolution_research[0].payload["notify_owner"] is True
         assert len(development) == 4
         assert {row.payload["scope"] for row in development} == {
             "website",

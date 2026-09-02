@@ -63,6 +63,21 @@ class Settings(BaseSettings):
     perplexity_timeout_seconds: int = 60
     perplexity_coach_interval_minutes: int = 30
     perplexity_max_improvements_per_cycle: int = 3
+    github_research_token: str = ""
+    evolution_research_queries: str = (
+        "multi agent orchestration stars:>=500|"
+        "ai agent evaluation observability stars:>=200|"
+        "sales crm automation stars:>=200|"
+        "marketing automation analytics stars:>=200|"
+        "business forecasting mlops stars:>=200|"
+        "continuous delivery rollback stars:>=500|"
+        "retrieval augmented generation evaluation stars:>=500"
+    )
+    evolution_research_timezone: str = "Europe/Moscow"
+    evolution_research_daily_hour: int = 18
+    evolution_research_max_sources_per_cycle: int = 20
+    evolution_research_max_improvements_per_cycle: int = 3
+    evolution_research_timeout_seconds: int = 30
     workspace_agent_trigger_id: str = ""
     workspace_agent_access_token: str = ""
     workspace_agent_timeout_seconds: int = 20

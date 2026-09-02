@@ -466,3 +466,107 @@ def record_agent_coaching_improvements(
             row.codex_prompt = build_codex_prompt(request_text, assessment, row.id)
         recorded.append({"id": row.id, "status": row.status, "agent_type": agent_type})
     return recorded
+
+
+def record_evolution_research_improvements(
+    db: Session,
+    research: dict[str, Any],
+    *,
+    allowed_source_urls: set[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Persist only recommendations grounded in the exact reviewed GitHub batch."""
+    if research.get("status") != "succeeded":
+        return []
+    recorded: list[dict[str, Any]] = []
+    bounded_limit = max(0, min(limit, 10))
+    for item in (research.get("recommendations") or [])[:bounded_limit]:
+        if not isinstance(item, dict):
+            continue
+        source_urls = sorted(
+            {
+                str(value)[:1000]
+                for value in (item.get("source_urls") or [])[:5]
+                if str(value) in allowed_source_urls
+                and urlparse(str(value)).scheme == "https"
+                and urlparse(str(value)).hostname == "github.com"
+            }
+        )
+        title = redact_sensitive_text(str(item.get("title") or "").strip())[:240]
+        change = redact_sensitive_text(str(item.get("change") or "").strip())[:2000]
+        rationale = redact_sensitive_text(str(item.get("rationale") or "").strip())[:2000]
+        validation = redact_sensitive_text(str(item.get("validation") or "").strip())[:1500]
+        domain = re.sub(r"[^a-z_]", "", str(item.get("domain") or ""))[:64]
+        if not title or not change or not validation or not source_urls:
+            continue
+        signature = json.dumps(
+            {
+                "kind": "evolution_research",
+                "domain": domain,
+                "change": _normalize(change),
+                "sources": source_urls,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        dedup_key = hashlib.sha256(signature.encode()).hexdigest()
+        row = db.scalar(select(ImprovementRequest).where(ImprovementRequest.dedup_key == dedup_key))
+        if row:
+            row.occurrence_count += 1
+            row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        else:
+            source_text = ", ".join(source_urls)
+            request_text = f"AI Evolution Researcher: {title}. Проверенные источники: {source_text}"
+            assessment = {
+                "reason": rationale or "Source-grounded product evolution opportunity",
+                "suggested_function": change,
+                "missing_capabilities": [f"{domain or 'product'}_evolution"],
+                "acceptance_criteria": [
+                    change,
+                    "Каждый заимствованный паттерн имеет совместимую лицензию или реализован независимо без копирования кода.",
+                    "RBAC, audit log, идемпотентность и owner approval остаются включены.",
+                    "Изменение не активируется автоматически на production до тестов и CI.",
+                ],
+                "test_plan": [
+                    validation,
+                    "Добавить детерминированный регрессионный тест изменяемого workflow.",
+                    "Запустить полный pytest, миграции, Docker health checks и релевантный smoke test.",
+                ],
+            }
+            row = ImprovementRequest(
+                dedup_key=dedup_key,
+                source_channel="system",
+                source_user="github_evolution_researcher",
+                request_text=request_text,
+                intent={
+                    "kind": "source_grounded_product_research",
+                    "domain": domain,
+                    "source_urls": source_urls,
+                    "advisory_only": True,
+                    "automatic_code_changes": False,
+                    "owner_action_required": bool(item.get("owner_action_required")),
+                    "owner_action": redact_sensitive_text(str(item.get("owner_action") or ""))[:1000],
+                },
+                capability_score=0.5,
+                classification="source_grounded_improvement",
+                reason=assessment["reason"],
+                missing_capabilities=assessment["missing_capabilities"],
+                suggested_function=change,
+                codex_prompt=build_codex_prompt(request_text, assessment),
+                acceptance_criteria=assessment["acceptance_criteria"],
+                test_plan=assessment["test_plan"],
+                status="queued",
+                handoff_status="pending",
+            )
+            db.add(row)
+            db.flush()
+            row.codex_prompt = build_codex_prompt(request_text, assessment, row.id)
+        recorded.append(
+            {
+                "id": row.id,
+                "status": row.status,
+                "domain": domain,
+                "source_urls": source_urls,
+            }
+        )
+    return recorded

@@ -577,6 +577,21 @@ class MetaBrainAgent:
         }
 
 
+class EvolutionResearcherAgent:
+    name = "evolution_researcher"
+
+    def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        from .evolution_research import run_evolution_research
+
+        research_at = datetime.fromisoformat(payload["research_at"]) if payload.get("research_at") else None
+        return run_evolution_research(
+            db,
+            registered_agents=sorted(AGENTS),
+            now=research_at,
+            notify_owner=bool(payload.get("notify_owner")),
+        )
+
+
 class SystemAdminAgent:
     name = "system_admin"
 
@@ -653,7 +668,7 @@ class CreativeAgent:
 
 
 AGENTS: dict[str, Agent] = {}
-for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), GrowthOfficerAgent(), MetaBrainAgent(), SystemAdminAgent(), RequestAnalystAgent(), CopywriterAgent(), CreativeAgent()]:
+for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), GrowthOfficerAgent(), MetaBrainAgent(), EvolutionResearcherAgent(), SystemAdminAgent(), RequestAnalystAgent(), CopywriterAgent(), CreativeAgent()]:
     AGENTS[agent.name] = agent
 
 

@@ -73,6 +73,24 @@ return review recommendations, but cannot call application tools, see credential
 change prompts, or execute a business action. Its result is stored with the audited
 Meta Brain task for later evaluation.
 
+The same read-only provider powers the separate `evolution_researcher`. At
+`EVOLUTION_RESEARCH_DAILY_HOUR` in `EVOLUTION_RESEARCH_TIMEZONE` it reads one
+bounded page from one configured `EVOLUTION_RESEARCH_QUERIES` GitHub search,
+stores public repository provenance and license metadata, and sends an aggregate
+architecture profile plus bounded public README excerpts to Perplexity. It creates
+at most `EVOLUTION_RESEARCH_MAX_IMPROVEMENTS_PER_CYCLE` deduplicated improvement
+records whose citations match the exact reviewed batch, then sends a checksum-bound
+PDF to the Telegram owner. It never clones or executes a repository and never
+modifies production. Public GitHub access works without `GITHUB_RESEARCH_TOKEN` at
+GitHub's lower anonymous limit; if monitoring proves that insufficient, configure a
+read-only token in the production secret store. A token is never stored in a task,
+report, database record or AI-provider request.
+
+The requested benchmark of 10,000 global companies and 100 Russian cleaning
+companies is a separate curated-source corpus, not a claim made by this GitHub
+collector. Add official/public company sources in reviewed batches with provenance,
+terms/robots compliance and deduplication before using those figures in a report.
+
 Selected task-failure, agent-incident, overdue-payment, near-tender-deadline,
 outreach-complaint and task-approval events become deduplicated high/critical
 Telegram alerts. Transport failures retry with backoff and become `dead_letter`

@@ -1,6 +1,7 @@
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -209,6 +210,53 @@ def schedule_cycle() -> None:
                 task,
                 actor="scheduler",
                 reason="recurring_perplexity_agent_coaching",
+            )
+        evolution_queries = [
+            item.strip()
+            for item in settings.evolution_research_queries.split("|")
+            if item.strip()
+        ]
+        evolution_local_now = now.replace(tzinfo=timezone.utc).astimezone(
+            ZoneInfo(settings.evolution_research_timezone)
+        )
+        evolution_day = evolution_local_now.date().isoformat()
+        evolution_title = f"AI evolution research · {evolution_day}"
+        evolution_active = db.scalar(
+            select(Task.id).where(
+                Task.agent_type == "evolution_researcher",
+                Task.status.in_(["open", "queued", "running"]),
+            )
+        )
+        if (
+            settings.perplexity_api_key
+            and evolution_queries
+            and evolution_local_now.hour >= max(0, min(settings.evolution_research_daily_hour, 23))
+            and not evolution_active
+            and not db.scalar(select(Task.id).where(Task.title == evolution_title))
+        ):
+            task = Task(
+                title=evolution_title,
+                agent_type="evolution_researcher",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={
+                    "action": "daily_source_grounded_evolution_research",
+                    "source": "scheduler",
+                    "advisory_only": True,
+                    "notify_owner": True,
+                    "research_at": now.isoformat(),
+                    "scheduled_local_day": evolution_day,
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(
+                db,
+                task,
+                actor="scheduler",
+                reason="daily_source_grounded_evolution_research",
             )
         active = db.scalar(select(Task.id).where(Task.agent_type == "ceo", Task.status.in_(["open", "queued", "running"])))
         recent = db.scalar(select(Task.id).where(Task.agent_type == "ceo", Task.created_at >= now - timedelta(hours=settings.ceo_review_interval_hours)))

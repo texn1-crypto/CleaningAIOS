@@ -63,6 +63,25 @@ def provider_catalog() -> list[dict[str, Any]]:
             ],
         },
         {
+            "capability": "source_grounded_product_research",
+            "provider": "perplexity_sonar",
+            "status": llm_advisor.provider_statuses()["perplexity_sonar"],
+            "routing": "evolution_researcher",
+            "scopes": [
+                "public_github_repository_metadata",
+                "bounded_public_readme_excerpt",
+                "aggregate_architecture_profile",
+            ],
+            "forbidden": [
+                "raw_customer_data",
+                "credentials",
+                "private_repositories",
+                "automatic_external_code_execution",
+                "automatic_production_changes",
+                "unapproved_actions",
+            ],
+        },
+        {
             "capability": "product_improvement",
             "provider": "chatgpt_workspace_agents",
             "status": workspace_agent_configuration_status(),
