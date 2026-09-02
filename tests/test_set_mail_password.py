@@ -67,6 +67,7 @@ def test_mailru_configuration_uses_ssl_and_updates_inbound_password(tmp_path: Pa
     assert "SMTP_USERNAME=sender@mail.ru" in lines
     assert "SMTP_PASSWORD=abcdefghijklmnop" in lines
     assert "SMTP_FROM_EMAIL=sender@mail.ru" in lines
+    assert "SMTP_MAILRU_PASSWORD=abcdefghijklmnop" in lines
     assert "IMAP_MAILRU_USERNAME=sender@mail.ru" in lines
     assert "IMAP_MAILRU_PASSWORD=abcdefghijklmnop" in lines
 

@@ -72,6 +72,7 @@ def configure_smtp(path: Path, provider: str, email: str, password: str) -> None
     if provider == "mailru":
         values.update(
             {
+                "SMTP_MAILRU_PASSWORD": password,
                 "IMAP_MAILRU_USERNAME": email,
                 "IMAP_MAILRU_PASSWORD": password,
             }
