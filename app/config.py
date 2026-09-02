@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     app_name: str = "CleaningAI OS"
     environment: str = "development"
     database_url: str = "sqlite:///./cleaningai.db"
+    log_format: str = "json"
+    log_level: str = "INFO"
     api_key: str = "development-only-change-me"
     manager_api_key: str = ""
     operator_api_key: str = ""
@@ -27,6 +29,10 @@ class Settings(BaseSettings):
     system_admin_interval_minutes: int = 5
     system_admin_report_interval_minutes: int = 24 * 60
     system_admin_stale_task_minutes: int = 15
+    agent_slo_window_hours: int = 24
+    agent_slo_success_rate_percent: float = 95.0
+    agent_slo_p95_duration_seconds: float = 300.0
+    agent_stale_run_minutes: int = 15
     ceo_review_interval_hours: int = 24
     owner_activity_report_interval_minutes: int = 30
     ceo_development_cadence_hours: int = 24

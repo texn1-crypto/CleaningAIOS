@@ -24,8 +24,9 @@ from .notifications import queue_owner_notification, send_next_owner_notificatio
 from .inbound_mail import collect_inbound_replies
 from .security import unsubscribe_token
 from .social_runtime import generate_next_social_visual, publish_next_social_post
+from .logging_config import configure_logging
 
-logging.basicConfig(level=logging.INFO)
+configure_logging("worker")
 log = logging.getLogger("cleaningai.worker")
 
 SMTP_AUTH_REASON = "SMTP authentication failed; verify the mailbox application password"

@@ -24,8 +24,9 @@ from .chat import understand_russian_message
 from .config import settings
 from .lead_autopilot import CLEANING_KIND_LABELS, FREQUENCY_LABELS, SERVICE_LABELS, URGENCY_LABELS, normalize_phone
 from .recipient_import import EMAIL_PATTERN, SUPPORTED_RECIPIENT_SUFFIXES, extract_recipient_emails
+from .logging_config import configure_logging
 
-logging.basicConfig(level=logging.INFO)
+configure_logging("bot")
 # httpx logs full request URLs at INFO. Telegram embeds the bot token in those
 # URLs, so INFO-level HTTP logs would leak a production credential.
 logging.getLogger("httpx").setLevel(logging.WARNING)

@@ -3,8 +3,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from html import escape
+import logging
 from pathlib import Path
+import re
+import time
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
@@ -31,6 +35,8 @@ from .agents import AGENTS
 from .llm import llm_advisor
 from .readiness import integration_status
 from .task_state import InvalidTaskTransition, record_task_created, transition_task
+from .observability import agent_observability_snapshot, prometheus_metrics
+from .logging_config import configure_logging, request_correlation_id
 from .approval_service import (
     ApprovalConflict,
     ApprovalError,
@@ -39,6 +45,10 @@ from .approval_service import (
     ApprovalStale,
     decide_approval as decide_approval_service,
 )
+
+
+configure_logging("web")
+log = logging.getLogger("cleaningai.web")
 
 
 @asynccontextmanager
@@ -54,6 +64,47 @@ app.include_router(api_v2_router)
 app.include_router(marketing_router)
 app.include_router(public_router)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    supplied = request.headers.get("X-Correlation-ID", "")
+    correlation_id = (
+        supplied
+        if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", supplied)
+        else uuid4().hex
+    )
+    token = request_correlation_id.set(correlation_id)
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+        duration_ms = round((time.perf_counter() - started) * 1000, 3)
+        log.info(
+            "HTTP request completed",
+            extra={
+                "event": "http.request.completed",
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+            },
+        )
+        response.headers["X-Correlation-ID"] = correlation_id
+        return response
+    except Exception:
+        duration_ms = round((time.perf_counter() - started) * 1000, 3)
+        log.exception(
+            "HTTP request failed",
+            extra={
+                "event": "http.request.failed",
+                "method": request.method,
+                "path": request.url.path,
+                "duration_ms": duration_ms,
+            },
+        )
+        raise
+    finally:
+        request_correlation_id.reset(token)
 
 
 def get_db():
@@ -369,6 +420,24 @@ def agent_runs(db: Session = Depends(get_db), actor: Principal = Depends(princip
     require_role(actor, "manager")
     rows = db.scalars(select(AgentRun).order_by(AgentRun.id.desc()).limit(200)).all()
     return [{"id": x.id, "agent_type": x.agent_type, "task_id": x.task_id, "status": x.status, "output": x.output, "error": x.error, "started_at": x.started_at, "finished_at": x.finished_at} for x in rows]
+
+
+@app.get("/api/observability/agents")
+def agent_observability(
+    window_hours: int = Query(default=settings.agent_slo_window_hours, ge=1, le=7 * 24),
+    db: Session = Depends(get_db),
+    _: Principal = Depends(principal),
+):
+    return agent_observability_snapshot(db, window_hours=window_hours)
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics(db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    snapshot = agent_observability_snapshot(db)
+    return PlainTextResponse(
+        prometheus_metrics(snapshot),
+        media_type="text/plain; version=0.0.4",
+    )
 
 
 @app.get("/api/approvals")

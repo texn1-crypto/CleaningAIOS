@@ -12,8 +12,9 @@ from .notifications import queue_missing_approval_notifications
 from .operations import maintain_ceo_development_backlog
 from .platform import event_bus
 from .task_state import record_task_created
+from .logging_config import configure_logging
 
-logging.basicConfig(level=logging.INFO)
+configure_logging("scheduler")
 log = logging.getLogger("cleaningai.scheduler")
 
 
