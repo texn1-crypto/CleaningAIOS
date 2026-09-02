@@ -13,7 +13,7 @@ Describe the user-visible or operational result.
 
 - [ ] `pytest -q`
 - [ ] `ruff check .`
-- [ ] `mypy --strict app/chat.py app/agent_evals.py app/observability.py app/logging_config.py app/prompt_registry.py app/mcp_read_client.py`
+- [ ] `mypy --strict app/chat.py app/agent_evals.py app/observability.py app/logging_config.py app/prompt_registry.py app/mcp_read_client.py app/company_brain_retrieval.py`
 - [ ] `mypy --strict --follow-imports=skip app/agent_tools.py`
 - [ ] `python scripts/run_agent_evals.py`
 - [ ] Relevant migration, Compose, API, worker/scheduler and Telegram checks

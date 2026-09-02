@@ -253,6 +253,70 @@ class CompanyKnowledge(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class KnowledgeDocument(Base):
+    """Append-only source document for the provenance-aware Company Brain."""
+
+    __tablename__ = "knowledge_documents"
+    __table_args__ = (
+        UniqueConstraint("idempotency_hash", name="uq_knowledge_document_idempotency"),
+        UniqueConstraint(
+            "namespace",
+            "source_uri",
+            "version",
+            name="uq_knowledge_document_source_version",
+        ),
+        UniqueConstraint(
+            "namespace",
+            "source_uri",
+            "request_digest",
+            name="uq_knowledge_document_source_request",
+        ),
+        CheckConstraint("version >= 1", name="ck_knowledge_document_version"),
+        CheckConstraint(
+            "minimum_role IN ('viewer', 'operator', 'manager', 'admin', 'owner')",
+            name="ck_knowledge_document_minimum_role",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="ck_knowledge_document_confidence",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    source_uri: Mapped[str] = mapped_column(String(1024))
+    content_type: Mapped[str] = mapped_column(String(128), default="text/plain")
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    minimum_role: Mapped[str] = mapped_column(String(32), default="viewer", index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    source_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    valid_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    idempotency_hash: Mapped[str] = mapped_column(String(64))
+    request_digest: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class KnowledgeChunk(Base):
+    """Bounded immutable text chunk belonging to one document version."""
+
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (
+        UniqueConstraint("document_id", "chunk_index", name="uq_knowledge_chunk_index"),
+        CheckConstraint("chunk_index >= 0", name="ck_knowledge_chunk_index"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="RESTRICT"), index=True
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    lexical_terms: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AgentRun(Base):
     __tablename__ = "agent_runs"
     id: Mapped[int] = mapped_column(primary_key=True)

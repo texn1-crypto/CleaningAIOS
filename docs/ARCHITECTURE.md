@@ -50,6 +50,15 @@ browser, filesystem, arbitrary HTTP and write operations are absent. Remote inpu
 is screened for credential, personal and financial data, and all returned content
 is marked untrusted.
 
+Company Brain document storage is append-only by source version. Ingestion requires
+a manager role and an idempotency key, records content checksums and provenance,
+splits text into bounded immutable chunks and keeps document bodies out of audit and
+event payloads. Retrieval applies document ACLs and expiry before deterministic
+lexical/character-ngram ranking, searches only the latest version of each source and
+returns a citation bound to the document/chunk checksums. Retrieved text is untrusted
+evidence, not instructions, and is not automatically sent to any external AI
+provider. The legacy key/value Company Brain remains backward compatible.
+
 Task status changes go through the shared state machine. Every initial state and
 transition stores actor, reason, correlation, details and an idempotency key in
 `task_transitions`. The production database protects this ledger with an immutable

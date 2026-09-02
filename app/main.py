@@ -23,7 +23,7 @@ from .domains import module_summary, validate_record
 from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, ContentItem, Decision, DomainEvent, EventConsumerReceipt, MessageTemplate, OutboundMessage, SenderMailbox, Suppression, Task, TaskTransition
 from .orchestrator import audit, dispatch
 from .platform import company_brain, event_bus
-from .schemas import ApprovalDecision, ContactEventCreate, DecisionCreate, KnowledgeCreate, LeadAutopilotCreate, OutreachCreate, RecordCreate, RecordUpdate, SuppressionCreate, TaskCreate
+from .schemas import ApprovalDecision, ContactEventCreate, DecisionCreate, KnowledgeCreate, KnowledgeDocumentCreate, LeadAutopilotCreate, OutreachCreate, RecordCreate, RecordUpdate, SuppressionCreate, TaskCreate
 from .security import Principal, principal, require_role, valid_unsubscribe_token, validate_production_security
 from .api_v2 import router as api_v2_router
 from .marketing_api import router as marketing_router
@@ -52,6 +52,13 @@ from .agent_replay import (
     request_agent_replay,
 )
 from .agent_tools import agent_tool_catalog
+from .company_brain_retrieval import (
+    KnowledgeConflict,
+    KnowledgeError,
+    ingest_document,
+    list_documents,
+    search_documents,
+)
 
 
 configure_logging("web")
@@ -420,6 +427,103 @@ def remember(payload: KnowledgeCreate, db: Session = Depends(get_db), actor: Pri
     audit(db, actor.subject, "knowledge.updated", "knowledge", str(row.id), {"namespace": row.namespace, "key": row.key, "version": row.version})
     db.commit()
     return {"id": row.id, "version": row.version}
+
+
+@app.post("/api/company-brain/documents", status_code=201)
+def create_company_brain_document(
+    payload: KnowledgeDocumentCreate,
+    response: Response,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    try:
+        result = ingest_document(
+            db,
+            payload,
+            actor=actor.subject,
+            idempotency_key=idempotency_key,
+        )
+    except KnowledgeConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except KnowledgeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "Concurrent document version or idempotency conflict") from exc
+    document = result.document
+    action = "knowledge.document_reused" if result.reused else "knowledge.document_created"
+    audit(
+        db,
+        actor.subject,
+        action,
+        "knowledge_document",
+        str(document.id),
+        {
+            "namespace": document.namespace,
+            "version": document.version,
+            "checksum": document.checksum,
+            "minimum_role": document.minimum_role,
+        },
+    )
+    if not result.reused:
+        event_bus.publish(
+            db,
+            "knowledge.document_created",
+            "knowledge_document",
+            str(document.id),
+            {
+                "namespace": document.namespace,
+                "version": document.version,
+                "checksum": document.checksum,
+                "minimum_role": document.minimum_role,
+            },
+            idempotency_key=f"knowledge-document:{document.id}:created",
+            actor=actor.subject,
+            correlation_id=f"knowledge-document:{document.id}",
+        )
+    db.commit()
+    if result.reused:
+        response.status_code = 200
+    return {
+        "id": document.id,
+        "namespace": document.namespace,
+        "version": document.version,
+        "checksum": document.checksum,
+        "minimum_role": document.minimum_role,
+        "reused": result.reused,
+    }
+
+
+@app.get("/api/company-brain/documents")
+def company_brain_documents(
+    namespace: Optional[str] = Query(default=None, min_length=2, max_length=64),
+    limit: int = Query(default=100, ge=1, le=200),
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    return list_documents(db, role=actor.role, namespace=namespace, limit=limit)
+
+
+@app.get("/api/company-brain/search")
+def search_company_brain(
+    q: str = Query(min_length=2, max_length=500),
+    namespace: Optional[str] = Query(default=None, min_length=2, max_length=64),
+    limit: int = Query(default=5, ge=1, le=10),
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    try:
+        return search_documents(
+            db,
+            query=q,
+            role=actor.role,
+            namespace=namespace,
+            limit=limit,
+        )
+    except KnowledgeError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/api/agent-runs")

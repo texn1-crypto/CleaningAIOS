@@ -80,6 +80,30 @@ class KnowledgeCreate(BaseModel):
     valid_until: Optional[datetime] = None
 
 
+class KnowledgeDocumentCreate(BaseModel):
+    namespace: str = Field(
+        min_length=2,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9_-]*$",
+    )
+    title: str = Field(min_length=2, max_length=255)
+    source_uri: str = Field(min_length=5, max_length=1024)
+    content: str = Field(min_length=1, max_length=200_000)
+    content_type: str = Field(
+        default="text/plain",
+        min_length=3,
+        max_length=128,
+        pattern=r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$",
+    )
+    minimum_role: str = Field(
+        default="viewer",
+        pattern="^(viewer|operator|manager|admin|owner)$",
+    )
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    source_updated_at: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+
+
 class ApprovalDecision(BaseModel):
     note: str = ""
 

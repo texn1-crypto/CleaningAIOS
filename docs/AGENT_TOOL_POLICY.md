@@ -10,7 +10,10 @@ registry currently contains only bounded aggregate views:
 - `workflow.status_counts`;
 - `agent.slo_snapshot`;
 - `system.integration_readiness` (configuration states with URL/source/credential
-  fields removed).
+  fields removed);
+- `company_brain.search` (viewer-safe, freshness-filtered evidence with exact
+  citations; retrieved content is labelled untrusted and is not approved for
+  automatic transfer to an external model).
 
 Every tool has an exact agent allowlist. A batch also has a maximum call count,
 per-call deadline, total deadline and serialized-result size limit. Policy denials,
