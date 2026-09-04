@@ -1,0 +1,54 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements-dev.txt
+      - name: Static correctness checks
+        run: |
+          ruff check .
+          mypy --strict app/chat.py app/agent_evals.py app/observability.py app/logging_config.py app/prompt_registry.py app/mcp_read_client.py app/company_brain_retrieval.py app/orchestrator_telemetry.py
+          mypy --strict --follow-imports=skip app/agent_tools.py
+      - name: Agent behavior evals
+        run: python scripts/run_agent_evals.py
+      - name: Dependency vulnerability audit
+        run: >-
+          pip-audit -r requirements.txt
+          --ignore-vuln PYSEC-2026-161
+          --ignore-vuln PYSEC-2026-249
+          --ignore-vuln PYSEC-2026-248
+          --ignore-vuln PYSEC-2026-2281
+          --ignore-vuln PYSEC-2026-2280
+      - run: pytest --cov=app --cov-report=term-missing
+      - run: cp .env.example .env
+      - run: python scripts/bootstrap_secrets.py .env
+      - run: docker compose --env-file .env.example config
+      - name: Compose production smoke test
+        run: |
+          docker compose up -d --build db web worker scheduler
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8000/health; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail http://127.0.0.1:8000/health
+          curl --fail http://127.0.0.1:8000/
+          curl --fail http://127.0.0.1:8000/static/og-cleaningaios.png
+          current_revision="$(docker compose exec -T db psql -U cleaningai -d cleaningai -Atc 'select version_num from alembic_version')"
+          head_revision="$(docker compose run --rm migrate alembic heads | awk '{print $1}')"
+          test "$current_revision" = "$head_revision"
+          docker compose run --rm migrate alembic check
+      - name: Compose logs
+        if: always()
+        run: docker compose logs --no-color --tail=200
+      - name: Compose cleanup
+        if: always()
+        run: docker compose down -v
