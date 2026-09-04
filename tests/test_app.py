@@ -3065,11 +3065,11 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         )
 
 
-def test_system_administrator_runs_continuously_but_reports_daily():
+def test_system_administrator_runs_continuously_but_reports_every_two_hours():
     from app.config import Settings
 
     assert Settings.model_fields["system_admin_interval_minutes"].default == 5
-    assert Settings.model_fields["system_admin_report_interval_minutes"].default == 1440
+    assert Settings.model_fields["system_admin_report_interval_minutes"].default == 120
 
 
 def test_ceo_keeps_safe_deduplicated_development_backlog():
@@ -4553,6 +4553,64 @@ def test_request_analyst_does_not_turn_approval_policy_into_feature_gap(client, 
     result = client.post("/api/request-analysis", json={"message": message, "intent": understand_russian_message(message)}).json()
     assert result["classification"] == "approval_required"
     assert result["improvement_id"] is None
+
+
+@pytest.mark.parametrize(
+    ("message", "agent_type", "request_category", "desired_outcome"),
+    [
+        ("Рассчитай рентабельность контракта", "finance", "finance", "calculation"),
+        ("Подготовь черновик рекламного документа", "marketing", "marketing", "document_draft"),
+        ("Напиши ответ клиенту по заявке", "sales", "sales", "customer_response"),
+        ("Посоветуй, какие источники исследовать", "research", "research", "advice"),
+        ("Сформируй отчет об ошибках сервера", "system_admin", "system_admin", "report"),
+        ("Покажи текущие задачи", "orchestrator", "general", "status"),
+    ],
+)
+def test_request_analyst_assigns_stable_routing_dimensions(
+    client,
+    monkeypatch,
+    message,
+    agent_type,
+    request_category,
+    desired_outcome,
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    intent = {
+        "kind": "tasks" if desired_outcome == "status" else "task",
+        "agent_type": agent_type,
+        "payload": {},
+    }
+    result = client.post(
+        "/api/request-analysis",
+        json={"message": message, "intent": intent},
+    ).json()
+    assert result["request_category"] == request_category
+    assert result["desired_outcome"] == desired_outcome
+    assert result["resolved_intent"]["request_category"] == request_category
+    assert result["resolved_intent"]["desired_outcome"] == desired_outcome
+
+
+def test_request_analysis_metrics_are_aggregated_without_request_text(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    message = "Рассчитай бюджет для private@example.test"
+    response = client.post(
+        "/api/request-analysis",
+        json={
+            "message": message,
+            "intent": {"kind": "task", "agent_type": "finance", "payload": {}},
+        },
+    )
+    assert response.status_code == 200
+
+    metrics = client.get("/api/request-analysis/metrics").json()
+    assert metrics["by_request_category"]["finance"] >= 1
+    assert metrics["by_desired_outcome"]["calculation"] >= 1
+    assert metrics["by_target_agent"]["finance"] >= 1
+    assert "private@example.test" not in str(metrics)
 
 
 def test_workspace_agent_handoff_uses_official_trigger_contract(client, monkeypatch):

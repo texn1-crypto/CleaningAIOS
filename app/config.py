@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 2.0
     scheduler_interval_seconds: int = 60
     system_admin_interval_minutes: int = 5
-    system_admin_report_interval_minutes: int = 24 * 60
+    system_admin_report_interval_minutes: int = 2 * 60
     system_admin_stale_task_minutes: int = 15
     agent_slo_window_hours: int = 24
     agent_slo_success_rate_percent: float = 95.0

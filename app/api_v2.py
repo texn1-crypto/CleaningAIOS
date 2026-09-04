@@ -470,7 +470,22 @@ def analyze_request(payload: RequestAnalysisCreate, db: Session = Depends(get_db
     )
     db.add(task); db.flush()
     result = dispatch(db, task)
-    audit(db, actor.subject, "request.analyzed", "task", str(task.id), {"classification": result.get("classification"), "improvement_id": result.get("improvement_id")})
+    resolved_intent.update({
+        "request_category": result.get("request_category", "general"),
+        "desired_outcome": result.get("desired_outcome", "action"),
+    })
+    task.payload = {
+        **task.payload,
+        "intent": resolved_intent,
+        "request_category": result.get("request_category", "general"),
+        "desired_outcome": result.get("desired_outcome", "action"),
+    }
+    audit(db, actor.subject, "request.analyzed", "task", str(task.id), {
+        "classification": result.get("classification"),
+        "request_category": result.get("request_category"),
+        "desired_outcome": result.get("desired_outcome"),
+        "improvement_id": result.get("improvement_id"),
+    })
     db.commit()
     return {
         "analysis_task_id": task.id,
@@ -478,6 +493,42 @@ def analyze_request(payload: RequestAnalysisCreate, db: Session = Depends(get_db
         "resolved_intent": resolved_intent,
         "context_found": context_found,
     }
+
+
+@router.get("/request-analysis/metrics")
+def request_analysis_metrics(
+    limit: int = Query(default=500, ge=1, le=5000),
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    rows = db.scalars(
+        select(Task)
+        .where(Task.agent_type == "request_analyst")
+        .order_by(Task.id.desc())
+        .limit(limit)
+    ).all()
+    dimensions: dict[str, dict[str, int]] = {
+        "by_request_category": {},
+        "by_desired_outcome": {},
+        "by_target_agent": {},
+        "by_classification": {},
+    }
+
+    def count(dimension: str, value: object) -> None:
+        key = str(value or "unknown")[:64]
+        bucket = dimensions[dimension]
+        bucket[key] = bucket.get(key, 0) + 1
+
+    for row in rows:
+        result = row.result if isinstance(row.result, dict) else {}
+        stored_payload = row.payload if isinstance(row.payload, dict) else {}
+        intent = stored_payload.get("intent") if isinstance(stored_payload.get("intent"), dict) else {}
+        count("by_request_category", result.get("request_category") or stored_payload.get("request_category"))
+        count("by_desired_outcome", result.get("desired_outcome") or stored_payload.get("desired_outcome"))
+        count("by_target_agent", intent.get("agent_type"))
+        count("by_classification", result.get("classification"))
+    return {"total": len(rows), "limit": limit, **dimensions}
 
 
 @router.get("/improvements")

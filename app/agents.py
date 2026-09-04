@@ -655,6 +655,8 @@ class RequestAnalystAgent:
                     "type": "request_capability_assessment",
                     "classification": result["classification"],
                     "capability_score": result["capability_score"],
+                    "request_category": result["request_category"],
+                    "desired_outcome": result["desired_outcome"],
                     "improvement_id": result.get("improvement_id"),
                 }
             ],

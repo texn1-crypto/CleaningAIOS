@@ -19,9 +19,98 @@ from .models import ImprovementRequest, Task
 
 READ_INTENTS = {"greeting", "acknowledgement", "clarification", "help", "menu", "dashboard", "tasks", "decisions", "approvals", "records", "summary", "inbox", "improvements", "activity_report", "system_admin_report", "system_self_check", "task_eta"}
 
+REQUEST_CATEGORY_BY_AGENT = {
+    "finance": "finance",
+    "marketing": "marketing",
+    "copywriter": "marketing",
+    "social_publisher": "marketing",
+    "hr": "hr",
+    "sales": "sales",
+    "growth_officer": "sales",
+    "research": "research",
+    "evolution_researcher": "research",
+    "tender": "research",
+    "system_admin": "system_admin",
+    "operations": "operations",
+    "quality": "operations",
+    "ceo": "management",
+    "meta_brain": "management",
+    "orchestrator": "general",
+}
+
+REQUEST_CATEGORIES = frozenset({*REQUEST_CATEGORY_BY_AGENT.values(), "general"})
+DESIRED_OUTCOME_TYPES = frozenset(
+    {
+        "action",
+        "advice",
+        "calculation",
+        "customer_response",
+        "document_draft",
+        "report",
+        "status",
+    }
+)
+
 
 def _normalize(text: str) -> str:
     return " ".join(text.lower().replace("ё", "е").split())
+
+
+def classify_request_routing(message: str, intent: dict[str, Any]) -> dict[str, str]:
+    """Return low-cardinality routing labels without retaining request content."""
+    text = _normalize(redact_sensitive_text(message))
+    agent_type = str(intent.get("agent_type") or "orchestrator").lower()
+    payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+    action = str(payload.get("action") or "").lower()
+
+    category = None if agent_type == "orchestrator" else REQUEST_CATEGORY_BY_AGENT.get(agent_type)
+    if category is None:
+        keyword_categories = (
+            ("finance", ("финанс", "бюджет", "расход", "прибыл", "рентабель", "счет", "оплат")),
+            ("marketing", ("маркет", "реклам", "контент", "пост", "соцсет")),
+            ("hr", ("вакан", "кандидат", "сотрудник", "кадр", "найм")),
+            ("sales", ("продаж", "клиент", "лид", "коммерческ", "предложен")),
+            ("research", ("исслед", "найди", "тендер", "закупк", "проанализ")),
+            ("system_admin", ("системн", "сервер", "ошиб", "лог", "инцидент", "health")),
+        )
+        category = next(
+            (name for name, keywords in keyword_categories if any(word in text for word in keywords)),
+            "general",
+        )
+
+    if str(intent.get("kind") or "task") in READ_INTENTS:
+        outcome = "status"
+    elif any(
+        phrase in text
+        for phrase in ("ответ клиент", "ответить клиент", "ответ заказчик", "ответить заказчик")
+    ):
+        outcome = "customer_response"
+    elif any(
+        word in text
+        for word in ("рассчитай", "посчитай", "расчет", "рентабель", "калькуляц", "смет")
+    ):
+        outcome = "calculation"
+    elif action in {"generate_proposal", "revise_proposal"} or re.search(
+        r"\b(черновик\w*|документ\w*|договор\w*|акт\w*|коммерческ\w*|pdf)\b",
+        text,
+    ):
+        outcome = "document_draft"
+    elif any(word in text for word in ("отчет", "сводк", "итог", "метрик", "статистик")):
+        outcome = "report"
+    elif any(word in text for word in ("проанализ", "проверь", "оцени")):
+        outcome = "report"
+    elif any(
+        phrase in text
+        for phrase in ("посоветуй", "дай совет", "что лучше", "что делать", "рекомендац")
+    ):
+        outcome = "advice"
+    else:
+        outcome = "action"
+
+    return {
+        "request_category": category if category in REQUEST_CATEGORIES else "general",
+        "desired_outcome": outcome if outcome in DESIRED_OUTCOME_TYPES else "action",
+    }
 
 
 def _suggested_function(text: str, agent_type: str) -> tuple[str, list[str]]:
@@ -293,9 +382,17 @@ def retry_workspace_handoff(row: ImprovementRequest) -> dict[str, Any]:
 def analyze_and_record(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
     request_text = redact_sensitive_text(str(payload.get("message", "")))[:4000]
     intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
+    routing = classify_request_routing(request_text, intent)
+    intent = {**intent, **routing}
     baseline = deterministic_assessment(request_text, intent)
     assessment, llm_analysis = _merge_llm_assessment(request_text, intent, baseline)
-    result = {**assessment, "llm_analysis": llm_analysis, "improvement_id": None, "handoff_status": "not_needed"}
+    result = {
+        **assessment,
+        **routing,
+        "llm_analysis": llm_analysis,
+        "improvement_id": None,
+        "handoff_status": "not_needed",
+    }
     if not assessment["should_create_improvement"]:
         return result
 
