@@ -284,6 +284,19 @@ class AgentRuntime:
             result = jsonable_encoder(raw_result)
             if not isinstance(result, dict):
                 raise TypeError("Agent result must be a JSON object")
+            if task.agent_type == "orchestrator":
+                from .orchestrator_telemetry import record_routing_decisions
+
+                routing_decisions = record_routing_decisions(
+                    db,
+                    source_task=task,
+                    result=result,
+                )
+                if routing_decisions:
+                    result = {
+                        **result,
+                        "routing_decision_ids": [row.id for row in routing_decisions],
+                    }
             if tool_results:
                 evidence = (
                     result.get("evidence")

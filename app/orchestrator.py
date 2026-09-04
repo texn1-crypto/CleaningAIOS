@@ -6,6 +6,7 @@ from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from .models import AgentRun, AuditLog, Task
+from .orchestrator_telemetry import measure_routing_outcome
 from .platform import agent_runtime, decision_engine, event_bus
 from .task_state import record_task_created, transition_task
 
@@ -147,6 +148,7 @@ def dispatch(db: Session, task: Task) -> dict:
             )
             task.result = {**result, "execution_gap": reason, **escalation}
             _mark_latest_run_incomplete(db, task, reason)
+            measure_routing_outcome(db, task)
             audit(db, "orchestrator_quality_gate", "task.incomplete", "task", str(task.id), task.result)
             event_bus.publish(
                 db,
@@ -168,6 +170,7 @@ def dispatch(db: Session, task: Task) -> dict:
             correlation_id=_event_trace(task, "orchestrator")["correlation_id"],
             transition_key=f"task:{task.id}:attempt:{task.attempts}:done",
         )
+        measure_routing_outcome(db, task)
         event_bus.publish(db, "task.completed", "task", str(task.id), result, idempotency_key=f"task:{task.id}:completed:{task.attempts}", **_event_trace(task, task.agent_type))
         return result
     except Exception as exc:
@@ -191,6 +194,7 @@ def dispatch(db: Session, task: Task) -> dict:
             task.run_after = task.next_retry_at
             event_bus.publish(db, "task.retry_scheduled", "task", str(task.id), {"attempt": task.attempts, "max_attempts": task.max_attempts, "next_retry_at": task.next_retry_at.isoformat()}, idempotency_key=f"task:{task.id}:retry:{task.attempts}", **_event_trace(task, "orchestrator"))
         else:
+            measure_routing_outcome(db, task)
             event_bus.publish(db, "task.failed", "task", str(task.id), task.result, idempotency_key=f"task:{task.id}:failed", **_event_trace(task, "orchestrator"))
         return task.result
 

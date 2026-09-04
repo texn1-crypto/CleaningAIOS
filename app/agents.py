@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .llm import llm_advisor
-from .models import AgentState, BusinessGoal, BusinessRecord, Decision, DecisionOutcome, MediaAsset, OperatingEntity, Task
+from .models import AgentState, BusinessGoal, BusinessRecord, Decision, DecisionOutcome, MediaAsset, OperatingEntity, OrchestratorDecision, Task
 from .ai_router import provider_catalog
 from .operations import create_ceo_actions, goal_progress, site_economics
 from .task_state import record_task_created
@@ -521,7 +521,16 @@ class MetaBrainAgent:
         gaps = [s.agent_type for s in states if s.last_error or not s.last_heartbeat_at]
         outcomes = db.scalars(select(DecisionOutcome)).all()
         measured = [x for x in outcomes if x.successful is not None]
-        success_rate = round(sum(bool(x.successful) for x in measured) / len(measured) * 100, 2) if measured else None
+        from .orchestrator_telemetry import sync_routing_outcomes
+
+        sync_routing_outcomes(db)
+        routing_decisions = db.scalars(select(OrchestratorDecision)).all()
+        measured_routing = [x for x in routing_decisions if x.successful is not None]
+        measured_successes = [bool(x.successful) for x in measured] + [
+            bool(x.successful) for x in measured_routing
+        ]
+        success_rate = round(sum(measured_successes) / len(measured_successes) * 100, 2) if measured_successes else None
+        outcomes_measured = len(measured_successes)
         status_counts: dict[str, int] = {}
         for state in states:
             status_counts[state.status] = status_counts.get(state.status, 0) + 1
@@ -532,8 +541,10 @@ class MetaBrainAgent:
                 "agent_types": sorted(state.agent_type for state in states),
                 "agent_status_counts": status_counts,
                 "telemetry_gap_agent_types": sorted(gaps),
-                "decision_outcomes_measured": len(measured),
+                "decision_outcomes_measured": outcomes_measured,
                 "decision_success_rate_percent": success_rate,
+                "orchestrator_decisions_recorded": len(routing_decisions),
+                "orchestrator_outcomes_measured": len(measured_routing),
                 "constraints": {
                     "advisory_only": True,
                     "owner_approval_preserved": True,
@@ -550,7 +561,7 @@ class MetaBrainAgent:
             limit=settings.perplexity_max_improvements_per_cycle,
         )
         recommendations = [f"Restore telemetry for {x}" for x in gaps]
-        if not measured:
+        if not measured_successes:
             recommendations.append("Start measuring decision outcomes")
         recommendations.extend(
             str(item.get("change", ""))
@@ -560,14 +571,23 @@ class MetaBrainAgent:
         return {
             "agents_evaluated": len(states),
             "data_gaps": gaps,
-            "decision_outcomes_measured": len(measured),
+            "decision_outcomes_measured": outcomes_measured,
             "decision_success_rate": success_rate,
+            "orchestrator_decisions_recorded": len(routing_decisions),
+            "orchestrator_outcomes_measured": len(measured_routing),
             "recommendations": recommendations,
             "ai_coaching": coaching,
             "coaching_improvements": coaching_improvements,
             "evidence": [
                 {"decision_id": x.decision_id, "successful": x.successful}
                 for x in measured
+            ] + [
+                {
+                    "type": "orchestrator_routing_outcome",
+                    "routing_decision_id": x.id,
+                    "successful": x.successful,
+                }
+                for x in measured_routing
             ] + [{
                 "type": "agent_quality_research",
                 "provider": coaching.get("provider"),

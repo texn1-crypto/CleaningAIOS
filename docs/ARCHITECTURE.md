@@ -112,8 +112,16 @@ configured, the OpenAI-compatible Responses adapter receives only this aggregate
 snapshot and returns a strict JSON advisory review. Safe analysis/planning
 recommendations can become deduplicated tasks; protected recommendations stay
 advisory and require the owner's normal approval path. LLM failures fall back to the
-deterministic review. Meta Brain measures telemetry gaps and the success rate of
-decisions whose outcomes have been recorded.
+deterministic review. Every task delegated by the orchestrator creates an
+idempotent, PII-free routing decision containing the source/delegated task IDs,
+normalized task type, selected agent, creation time, deterministic expected result
+and an initial `success_expected`/`at_risk` assessment. Terminal outcomes are
+measured automatically and added to Meta Brain's aggregate decision success rate;
+an unmet integration is measured as a missed expectation, while a task waiting for
+the owner's approval remains pending until the protected workflow is resumed.
+Managers can inspect the records through `GET /api/orchestrator-decisions`; task
+titles, payloads, customer data and credentials are never copied into this view or
+its audit events.
 
 `GET /api/ceo/brief` is a read-only primary-database snapshot with one freshness
 timestamp and explicit source endpoints/record IDs. Facts and deterministic

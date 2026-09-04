@@ -20,8 +20,9 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .domains import module_summary, validate_record
-from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, ContentItem, Decision, DomainEvent, EventConsumerReceipt, MessageTemplate, OutboundMessage, SenderMailbox, Suppression, Task, TaskTransition
+from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, ContentItem, Decision, DomainEvent, EventConsumerReceipt, MessageTemplate, OrchestratorDecision, OutboundMessage, SenderMailbox, Suppression, Task, TaskTransition
 from .orchestrator import audit, dispatch
+from .orchestrator_telemetry import measure_routing_outcome, routing_decision_view
 from .platform import company_brain, event_bus
 from .schemas import ApprovalDecision, ContactEventCreate, DecisionCreate, KnowledgeCreate, KnowledgeDocumentCreate, LeadAutopilotCreate, OutreachCreate, RecordCreate, RecordUpdate, SuppressionCreate, TaskCreate
 from .security import Principal, principal, require_role, valid_unsubscribe_token, validate_production_security
@@ -216,6 +217,7 @@ def complete_task(task_id: int, db: Session = Depends(get_db), actor: Principal 
         transition_task(db, row, "done", actor=actor.subject, reason="manual_completion")
     except InvalidTaskTransition as exc:
         raise HTTPException(409, str(exc)) from exc
+    measure_routing_outcome(db, row)
     audit(db, actor.subject, "task.completed_manually", "task", str(row.id)); db.commit()
     return {"ok": True}
 
@@ -236,6 +238,25 @@ def task_transitions(task_id: int, db: Session = Depends(get_db), actor: Princip
         "details": row.details,
         "created_at": row.created_at,
     } for row in rows]
+
+
+@app.get("/api/orchestrator-decisions")
+def orchestrator_decisions(
+    source_task_id: Optional[int] = Query(None),
+    outcome_status: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    query = select(OrchestratorDecision).order_by(OrchestratorDecision.id.desc())
+    if source_task_id is not None:
+        query = query.where(OrchestratorDecision.source_task_id == source_task_id)
+    if outcome_status is not None:
+        if outcome_status not in {"pending", "succeeded", "expectation_missed"}:
+            raise HTTPException(422, "Unsupported outcome status")
+        query = query.where(OrchestratorDecision.outcome_status == outcome_status)
+    rows = db.scalars(query.limit(500)).all()
+    return [routing_decision_view(row) for row in rows]
 
 
 @app.get("/api/decisions")

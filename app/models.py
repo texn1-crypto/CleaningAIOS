@@ -476,6 +476,37 @@ class DecisionOutcome(Base):
     measured_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class OrchestratorDecision(Base):
+    """PII-free, measurable record of one orchestrator-to-agent routing decision."""
+
+    __tablename__ = "orchestrator_decisions"
+    __table_args__ = (
+        UniqueConstraint("decision_key", name="uq_orchestrator_decision_key"),
+        UniqueConstraint("delegated_task_id", name="uq_orchestrator_decision_delegated_task"),
+        CheckConstraint(
+            "expectation_status IN ('success_expected', 'at_risk')",
+            name="ck_orchestrator_decision_expectation",
+        ),
+        CheckConstraint(
+            "outcome_status IN ('pending', 'succeeded', 'expectation_missed')",
+            name="ck_orchestrator_decision_outcome",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    decision_key: Mapped[str] = mapped_column(String(128))
+    source_task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"), index=True)
+    delegated_task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"), index=True)
+    task_type: Mapped[str] = mapped_column(String(64), index=True)
+    selected_agent: Mapped[str] = mapped_column(String(64), index=True)
+    expected_result: Mapped[str] = mapped_column(String(255))
+    expectation_status: Mapped[str] = mapped_column(String(32), default="success_expected", index=True)
+    outcome_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    successful: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, index=True)
+    correlation_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    measured_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+
+
 class TenderDocument(Base):
     __tablename__ = "tender_documents"
     __table_args__ = (UniqueConstraint("record_id", "source_url", name="uq_tender_document_source"),)
