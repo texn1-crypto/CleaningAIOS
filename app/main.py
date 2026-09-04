@@ -35,7 +35,12 @@ from .site_pages import about_html, contacts_html, journal_html, prices_html, se
 from .agents import AGENTS
 from .llm import llm_advisor, prompt_deployment_catalog
 from .readiness import integration_status
-from .task_state import InvalidTaskTransition, record_task_created, transition_task
+from .task_state import (
+    InvalidTaskTransition,
+    record_task_created,
+    task_execution_lock_query,
+    transition_task,
+)
 from .observability import agent_observability_snapshot, prometheus_metrics
 from .logging_config import configure_logging, request_correlation_id
 from .approval_service import (
@@ -200,7 +205,7 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db), actor: Princ
 @app.post("/api/tasks/{task_id}/run")
 def run_task(task_id: int, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "operator")
-    row = db.get(Task, task_id)
+    row = db.scalar(task_execution_lock_query(task_id))
     if not row: raise HTTPException(404, "Task not found")
     if row.status not in {"open", "queued"}:
         raise HTTPException(409, f"Task in status {row.status} cannot be run")

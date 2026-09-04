@@ -24,6 +24,12 @@ class InvalidTaskTransition(ValueError):
     """Raised when a command violates the persisted task state machine."""
 
 
+def task_execution_lock_query(task_id: int):
+    """Build the row-locking query shared by competing task executors."""
+
+    return select(Task).where(Task.id == task_id).with_for_update()
+
+
 def record_task_created(
     db: Session,
     task: Task,
