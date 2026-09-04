@@ -915,6 +915,11 @@ def test_meta_brain_sends_only_aggregate_telemetry_to_agent_coach(client, monkey
     assert "Добавить тест маршрутизации" in result["recommendations"]
     assert captured["constraints"]["personal_data_included"] is False
     assert captured["constraints"]["secrets_included"] is False
+    assert captured["period_minutes"] == 30
+    assert captured["agent_usage"]
+    assert all("agent_type" in item and "request_count" in item for item in captured["agent_usage"])
+    assert result["agent_utilization"]["privacy"]["aggregate_only"] is True
+    assert result["role_balance_recommendations"]
     assert "last_error" not in captured
     assert "metrics" not in captured
     assert len(result["coaching_improvements"]) == 1

@@ -187,6 +187,9 @@ improvements, but never claim that you changed an agent or trained a model. Ever
 be reviewed and tested locally before activation. Do not request or infer secrets, banking
 details, customer personal data, recipient addresses or message contents. Do not recommend
 bypassing owner approvals, suppression, unsubscribe, rate limits or platform policies.
+Analyze agent_usage request frequency, failure rates and idle roles for the stated period.
+Give short role-balancing or safe role-activation recommendations, but never invent work merely
+to make an idle agent appear active and never assign work outside an agent's registered role.
 Return only the requested JSON object in concise Russian."""
 
 EVOLUTION_RESEARCH_PROMPT = """You are the source-grounded AI Evolution Researcher for CleaningAI OS.
@@ -243,10 +246,10 @@ PROMPT_DEPLOYMENTS: dict[str, PromptDeployment] = {
     ),
     "agent_coaching": PromptDeployment(
         stable=PromptRelease(
-            "agent_coaching", "1.0.0", AGENT_COACH_PROMPT, "cleaning_agent_coaching"
+            "agent_coaching", "1.1.0", AGENT_COACH_PROMPT, "cleaning_agent_coaching"
         ),
         candidate=PromptRelease(
-            "agent_coaching", "2.0.0", AGENT_COACH_PROMPT_V2, "cleaning_agent_coaching"
+            "agent_coaching", "2.1.0", AGENT_COACH_PROMPT_V2, "cleaning_agent_coaching"
         ),
     ),
     "evolution_research": PromptDeployment(

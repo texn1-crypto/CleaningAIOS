@@ -517,6 +517,21 @@ class CEOAgent:
 class MetaBrainAgent:
     name = "meta_brain"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        from .observability import agent_utilization_snapshot, role_balance_recommendations
+
+        period_minutes = max(
+            5,
+            min(
+                int(payload.get("period_minutes") or settings.perplexity_coach_interval_minutes),
+                7 * 24 * 60,
+            ),
+        )
+        utilization = agent_utilization_snapshot(
+            db,
+            registered_agents=sorted(AGENTS),
+            period_minutes=period_minutes,
+        )
+        balance_recommendations = role_balance_recommendations(utilization)
         states = db.scalars(select(AgentState)).all()
         gaps = [s.agent_type for s in states if s.last_error or not s.last_heartbeat_at]
         outcomes = db.scalars(select(DecisionOutcome)).all()
@@ -545,6 +560,11 @@ class MetaBrainAgent:
                 "decision_success_rate_percent": success_rate,
                 "orchestrator_decisions_recorded": len(routing_decisions),
                 "orchestrator_outcomes_measured": len(measured_routing),
+                "period_minutes": period_minutes,
+                "agent_usage": utilization["per_agent"],
+                "idle_agent_types": utilization["idle_agent_types"],
+                "failure_hotspots": utilization["failure_hotspots"],
+                "role_balance_recommendations": balance_recommendations,
                 "constraints": {
                     "advisory_only": True,
                     "owner_approval_preserved": True,
@@ -563,6 +583,7 @@ class MetaBrainAgent:
         recommendations = [f"Restore telemetry for {x}" for x in gaps]
         if not measured_successes:
             recommendations.append("Start measuring decision outcomes")
+        recommendations.extend(balance_recommendations)
         recommendations.extend(
             str(item.get("change", ""))
             for item in coaching.get("recommendations", [])
@@ -575,6 +596,8 @@ class MetaBrainAgent:
             "decision_success_rate": success_rate,
             "orchestrator_decisions_recorded": len(routing_decisions),
             "orchestrator_outcomes_measured": len(measured_routing),
+            "agent_utilization": utilization,
+            "role_balance_recommendations": balance_recommendations,
             "recommendations": recommendations,
             "ai_coaching": coaching,
             "coaching_improvements": coaching_improvements,
@@ -589,6 +612,14 @@ class MetaBrainAgent:
                 }
                 for x in measured_routing
             ] + [{
+                "type": "aggregate_agent_utilization",
+                "period_minutes": period_minutes,
+                "requests": utilization["totals"]["requests"],
+                "failed": utilization["totals"]["failed"],
+                "idle_agents": utilization["totals"]["idle_agents"],
+                "personal_data_included": False,
+                "secrets_included": False,
+            }, {
                 "type": "agent_quality_research",
                 "provider": coaching.get("provider"),
                 "status": coaching.get("status"),

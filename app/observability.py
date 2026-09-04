@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -13,6 +14,7 @@ from .models import AgentRun, AgentToolCall, ApprovalRequest, DomainEvent, Task
 
 
 MAX_RUN_SAMPLE = 10_000
+MAX_UTILIZATION_WINDOW_MINUTES = 7 * 24 * 60
 
 
 def _utcnow() -> datetime:
@@ -221,6 +223,145 @@ def agent_observability_snapshot(
             ],
         },
     }
+
+
+def agent_utilization_snapshot(
+    db: Session,
+    *,
+    registered_agents: Sequence[str],
+    period_minutes: int,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return aggregate run frequency and failures without run payloads or errors."""
+
+    generated_at = now or _utcnow()
+    minutes = max(5, min(int(period_minutes), MAX_UTILIZATION_WINDOW_MINUTES))
+    cutoff = generated_at - timedelta(minutes=minutes)
+    rows = db.execute(
+        select(AgentRun.agent_type, AgentRun.status, func.count(AgentRun.id))
+        .where(AgentRun.started_at >= cutoff, AgentRun.started_at <= generated_at)
+        .group_by(AgentRun.agent_type, AgentRun.status)
+        .order_by(AgentRun.agent_type, AgentRun.status)
+    ).all()
+
+    status_by_agent: dict[str, dict[str, int]] = defaultdict(dict)
+    for agent_type, status, count in rows:
+        status_by_agent[str(agent_type)][str(status)] = int(count)
+
+    agent_types = sorted(
+        {str(agent_type).strip() for agent_type in registered_agents if str(agent_type).strip()}
+        | set(status_by_agent)
+    )
+    per_agent: list[dict[str, Any]] = []
+    total_requests = 0
+    total_succeeded = 0
+    total_failed = 0
+    total_running = 0
+    for agent_type in agent_types:
+        statuses = status_by_agent.get(agent_type, {})
+        request_count = sum(statuses.values())
+        succeeded = statuses.get("succeeded", 0)
+        failed = statuses.get("failed", 0) + statuses.get("incomplete", 0)
+        running = statuses.get("running", 0)
+        completed = succeeded + failed
+        failure_rate = round(failed * 100 / completed, 2) if completed else None
+        per_agent.append(
+            {
+                "agent_type": agent_type,
+                "request_count": request_count,
+                "requests_per_hour": round(request_count * 60 / minutes, 2),
+                "succeeded": succeeded,
+                "failed": failed,
+                "running": running,
+                "failure_rate_percent": failure_rate,
+                "idle": request_count == 0,
+            }
+        )
+        total_requests += request_count
+        total_succeeded += succeeded
+        total_failed += failed
+        total_running += running
+
+    idle_agent_types = [row["agent_type"] for row in per_agent if row["idle"]]
+    failure_hotspots = [
+        {
+            "agent_type": row["agent_type"],
+            "failed": row["failed"],
+            "failure_rate_percent": row["failure_rate_percent"],
+        }
+        for row in per_agent
+        if row["failed"] > 0
+    ]
+    failure_hotspots.sort(
+        key=lambda item: (
+            -float(item["failure_rate_percent"] or 0),
+            -int(item["failed"]),
+            str(item["agent_type"]),
+        )
+    )
+    return {
+        "generated_at": generated_at.isoformat() + "Z",
+        "period_minutes": minutes,
+        "totals": {
+            "requests": total_requests,
+            "succeeded": total_succeeded,
+            "failed": total_failed,
+            "running": total_running,
+            "idle_agents": len(idle_agent_types),
+        },
+        "idle_agent_types": idle_agent_types,
+        "failure_hotspots": failure_hotspots,
+        "per_agent": per_agent,
+        "privacy": {
+            "aggregate_only": True,
+            "run_payloads_included": False,
+            "run_errors_included": False,
+            "personal_data_included": False,
+            "secrets_included": False,
+        },
+    }
+
+
+def role_balance_recommendations(snapshot: dict[str, Any]) -> list[str]:
+    """Build short deterministic recommendations from aggregate utilization only."""
+
+    per_agent = snapshot.get("per_agent") or []
+    hotspots = snapshot.get("failure_hotspots") or []
+    idle_agent_types = [str(item) for item in snapshot.get("idle_agent_types") or []]
+    recommendations = [
+        (
+            f"Проверить надежность агента {item['agent_type']}: "
+            f"{item['failed']} отказов, доля {item['failure_rate_percent']}%."
+        )
+        for item in hotspots[:3]
+    ]
+    if idle_agent_types:
+        displayed = ", ".join(idle_agent_types[:8])
+        suffix = " и другие" if len(idle_agent_types) > 8 else ""
+        recommendations.append(
+            "Проверить необходимость безопасных профильных заданий для простаивающих "
+            f"агентов: {displayed}{suffix}; не создавать искусственную работу."
+        )
+
+    total_requests = int((snapshot.get("totals") or {}).get("requests") or 0)
+    active = [item for item in per_agent if int(item.get("request_count") or 0) > 0]
+    if total_requests >= 5 and active:
+        busiest = max(
+            active,
+            key=lambda item: (
+                int(item.get("request_count") or 0),
+                str(item.get("agent_type")),
+            ),
+        )
+        share = round(int(busiest.get("request_count") or 0) * 100 / total_requests, 2)
+        if share >= 60:
+            recommendations.append(
+                f"Проверить маршрутизацию нагрузки: на {busiest['agent_type']} приходится "
+                f"{share}% обращений; перераспределять только совместимые аналитические задачи."
+            )
+    if not recommendations:
+        recommendations.append("Подтвержденных отказов и дисбаланса ролей за период не обнаружено.")
+    return recommendations[:5]
 
 
 def _label(value: str) -> str:
