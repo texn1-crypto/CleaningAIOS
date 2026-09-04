@@ -1089,6 +1089,36 @@ def test_tender_feed_and_document_download(client, monkeypatch, tmp_path):
     assert downloaded["bytes"] == 7
 
 
+def test_tender_collection_does_not_expose_source_exception(client, monkeypatch):
+    from app import integrations
+    from app.config import settings
+
+    secret = "feed-authorization-must-not-leak"
+
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def get(self, url):
+            raise RuntimeError(f"request failed with {secret}")
+
+    monkeypatch.setattr(integrations.httpx, "Client", Client)
+    monkeypatch.setattr(
+        integrations.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    monkeypatch.setattr(settings, "tender_sources", "https://feed.example/tenders")
+    response = client.post("/api/tender-sources/collect", headers={"X-Role": "manager"})
+    assert response.status_code == 200
+    assert response.json()["errors"] == [{
+        "source": "https://feed.example/tenders",
+        "error": "Tender source collection failed",
+        "error_type": "RuntimeError",
+    }]
+    assert secret not in response.text
+
+
 def test_delivery_event_suppresses_bounced_recipient(client):
     queued = client.post("/api/outreach/messages", json={"campaign_key": "bounce-test", "recipient": "bounce@example.com", "subject": "Test", "body": "Body"}).json()
     event = client.post("/api/outreach/delivery-events", json={"event_type": "bounce", "recipient": "bounce@example.com", "message_id": queued["id"], "reason": "mailbox unavailable"})
@@ -1994,7 +2024,7 @@ def test_social_account_setup_persists_real_progress_and_audits_failures(client,
     }).json()
     failed = client.post(f"/api/tasks/{failed_task['id']}/run").json()
     assert failed["status"] == "failed"
-    assert "Unsupported social channels" in failed["result"]["error"]
+    assert failed["result"] == {"error": "Agent execution failed", "error_type": "ValueError"}
     assert any(
         row["action"] == "task.failed" and row["resource_id"] == str(failed_task["id"])
         for row in client.get("/api/audit").json()
@@ -3160,7 +3190,7 @@ def test_copywriter_improves_replied_text_with_audited_draft(client):
     }).json()
     failed_result = client.post(f"/api/tasks/{failed['id']}/run").json()
     assert failed_result["status"] == "failed"
-    assert "Referenced text is required" in failed_result["result"]["error"]
+    assert failed_result["result"] == {"error": "Agent execution failed", "error_type": "ValueError"}
 
 
 def test_telegram_improve_this_returns_real_draft(monkeypatch):
@@ -3282,7 +3312,7 @@ def test_previous_request_is_reviewed_with_audited_result(client):
     }).json()
     failed = client.post(f"/api/tasks/{missing['id']}/run").json()
     assert failed["status"] == "failed"
-    assert "Referenced text is required" in failed["result"]["error"]
+    assert failed["result"] == {"error": "Agent execution failed", "error_type": "ValueError"}
 
 
 def test_telegram_feedback_uses_resolved_previous_context(monkeypatch):
@@ -3738,6 +3768,73 @@ def test_customer_requested_campaign_keeps_attachment_bound_to_approval_and_queu
         )
         assert message is not None
         assert message.attachments[0]["sha256"] == hashlib.sha256(raw).hexdigest()
+
+
+def test_campaign_attachment_storage_never_trusts_submitted_paths(monkeypatch, tmp_path):
+    import base64
+    import hashlib
+
+    from app.config import settings
+    from app.outreach import persist_campaign_attachments
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    raw = b"safe outreach attachment"
+    created = persist_campaign_attachments("safe-campaign", [{
+        "filename": "../../outside.pdf",
+        "content_type": "application/pdf",
+        "content_base64": base64.b64encode(raw).decode(),
+    }])
+    stored_path = Path(created[0]["storage_path"])
+    assert stored_path.parent == (tmp_path / "outreach").resolve()
+    assert stored_path.name.endswith(".attachment")
+    assert "outside" not in stored_path.name
+    assert stored_path.read_bytes() == raw
+
+    external = tmp_path / "external-secret.pdf"
+    external.write_bytes(b"must not be read")
+    digest = hashlib.sha256(external.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="storage object is unavailable"):
+        persist_campaign_attachments("unsafe-replay", [{
+            "filename": "offer.pdf",
+            "content_type": "application/pdf",
+            "sha256": digest,
+            "storage_path": str(external),
+        }])
+
+    symlink = tmp_path / "outreach" / "legacy-link.pdf"
+    symlink.symlink_to(external)
+    with pytest.raises(ValueError, match="storage object is unavailable"):
+        persist_campaign_attachments("unsafe-symlink", [{
+            "filename": "offer.pdf",
+            "content_type": "application/pdf",
+            "sha256": digest,
+            "storage_path": str(symlink),
+        }])
+
+
+def test_campaign_attachment_storage_migrates_safe_legacy_objects(monkeypatch, tmp_path):
+    import hashlib
+
+    from app.config import settings
+    from app.outreach import persist_campaign_attachments
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    directory = tmp_path / "outreach"
+    directory.mkdir()
+    raw = b"legacy attachment"
+    legacy_path = directory / "legacy-campaign-sha-offer.pdf"
+    legacy_path.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    migrated = persist_campaign_attachments("legacy-campaign", [{
+        "filename": "offer.pdf",
+        "content_type": "application/pdf",
+        "sha256": digest,
+        "storage_path": str(legacy_path),
+    }])
+    canonical = Path(migrated[0]["storage_path"])
+    assert canonical != legacy_path
+    assert canonical.parent == directory.resolve()
+    assert canonical.read_bytes() == raw
 
 
 def test_customer_requested_campaign_queues_up_to_one_thousand_in_hundred_recipient_batches(client, monkeypatch):
@@ -4300,9 +4397,51 @@ def test_sales_agent_proposal_failure_is_recorded(client, monkeypatch, tmp_path)
     task = client.post("/api/tasks", json={"title": "Missing CRM proposal", "agent_type": "sales", "payload": intent["payload"], "max_attempts": 1}).json()
     completed = client.post(f"/api/tasks/{task['id']}/run").json()
     assert completed["status"] == "failed"
-    assert "не найден в CRM" in completed["result"]["error"]
+    assert completed["result"]["error"] == "Agent execution failed"
+    assert completed["result"]["error_type"] == "ValueError"
+    assert "не найден в CRM" not in str(completed["result"])
     audit = client.get("/api/audit").json()
     assert any(row["action"] == "task.failed" and row["resource_id"] == str(task["id"]) for row in audit)
+
+
+def test_failed_task_does_not_expose_exception_details(client, monkeypatch):
+    from sqlalchemy import select
+
+    from app.agents import AGENTS
+    from app.db import SessionLocal
+    from app.models import AgentRun, TaskTransition
+
+    secret = "smtp-password-must-never-leak"
+
+    class FailingAgent:
+        name = "safe_failure_test"
+
+        def execute(self, db, payload):
+            raise RuntimeError(f"provider traceback included {secret}")
+
+    monkeypatch.setitem(AGENTS, "safe_failure_test", FailingAgent())
+    task = client.post("/api/tasks", json={
+        "title": "Safe public failure",
+        "agent_type": "safe_failure_test",
+        "max_attempts": 1,
+    }).json()
+    response = client.post(f"/api/tasks/{task['id']}/run")
+    assert response.status_code == 200
+    assert response.json()["result"] == {
+        "error": "Agent execution failed",
+        "error_type": "RuntimeError",
+    }
+    assert secret not in response.text
+    with SessionLocal() as db:
+        run = db.scalar(select(AgentRun).where(AgentRun.task_id == task["id"]))
+        transition = db.scalar(
+            select(TaskTransition)
+            .where(TaskTransition.task_id == task["id"], TaskTransition.to_status == "failed")
+        )
+        assert run is not None
+        assert transition is not None
+        assert secret not in run.error
+        assert secret not in str(transition.details)
 
 
 def test_telegram_proposal_request_returns_real_pdf(monkeypatch):
@@ -4448,6 +4587,48 @@ def test_workspace_agent_handoff_uses_official_trigger_contract(client, monkeypa
     assert captured["headers"]["Authorization"] == "Bearer workspace-secret"
     assert captured["headers"]["Idempotency-Key"]
     assert captured["payload"]["input"].startswith("CleaningAI OS improvement request")
+
+
+def test_workspace_handoff_does_not_expose_transport_exception(client, monkeypatch):
+    import httpx
+
+    from app import improvements as improvement_module
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    monkeypatch.setattr(settings, "workspace_agent_trigger_id", "")
+    monkeypatch.setattr(settings, "workspace_agent_access_token", "")
+    message = "Позвони потенциальному заказчику и договорись о встрече"
+    created = client.post(
+        "/api/request-analysis",
+        json={"message": message, "intent": understand_russian_message(message)},
+    ).json()
+    secret = "transport-token-must-not-leak"
+
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, *args, **kwargs):
+            raise httpx.ConnectError(f"upstream failed with {secret}")
+
+    monkeypatch.setattr(improvement_module.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "workspace_agent_trigger_id", "agtch_security_test")
+    monkeypatch.setattr(settings, "workspace_agent_access_token", "configured-secret")
+    response = client.post(f"/api/improvements/{created['improvement_id']}/handoff")
+    assert response.status_code == 200
+    assert response.json()["handoff"] == {
+        "status": "failed",
+        "error": "Workspace agent handoff failed",
+        "error_type": "ConnectError",
+    }
+    assert secret not in response.text
+    stored = next(
+        row for row in client.get("/api/improvements").json()
+        if row["id"] == created["improvement_id"]
+    )
+    assert secret not in str(stored)
 
 
 def test_codex_can_update_improvement_with_test_evidence(client, monkeypatch):

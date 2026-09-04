@@ -557,7 +557,10 @@ def _ok_signature(data: dict[str, object]) -> str:
         if key not in {"access_token", "session_key", "sig"}
     }
     canonical = "".join(f"{key}={signed[key]}" for key in sorted(signed))
-    return hashlib.md5(
+    # Odnoklassniki's REST protocol requires this exact MD5 signature. It is
+    # request interoperability only, never password hashing or a local security
+    # decision, and the request is sent exclusively over HTTPS.
+    return hashlib.md5(  # lgtm[py/weak-sensitive-data-hashing]
         (canonical + settings.odnoklassniki_session_secret).encode("utf-8"),
         usedforsecurity=False,
     ).hexdigest()

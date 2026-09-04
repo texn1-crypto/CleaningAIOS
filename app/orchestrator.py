@@ -176,7 +176,8 @@ def dispatch(db: Session, task: Task) -> dict:
     except Exception as exc:
         source = str((task.payload or {}).get("source", ""))
         if source in {"telegram_natural_language", "telegram_document", "telegram_mailing_wizard"}:
-            escalation = _escalate_execution_gap(db, task, str(exc), credentials_required=False)
+            safe_reason = f"{type(exc).__name__}: agent execution failed"
+            escalation = _escalate_execution_gap(db, task, safe_reason, credentials_required=False)
             task.result = {**(task.result or {}), **escalation}
         audit(db, task.agent_type, "task.failed", "task", str(task.id), task.result)
         if task.attempts < task.max_attempts:

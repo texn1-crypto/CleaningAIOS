@@ -17,6 +17,18 @@ from app.social_news import CleaningNewsItem, parse_cleaning_news_feed
 from app.social_runtime import _https_endpoint, _ok_signature, _safe_provider_failure, generate_next_social_visual, publish_next_social_post, queue_direct_image_request
 
 
+def test_odnoklassniki_signature_matches_provider_protocol(monkeypatch):
+    monkeypatch.setattr(settings, "odnoklassniki_session_secret", "session-secret")
+    signature = _ok_signature({
+        "b": "x",
+        "access_token": "excluded-token",
+        "a": 1,
+    })
+    assert signature == "f996bd9c951ce7ffcd87a769b37fb1ee"
+    assert "excluded-token" not in signature
+    assert "session-secret" not in signature
+
+
 def test_cleaning_news_feed_keeps_only_fresh_relevant_https_items(monkeypatch):
     monkeypatch.setattr(settings, "cleaning_news_max_age_days", 14)
     raw = b"""<?xml version='1.0'?><rss><channel><title>Trade News</title>

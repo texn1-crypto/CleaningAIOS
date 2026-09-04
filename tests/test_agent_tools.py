@@ -72,7 +72,7 @@ def test_unknown_or_unallowlisted_tool_is_denied_before_agent_logic(client):
         tools=[{"name": "shell.execute", "arguments": {"command": "ignored"}}],
     )
     assert task["status"] == "failed"
-    assert "not allowed" in task["result"]["error"]
+    assert task["result"] == {"error": "Agent execution failed", "error_type": "AgentToolDenied"}
 
     with SessionLocal() as db:
         run = db.scalar(
@@ -99,7 +99,7 @@ def test_tool_call_count_and_result_size_budgets_are_enforced(client, monkeypatc
         ],
     )
     assert over_count["status"] == "failed"
-    assert "budget exceeded" in over_count["result"]["error"]
+    assert over_count["result"] == {"error": "Agent execution failed", "error_type": "AgentToolDenied"}
 
     def large_result(db, arguments):
         del db, arguments
@@ -157,7 +157,7 @@ def test_tool_timeout_discards_result_and_records_timeout(client, monkeypatch):
         tools=[{"name": "test.slow", "arguments": {}}],
     )
     assert task["status"] == "failed"
-    assert "time budget exceeded" in task["result"]["error"]
+    assert task["result"] == {"error": "Agent execution failed", "error_type": "AgentToolTimedOut"}
     with SessionLocal() as db:
         call = db.scalar(
             select(AgentToolCall).where(AgentToolCall.task_id == task["id"])

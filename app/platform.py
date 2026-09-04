@@ -336,8 +336,10 @@ class AgentRuntime:
             heartbeat(db, task.agent_type, "idle", metrics=result)
             return result
         except Exception as exc:
+            error_type = type(exc).__name__[:128]
+            safe_error = "Agent execution failed"
             run.status = "failed"
-            run.error = str(exc)
+            run.error = f"{error_type}: {safe_error}"
             transition_task(
                 db,
                 task,
@@ -345,11 +347,11 @@ class AgentRuntime:
                 actor=task.agent_type,
                 reason="agent_execution_failed",
                 correlation_id=correlation_id,
-                details={"error": str(exc)[:4000]},
+                details={"error": safe_error, "error_type": error_type},
                 transition_key=f"task:{task.id}:attempt:{attempt}:failed",
             )
-            task.result = {"error": str(exc)}
-            heartbeat(db, task.agent_type, "error", str(exc))
+            task.result = {"error": safe_error, "error_type": error_type}
+            heartbeat(db, task.agent_type, "error", f"{error_type}: {safe_error}")
             raise
         finally:
             run.finished_at = now_utc()

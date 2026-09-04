@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import os
 import re
+import stat
 from datetime import datetime, timezone
 from itertools import cycle
 from pathlib import Path
@@ -110,59 +111,129 @@ def _safe_filename(value: str) -> str:
     return f"{stem}{Path(name).suffix.lower()[:16]}"
 
 
+def _attachment_directory() -> Path:
+    directory = (Path(settings.document_storage_path) / "outreach").resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    directory.chmod(0o700)
+    return directory
+
+
+def _attachment_object_name(digest: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("Attachment checksum is invalid")
+    # A second digest produces an opaque, fixed-alphabet server-side object key.
+    # User filenames and submitted paths never become filesystem path components.
+    object_key = hashlib.sha256(bytes.fromhex(digest)).hexdigest()
+    return f"{object_key}.attachment"
+
+
+def _read_attachment(directory: Path, name: str) -> bytes:
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    directory_fd = os.open(directory, directory_flags)
+    descriptor = -1
+    try:
+        descriptor = os.open(name, file_flags, dir_fd=directory_fd)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("Attachment storage object is not a regular file")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            return stream.read(settings.max_attachment_bytes + 1)
+    except OSError as exc:
+        raise ValueError("Attachment storage object is unavailable") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_fd)
+
+
+def _store_attachment(directory: Path, name: str, raw: bytes) -> None:
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    directory_fd = os.open(directory, directory_flags)
+    descriptor = -1
+    try:
+        descriptor = os.open(name, file_flags, 0o600, dir_fd=directory_fd)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(raw)
+    except FileExistsError:
+        return
+    except Exception:
+        try:
+            os.unlink(name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_fd)
+
+
+def _legacy_attachment_name(directory: Path, submitted_path: object) -> str | None:
+    """Find a legacy object by directory enumeration, never by opening its input path."""
+    requested_name = os.path.basename(str(submitted_path))
+    if not requested_name or requested_name != str(submitted_path).replace("\\", "/").rsplit("/", 1)[-1]:
+        return None
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if entry.name == requested_name and entry.is_file(follow_symlinks=False):
+                return entry.name
+    return None
+
+
 def persist_campaign_attachments(campaign_key: str, attachments: list[dict]) -> list[dict]:
     """Store unique payloads once on the web/worker shared protected volume."""
     if attachments and all(item.get("storage_path") for item in attachments):
-        root = Path(settings.document_storage_path).resolve()
+        directory = _attachment_directory()
         persisted: list[dict] = []
         total = 0
         for item in attachments:
-            path = Path(str(item["storage_path"])).resolve()
+            expected_digest = str(item.get("sha256") or "")
+            object_name = _attachment_object_name(expected_digest)
             try:
-                path.relative_to(root)
-            except ValueError as exc:
-                raise ValueError("Attachment path is outside document storage") from exc
-            raw = path.read_bytes()
+                raw = _read_attachment(directory, object_name)
+            except ValueError:
+                legacy_name = _legacy_attachment_name(directory, item["storage_path"])
+                if not legacy_name:
+                    raise ValueError("Attachment storage object is unavailable") from None
+                raw = _read_attachment(directory, legacy_name)
             total += len(raw)
             digest = hashlib.sha256(raw).hexdigest()
             if not raw or len(raw) > settings.max_attachment_bytes or total > settings.max_attachment_bytes:
                 raise ValueError("Combined attachments exceed the safe size limit")
-            if item.get("sha256") and item["sha256"] != digest:
+            if digest != expected_digest:
                 raise ValueError("Attachment checksum mismatch")
+            _store_attachment(directory, object_name, raw)
             persisted.append({
-                "filename": _safe_filename(str(item.get("filename") or path.name)),
+                "filename": _safe_filename(str(item.get("filename") or "attachment")),
                 "content_type": str(item.get("content_type") or "application/octet-stream")[:128],
                 "sha256": digest,
                 "size": len(raw),
-                "storage_path": str(path),
+                "storage_path": str(directory / object_name),
             })
         return persisted
     checked = validate_attachments(attachments)
     if not checked:
         return []
-    directory = Path(settings.document_storage_path) / "outreach"
-    directory.mkdir(parents=True, exist_ok=True)
-    directory.chmod(0o700)
+    directory = _attachment_directory()
     persisted: list[dict] = []
-    campaign_digest = hashlib.sha256(campaign_key.encode()).hexdigest()[:16]
     for item in checked:
         filename = _safe_filename(item["filename"])
-        path = directory / f"{campaign_digest}-{item['sha256'][:16]}-{filename}"
-        if not path.exists():
-            raw = base64.b64decode(item["content_base64"], validate=True)
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                with os.fdopen(descriptor, "wb") as stream:
-                    stream.write(raw)
-            except Exception:
-                path.unlink(missing_ok=True)
-                raise
+        object_name = _attachment_object_name(item["sha256"])
+        raw = base64.b64decode(item["content_base64"], validate=True)
+        _store_attachment(directory, object_name, raw)
+        stored = _read_attachment(directory, object_name)
+        if hashlib.sha256(stored).hexdigest() != item["sha256"]:
+            raise ValueError("Attachment checksum mismatch")
         persisted.append({
             "filename": filename,
             "content_type": item["content_type"],
             "sha256": item["sha256"],
             "size": item["size"],
-            "storage_path": str(path),
+            "storage_path": str(directory / object_name),
         })
     return persisted
 

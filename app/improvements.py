@@ -272,7 +272,11 @@ def trigger_workspace_agent(row: ImprovementRequest) -> dict[str, Any]:
             "run_id": str(body.get("agent_trigger_run_id", ""))[:128],
         }
     except (httpx.HTTPError, ValueError, TypeError) as exc:
-        return {"status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+        return {
+            "status": "failed",
+            "error": "Workspace agent handoff failed",
+            "error_type": type(exc).__name__[:128],
+        }
 
 
 def retry_workspace_handoff(row: ImprovementRequest) -> dict[str, Any]:

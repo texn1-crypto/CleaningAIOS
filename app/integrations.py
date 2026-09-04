@@ -133,7 +133,11 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                             db.add(TenderDocument(record_id=row.id, name=str(doc.get("name") or "document"), source_url=url, content_type=str(doc.get("content_type") or "application/octet-stream")))
                     event_bus.publish(db, "tender.discovered" if is_new else "tender.updated", "tender", str(row.id), {"external_id": external_id, "score": row.score, "viability_status": evaluation["status"]}, idempotency_key=f"tender-feed:{external_id}:{hashlib.sha256(repr(item).encode()).hexdigest()[:16]}")
             except Exception as exc:
-                errors.append({"source": source, "error": str(exc)})
+                errors.append({
+                    "source": source,
+                    "error": "Tender source collection failed",
+                    "error_type": type(exc).__name__[:128],
+                })
     return {"status": "completed_with_errors" if errors else "completed", "created": created, "updated": updated, "errors": errors}
 
 
@@ -166,7 +170,7 @@ def download_tender_document(db: Session, document: TenderDocument) -> dict[str,
                 raise HTTPException(502, "Document source has too many redirects")
     except httpx.HTTPError as exc:
         document.status = "download_failed"; db.commit()
-        raise HTTPException(502, f"Document download failed: {exc}") from exc
+        raise HTTPException(502, "Document download failed") from exc
     storage = Path(settings.document_storage_path); storage.mkdir(parents=True, exist_ok=True)
     clean_name = re.sub(r"[^A-Za-zА-Яа-я0-9._-]+", "_", document.name).strip("._") or "document"
     target = storage / f"tender-{document.record_id}-doc-{document.id}-{clean_name}"
