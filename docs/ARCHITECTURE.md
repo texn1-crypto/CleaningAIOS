@@ -177,3 +177,9 @@ rows link back to their source resource. Navigation never infers task state loca
   severity/correlation metadata, signed acknowledgement and delivery metrics. Hot
   leads use transactional SMTP without unsubscribe markup; approvals use signed
   Telegram actions handled by the backward-compatible polling bot.
+- Public-business lead research uses the advisory Perplexity adapter and accepts
+  only cited HTTPS pages, organization-level contacts and an explicit target-region
+  allowlist. Deterministic validation rejects personal/free-mail contacts, private
+  network URLs and uncited results before deduplicated CRM persistence. A public
+  address is stored with `outreach_consent=not_verified`; the capability creates no
+  consent record and sends no message.

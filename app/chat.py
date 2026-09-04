@@ -34,6 +34,14 @@ def _task_agent(text: str) -> str:
         if _contains(text, "найди", "найти", "ищи", "поиск", "собери", "монитор"):
             return "research"
         return "tender"
+    if _contains(text, "найди", "найти", "ищи", "поиск", "собери") and _contains(
+        text,
+        "потенциальн",
+        "заказчик",
+        "корпоративн контакт",
+        "публичн контакт",
+    ):
+        return "lead_scout"
     if _contains(text, "лид", "клиент", "продаж", "crm", "коммерческ", "follow-up", "фоллоу"):
         return "sales"
     if _contains(text, "кандидат", "сотрудник", "уборщик", "вакан", "смен", "персонал", "кадр", "увол", "наня"):
@@ -342,6 +350,20 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
         payload["action_kind"] = action_kind
     if agent_type == "research" and _contains(text, "тендер", "закупк", "конкурс"):
         payload.update({"collection": "tenders", "query": safe_original[:1000]})
+    if agent_type == "lead_scout":
+        payload.update(
+            {
+                "action": "discover_public_business_leads",
+                "regions": [
+                    "Санкт-Петербург",
+                    "Ленинградская область",
+                    "Москва",
+                    "Московская область",
+                ],
+                "max_results": 20,
+                "automatic_outreach": False,
+            }
+        )
     if agent_type == "sales" and ("коммерческ" in text or re.search(r"\bкп\b", text)) and "предлож" in text:
         payload.update({"action": "generate_proposal", "client_query": _proposal_client_query(safe_original)})
     if agent_type == "marketing" and _contains(

@@ -643,6 +643,15 @@ class EvolutionResearcherAgent:
         )
 
 
+class PublicLeadScoutAgent:
+    name = "lead_scout"
+
+    def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        from .lead_scout import run_public_lead_scout
+
+        return run_public_lead_scout(db, payload)
+
+
 class SystemAdminAgent:
     name = "system_admin"
 
@@ -721,7 +730,7 @@ class CreativeAgent:
 
 
 AGENTS: dict[str, Agent] = {}
-for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), GrowthOfficerAgent(), MetaBrainAgent(), EvolutionResearcherAgent(), SystemAdminAgent(), RequestAnalystAgent(), CopywriterAgent(), CreativeAgent()]:
+for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), GrowthOfficerAgent(), MetaBrainAgent(), EvolutionResearcherAgent(), PublicLeadScoutAgent(), SystemAdminAgent(), RequestAnalystAgent(), CopywriterAgent(), CreativeAgent()]:
     AGENTS[agent.name] = agent
 
 

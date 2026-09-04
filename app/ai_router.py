@@ -82,6 +82,24 @@ def provider_catalog() -> list[dict[str, Any]]:
             ],
         },
         {
+            "capability": "public_business_lead_research",
+            "provider": "perplexity_sonar",
+            "status": llm_advisor.provider_statuses()["perplexity_sonar"],
+            "routing": "lead_scout",
+            "scopes": [
+                "public_business_sources",
+                "public_organization_contacts",
+                "target_region_filter",
+            ],
+            "forbidden": [
+                "personal_contacts",
+                "private_sources",
+                "inferred_outreach_consent",
+                "automatic_outreach",
+                "unapproved_actions",
+            ],
+        },
+        {
             "capability": "product_improvement",
             "provider": "chatgpt_workspace_agents",
             "status": workspace_agent_configuration_status(),

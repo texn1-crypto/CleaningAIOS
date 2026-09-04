@@ -78,6 +78,7 @@ def test_llm_adapters_report_selected_prompt_even_without_credentials(monkeypatc
         llm.AnthropicMessagesAdvisor().analyze_request("test", {}, {}),
         llm.PerplexityAgentCoach().coach_agents({"runs": 3}),
         llm.PerplexityAgentCoach().research_evolution({"sources": 2}),
+        llm.PerplexityAgentCoach().discover_public_business_leads({"regions": ["Москва"]}),
     ]
 
     assert [result["prompt"]["name"] for result in results] == [
@@ -85,6 +86,7 @@ def test_llm_adapters_report_selected_prompt_even_without_credentials(monkeypatc
         "request_analysis",
         "agent_coaching",
         "evolution_research",
+        "public_lead_discovery",
     ]
     for index, result in enumerate(results):
         assert result["prompt"]["variant"] == "stable"
@@ -106,6 +108,7 @@ def test_prompt_catalog_api_is_manager_only_and_content_free(client):
         "business_review",
         "evolution_research",
         "request_analysis",
+        "public_lead_discovery",
     }
     assert "You are" not in response.text
     assert "content" not in response.text

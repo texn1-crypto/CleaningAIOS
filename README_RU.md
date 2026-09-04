@@ -26,6 +26,7 @@ Production-oriented operating system for a cleaning business. The original MVP Z
 - unified inbound message inbox, content plan, staffing/reserve view, vacancy Telegram drafts, payment calendar and complaint/SLA control;
 - public lead capture into CRM/inbox with consent, abuse protection, UTM attribution, deterministic hot-lead scoring, Sales tasks and owner-email notifications;
 - public Telegram Lead Autopilot: `/start` and `/estimate` collect an explicitly consented cleaning request, qualify it deterministically, create a CRM contact plus Sales follow-up task, and notify the owner without sending customer PII to an AI provider;
+- public-business Lead Scout: a Telegram/API request can research organization-level contacts in Moscow, Moscow Region, Saint Petersburg and Leningrad Region through cited public HTTPS sources; results are region-filtered and deduplicated in CRM, while public availability is explicitly not treated as marketing consent and no outreach is sent;
 - Russian marketing-provider registry, trackable hypotheses/experiments, manual external campaign binding, media queue and evidence-backed attribution analytics;
 - masked company requisites and marketing invoices routed to Telegram owner approval with no automatic payment;
 - least-privilege AI provider routing for reasoning, product improvements, images and video, with truthful credential/adapter states;
