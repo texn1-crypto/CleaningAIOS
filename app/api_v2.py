@@ -63,6 +63,12 @@ from .tender_autopilot import (
     persist_tender_assessment,
     tender_assessment_view,
 )
+from .tender_requirements import (
+    ALLOWED_PRIORITIES,
+    ALLOWED_STATUSES,
+    tender_l6_coverage_summary,
+    tender_l6_requirements,
+)
 from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest, TelegramTaskQuery
 
 router = APIRouter(prefix="/api")
@@ -74,6 +80,28 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+@router.get("/tender-autopilot/master-requirements/summary")
+def tender_master_requirements_summary(
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    return tender_l6_coverage_summary()
+
+
+@router.get("/tender-autopilot/master-requirements")
+def list_tender_master_requirements(
+    status: Optional[str] = Query(default=None),
+    priority: Optional[str] = Query(default=None),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    if status is not None and status not in ALLOWED_STATUSES:
+        raise HTTPException(422, "Unsupported requirement status")
+    if priority is not None and priority not in ALLOWED_PRIORITIES:
+        raise HTTPException(422, "Unsupported requirement priority")
+    return tender_l6_requirements(status=status, priority=priority)
 
 
 @router.post("/telegram/control/authorize")

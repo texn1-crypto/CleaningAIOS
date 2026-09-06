@@ -52,3 +52,20 @@ RFQ, подача, ЭЦП, autobid, платежи и post-win execution ещё 
 - [Security](SECURITY.md)
 - [Roadmap](ROADMAP.md)
 - [ADR-0001](ADRs/0001-incremental-relational-core.md)
+
+## Матрица требований 1–325
+
+Полный нумерованный перечень мастер-промпта хранится в
+`app/data/tender_l6_requirements.json`. Каждый пункт имеет приоритет, честный
+статус и ссылки на проверяемое evidence. `unverified` никогда не считается
+выполненным, а `partial` не засчитывается как готовность L6.
+
+Manager API:
+
+- `GET /api/tender-autopilot/master-requirements/summary` — покрытие, открытые P0
+  и gates первого release/L6;
+- `GET /api/tender-autopilot/master-requirements` — полный список с фильтрами
+  `status` и `priority`.
+
+Пункт 0 отслеживается отдельно как north-star метрика, поэтому реестр содержит
+ровно требования 1–325, не смешивая метрику с функциональным backlog.
