@@ -4601,6 +4601,60 @@ def test_request_analyst_accepts_supported_request_without_improvement(client, m
     assert result["improvement_id"] is None
 
 
+def test_blanket_confirmation_requires_exact_card_and_creates_no_improvement(client, monkeypatch):
+    from app import bot
+    from app.chat import understand_russian_message
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    for message in (
+        "Подтверждаю все",
+        "да, всё подтверждаю",
+        "разрешаю все",
+        "подтверждаю рассылку",
+    ):
+        assert understand_russian_message(message)["kind"] == "clarification"
+    intent = understand_russian_message("Подтверждаю все")
+    assert intent["kind"] == "clarification"
+    assert "/approvals" in intent["message"]
+
+    analysis = client.post(
+        "/api/request-analysis",
+        json={"message": "Подтверждаю все", "intent": intent},
+    ).json()
+    assert analysis["classification"] == "supported"
+    assert analysis["improvement_id"] is None
+
+    calls = []
+
+    async def fake_api(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        assert path == "/api/request-analysis"
+        return analysis
+
+    class Message:
+        text = "Подтверждаю все"
+
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "allowed", lambda update: True)
+    monkeypatch.setattr(bot, "api", fake_api)
+    asyncio.run(bot.natural_language(Update(), None))
+    assert len(calls) == 1
+    assert "/approvals" in Update.effective_message.replies[-1][0]
+
+
 def test_request_analyst_creates_deduplicated_codex_prompt(client, monkeypatch):
     from app.chat import understand_russian_message
     from app.config import settings

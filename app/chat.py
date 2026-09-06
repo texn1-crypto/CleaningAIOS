@@ -123,6 +123,19 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
         return {"kind": "help"}
     if text in {"спасибо", "благодарю", "понял", "понятно", "хорошо", "ок", "готово"}:
         return {"kind": "acknowledgement"}
+    confirmation_prefix = r"(?:(?:да|хорошо)[,\s]+)?(?:я\s+)?"
+    confirmation_verb = r"(?:подтверждаю|одобряю|согласен|разрешаю)"
+    if re.match(rf"^{confirmation_prefix}{confirmation_verb}\b", text) or re.fullmatch(
+        rf"{confirmation_prefix}(?:все|это)\s+{confirmation_verb}[.!]?",
+        text,
+    ):
+        return {
+            "kind": "clarification",
+            "message": (
+                "Подтверждение текстом не запускает защищённые действия. Откройте раздел «Решения и approvals» "
+                "или команду /approvals и нажмите зелёную кнопку у конкретной карточки."
+            ),
+        }
     if re.fullmatch(r"(?:улучши|доработай|перепиши|отредактируй)(?:\s+(?:это|текст|сообщение))?", text):
         safe_reference = redact_sensitive_text(" ".join(referenced_text.split()).strip())[:4000]
         if not safe_reference:
