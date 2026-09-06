@@ -259,6 +259,37 @@ def schedule_cycle() -> None:
                 actor="scheduler",
                 reason="daily_source_grounded_evolution_research",
             )
+        owner_pack_local_now = now.replace(tzinfo=timezone.utc).astimezone(
+            ZoneInfo(settings.daily_owner_pack_timezone)
+        )
+        owner_pack_day = owner_pack_local_now.date().isoformat()
+        owner_pack_title = f"Daily owner PDF pack · {owner_pack_day}"
+        if (
+            owner_pack_local_now.hour >= max(0, min(settings.daily_owner_pack_hour, 23))
+            and not db.scalar(select(Task.id).where(Task.title == owner_pack_title))
+        ):
+            task = Task(
+                title=owner_pack_title,
+                agent_type="orchestrator",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={
+                    "action": "daily_owner_pdf_pack",
+                    "source": "scheduler",
+                    "notify_owner": True,
+                    "scheduled_local_day": owner_pack_day,
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(
+                db,
+                task,
+                actor="scheduler",
+                reason="daily_owner_pdf_pack",
+            )
         active = db.scalar(select(Task.id).where(Task.agent_type == "ceo", Task.status.in_(["open", "queued", "running"])))
         recent = db.scalar(select(Task.id).where(Task.agent_type == "ceo", Task.created_at >= now - timedelta(hours=settings.ceo_review_interval_hours)))
         if not active and not recent:

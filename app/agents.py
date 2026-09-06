@@ -102,6 +102,14 @@ class OrchestratorAgent:
                     }
                 )
             return result
+        if payload.get("action") == "daily_owner_pdf_pack":
+            from .daily_owner_pack import run_daily_owner_pack
+
+            return run_daily_owner_pack(
+                db,
+                report_day=payload.get("scheduled_local_day"),
+                notify_owner=bool(payload.get("notify_owner", True)),
+            )
         if payload.get("action") == "system_self_check":
             from .reports import build_system_self_check
 
