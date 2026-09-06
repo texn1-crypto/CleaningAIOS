@@ -8,8 +8,10 @@
    same engine and introduce conflict/freshness records.
 2. **Discovery/normalization.** Official provider interface, amendment versions,
    normalized procurement model, source SLO and fixtures.
-3. **Document intelligence.** Immutable object storage, MIME/AV/archive sandbox,
-   OCR/page map, typed extraction schema and prompt-injection tests.
+3. **Document intelligence — in progress.** Checksum-bound local PDF/DOCX/TXT
+   extraction now produces evidence-linked UNKNOWN candidates. Далее: immutable
+   object versions, reviewer workflow, MIME/AV/archive sandbox, OCR/table map and
+   a broader prompt-injection corpus.
 4. **Qualification/suppliers.** Company digital twin, supplier registry, RFQ
    idempotency, quote parsing/freshness, backup/reservation.
 5. **Application readiness.** Requirement graph, templates, package hash,

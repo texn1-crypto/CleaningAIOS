@@ -107,25 +107,37 @@
       "id": 11,
       "title": "DOCUMENT INTELLIGENCE PIPELINE",
       "priority": "P0",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/integrations.py",
+        "app/tender_document_intelligence.py",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": "Secure download, checksum binding and local PDF/DOCX/TXT/Markdown text extraction exist. Malware scanning, archive sandbox, OCR, tables and amendment diffing remain incomplete."
     },
     {
       "id": 12,
       "title": "PROMPT INJECTION DEFENSE",
       "priority": "P1",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/tender_document_intelligence.py",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": "Tender extraction treats document content as untrusted, uses no external AI or tools, and flags common injection text. A broader adversarial document corpus and all-format sandbox remain open."
     },
     {
       "id": 13,
       "title": "TENDER REQUIREMENTS ENGINE",
       "priority": "P0",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/tender_document_intelligence.py",
+        "app/tender_autopilot.py",
+        "app/schemas.py",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": "Evidence-bound typed requirement candidates and verified decision inputs exist. Conditional/deadline/responsibility graph relations and reviewer workflow remain incomplete."
     },
     {
       "id": 14,
@@ -2647,6 +2659,7 @@
       "status": "partial",
       "evidence": [
         "app/tender_autopilot.py",
+        "app/tender_document_intelligence.py",
         "docs/tender-autopilot/README.md"
       ],
       "notes": ""
@@ -2796,7 +2809,8 @@
       "status": "partial",
       "evidence": [
         "docs/tender-autopilot/GAP_ANALYSIS.md",
-        "app/tender_autopilot.py"
+        "app/tender_autopilot.py",
+        "app/tender_document_intelligence.py"
       ],
       "notes": ""
     },
@@ -2833,6 +2847,7 @@
       "status": "partial",
       "evidence": [
         "app/tender_autopilot.py",
+        "app/tender_document_intelligence.py",
         "tests/test_tender_autopilot.py"
       ],
       "notes": ""

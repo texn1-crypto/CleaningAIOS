@@ -8,8 +8,8 @@
 | Task workflow, retry, outbox, receipts | EXISTS | Нужны procurement-specific compensation и DLQ UI |
 | Tender ingest из HTTP JSON feeds | PARTIAL | Нет официальных ЕИС/ЭТП provider adapters и amendment stream |
 | Нормализованная карточка тендера | PARTIAL | Core хранится в `BusinessRecord.data`; нужен отдельный relational procurement model |
-| Безопасная загрузка документов | PARTIAL | Есть SSRF/size/hash/storage boundary; нет malware scan, archive sandbox и OCR |
-| Requirement extraction | PARTIAL | Snapshot принимает evidence-bound verified facts; автоматическое extraction не подключено |
+| Безопасная загрузка документов | PARTIAL | Есть SSRF/size/hash/storage boundary и MIME guard для локального PDF/DOCX extraction; нет malware scan, archive sandbox и OCR |
+| Requirement extraction | PARTIAL | Локальный deterministic extractor сохраняет evidence-bound кандидаты как UNKNOWN/NEEDS_VERIFICATION; reviewer workflow, OCR и полный typed graph не подключены |
 | Company qualification | PARTIAL | Typed checks входят в snapshot; company digital twin неполон |
 | Supplier quotes | PARTIAL | Typed current quote и evidence есть; RFQ, reservations и backup suppliers отсутствуют |
 | Decimal economics | PARTIAL | Новый snapshot считает Decimal base/conservative/stop/capital; legacy evaluator всё ещё `float` |

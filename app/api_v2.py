@@ -63,6 +63,10 @@ from .tender_autopilot import (
     persist_tender_assessment,
     tender_assessment_view,
 )
+from .tender_document_intelligence import (
+    TenderDocumentExtractionError,
+    extract_requirement_candidates,
+)
 from .tender_requirements import (
     ALLOWED_PRIORITIES,
     ALLOWED_STATUSES,
@@ -989,6 +993,61 @@ def download_document(document_id: int, db: Session = Depends(get_db), actor: Pr
     audit(db, actor.subject, "tender.document_downloaded", "tender_document", str(document.id), {"checksum": document.checksum})
     db.commit()
     return result
+
+
+@router.post("/tender-documents/{document_id}/requirements/extract")
+def extract_document_requirements(
+    document_id: int,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "operator")
+    document = db.get(TenderDocument, document_id)
+    if not document:
+        raise HTTPException(404, "Tender document not found")
+    tender = db.get(BusinessRecord, document.record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(409, "Tender document is not bound to a tender")
+    try:
+        result, created = extract_requirement_candidates(document)
+    except TenderDocumentExtractionError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event_bus.publish(
+        db,
+        "tender.requirements_extracted",
+        "tender",
+        str(document.record_id),
+        {
+            "document_id": document.id,
+            "document_checksum": document.checksum,
+            "extractor_version": result["extractor_version"],
+            "candidate_count": result["candidate_count"],
+            "status": result["status"],
+            "created": created,
+        },
+        idempotency_key=(
+            f"tender-requirements:{document.id}:{document.checksum}:"
+            f"{result['extractor_version']}"
+        ),
+        actor=actor.subject,
+    )
+    audit(
+        db,
+        actor.subject,
+        "tender.requirements_extracted",
+        "tender_document",
+        str(document.id),
+        {
+            "tender_id": document.record_id,
+            "document_checksum": document.checksum,
+            "extractor_version": result["extractor_version"],
+            "candidate_count": result["candidate_count"],
+            "status": result["status"],
+            "created": created,
+        },
+    )
+    db.commit()
+    return {**result, "created": created}
 
 
 @router.post("/outreach/mailboxes", status_code=201)
