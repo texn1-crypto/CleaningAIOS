@@ -1,7 +1,7 @@
 # CleaningAIOS capability audit
 
-Audit date: 2026-08-13. Repository: `texn1-crypto/CleaningAIOS`. Branch at audit:
-`agent/cleaningai-os-production`; baseline commit: `48f4a16`.
+Initial audit date: 2026-08-13; updated 2026-09-06. Repository:
+`texn1-crypto/CleaningAIOS`. Branch: `agent/cleaningai-os-production`.
 
 ## Runtime map
 
@@ -10,7 +10,7 @@ Audit date: 2026-08-13. Repository: `texn1-crypto/CleaningAIOS`. Branch at audit
 - Entry points: `app.main:app`, `python -m app.worker`, `python -m app.scheduler`,
   and `python -m app.bot`.
 - Persistence: shared relational models in `app/models.py`; migrations `0001` through
-  `0010`; SQLite is restricted to development/test.
+  `0021`; SQLite is restricted to development/test.
 - Core execution: `app/platform.py` (Event Bus, Company Brain, approvals and Agent
   Runtime) and `app/orchestrator.py` (policy, dispatch, retry and evidence gate).
 - Interfaces: legacy `/api/*`, versioned `/api/v2/*`, public site/API, Mission Control,
@@ -48,7 +48,7 @@ a loop when absent and has a regression test. No production deployment was perfo
 | Company Brain | PARTIAL | Legacy versioned key/value knowledge remains available. Append-only documents now have provenance, checksums, source versions, ACL-aware immutable chunks, expiry, latest-version deterministic hybrid lexical/character retrieval, exact citations and retrieval regressions. Semantic embeddings, attachment parsing and an approved external ingestion pipeline are intentionally not claimed. |
 | AI CEO and reports | PARTIAL | Deterministic review, optional aggregate-only LLM advice, task health and activity reports are wired. A cross-module daily/weekly CEO Brief with freshness and source links is missing. |
 | CRM/Sales | PARTIAL | Leads, lifecycle rules, contacts, pipeline summary, loss reasons, CRM-backed proposal PDF and a consent-first public Telegram lead wizard with deterministic qualification/follow-up tasks work. A coordinator now runs four source-focused public-business scouts, centralizes cited organization contacts, rejects personal/free-mail/uncited data, and immediately queues an idempotent PDF for every new or materially changed lead. Public availability is not outreach consent and no outreach is sent automatically. Forecasting and full cross-channel company/contact deduplication are incomplete. |
-| Tender Intelligence | PARTIAL | Legal JSON-feed boundary, deduplication, SPb/LO scope filter, evidence-bound economics, cash-gap/legal stop factors, separate participation/submission approvals and document checklist exist. Official portal adapters, automatic requirement extraction and learned result scoring still require sources/implementation. |
+| Tender Intelligence | PARTIAL | Legal JSON-feed boundary, deduplication, SPb/LO scope filter, separate participation/submission approvals and document checklist exist. The L6 foundation adds an immutable evidence/checksum-bound decision passport, Decimal base/conservative economics, stop price, capital/risk gates and an idempotent approval card. Official portal adapters, automatic extraction/RFQ and learned scoring remain unimplemented. See `docs/tender-autopilot/`. |
 | Finance | PARTIAL | Records, payment calendar, object economics and approval policy exist. Money uses `float` in several models/calculations; invoices, AR/AP, taxes and deterministic Decimal/minor-unit accounting are incomplete. |
 | HR | PARTIAL | Candidates, employees, vacancies, shifts and final-decision approval exist. Document expiry, onboarding, privacy ACL and performance workflows are incomplete. |
 | Operations/Quality | PARTIAL | Company graph, shifts, complaints, SLA view and basic quality summary exist. Check-in/out, materials, inspections, evidence, corrective/reinspection workflows and root-cause analytics are incomplete. |
@@ -59,7 +59,7 @@ a loop when absent and has a regression test. No production deployment was perfo
 | Proactive automation | PARTIAL | Scheduler detects tender deadlines, overdue payments and unfilled shifts with deduplication. Selected high/critical events have correlated retrying Telegram alerts, dead-letter state, acknowledgement and metrics. Configurable cooldown/recipient groups and a broader trigger catalog remain missing. |
 | Observability | PARTIAL | Health/readiness, task/agent state, structured redacted JSON logs with HTTP correlation IDs, an authenticated Prometheus metrics endpoint and explicit agent success/latency/staleness SLOs are connected. Distributed tracing, dashboards and SLO alerts are still missing. |
 | CI/CD | PARTIAL | Tests, coverage, golden agent evals, Ruff, targeted strict mypy, dependency audit, CodeQL, Compose build, migrations and HTTP smoke are enforced. A fully resolved lockfile, container-image scanner and deployment environment approval gate are still missing. |
-| Procurement | MISSING | No connected procurement domain/workflow was found. |
+| Procurement execution | MISSING | No production ETP submission, signing, bidding, supplier ordering, payment or post-win procurement executor is connected. |
 | Production restore drill | UNVERIFIED | Backup/rollback commands are documented, but a restore verification result is not stored. |
 
 No production path was classified as IMPLEMENTED solely from a class or filename;

@@ -13,6 +13,12 @@
    experiments and owner notifications. It writes into the same records and events;
    it is not a separate CRM.
 
+Tender Autopilot extends these same layers. Its current production foundation is an
+append-only, evidence-bound decision snapshot with Decimal economics and a guarded
+participation approval card. Target architecture, state machine, domain model,
+security boundaries and the honest L6 gap analysis live in
+[`docs/tender-autopilot/`](tender-autopilot/README.md).
+
 Request Analyst evaluates each owner Telegram message before normal execution. A
 supported request follows its normal route. A missing credential is reported as
 configuration work. A genuine capability gap is stored in the durable improvement

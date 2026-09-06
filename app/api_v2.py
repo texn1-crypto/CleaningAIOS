@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SenderMailbox, Suppression, Task, TaskTransition, TenderDocument
+from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument
 from .integrations import collect_tenders, download_tender_document
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -25,7 +25,7 @@ from .reports import build_ceo_brief
 from .orchestrator import audit, dispatch
 from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, validate_attachments, verified_recipients
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDocumentCreate, TenderEvaluationRequest
+from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest
 from .security import Principal, principal, require_role
 from .chat import redact_sensitive_text
 from .approval_service import (
@@ -58,6 +58,11 @@ from .contact_directory import (
 )
 from .lead_reports import LEAD_REPORT_RECORD_TYPE, verify_lead_report_artifact
 from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, ensure_participation_review_task, evaluate_tender_viability, merge_registered_document_risks, screening_record_status
+from .tender_autopilot import (
+    EvidenceBindingError,
+    persist_tender_assessment,
+    tender_assessment_view,
+)
 from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest, TelegramTaskQuery
 
 router = APIRouter(prefix="/api")
@@ -816,6 +821,126 @@ def evaluate_tender(
         "participation_review_task_id": participation_task.id if participation_task else None,
         "participation_review_task_status": participation_task.status if participation_task else None,
     }
+
+
+@router.get("/tenders/{record_id}/decision-snapshots")
+def list_tender_decision_snapshots(
+    record_id: int,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "viewer")
+    tender = db.get(BusinessRecord, record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(404, "Tender not found")
+    rows = db.scalars(
+        select(TenderAssessmentSnapshot)
+        .where(TenderAssessmentSnapshot.record_id == record_id)
+        .order_by(TenderAssessmentSnapshot.id.desc())
+    ).all()
+    return [tender_assessment_view(row) for row in rows]
+
+
+@router.post("/tenders/{record_id}/decision-snapshots", status_code=201)
+def create_tender_decision_snapshot(
+    record_id: int,
+    payload: TenderDecisionSnapshotCreate,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    tender = db.get(BusinessRecord, record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(404, "Tender not found")
+    if tender.status in TERMINAL_TENDER_STATUSES:
+        raise HTTPException(409, f"Tender is in terminal status: {tender.status}")
+
+    try:
+        snapshot, created = persist_tender_assessment(
+            db,
+            tender,
+            payload,
+            actor=actor.subject,
+        )
+    except (EvidenceBindingError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    result = snapshot.result_snapshot
+    tender.status = screening_record_status(
+        "data_required" if result["status"] == "needs_verification" else result["status"]
+    )
+    tender.data = {
+        **(tender.data or {}),
+        "latest_decision_snapshot_id": snapshot.id,
+        "latest_decision_snapshot_hash": snapshot.input_hash,
+        "latest_decision_status": snapshot.status,
+        "recommendation": snapshot.recommendation,
+    }
+
+    participation_task = None
+    if result["participation_review_available"] and payload.queue_participation_review:
+        participation_task = ensure_participation_review_task(
+            db,
+            tender,
+            {
+                "participation_review_available": True,
+                "fingerprint": snapshot.input_hash,
+            },
+            actor=actor.subject,
+        )
+        if participation_task is not None:
+            participation_task.payload = {
+                **(participation_task.payload or {}),
+                "assessment_snapshot_id": snapshot.id,
+                "assessment_input_hash": snapshot.input_hash,
+                "economics_input_hash": result["economics_input_hash"],
+            }
+
+    event_bus.publish(
+        db,
+        "tender.decision_snapshot_created",
+        "tender",
+        str(tender.id),
+        {
+            "assessment_snapshot_id": snapshot.id,
+            "status": snapshot.status,
+            "recommendation": snapshot.recommendation,
+            "input_hash": snapshot.input_hash,
+            "participation_review_task_id": (
+                participation_task.id if participation_task else None
+            ),
+        },
+        idempotency_key=f"tender:{tender.id}:decision-snapshot:{snapshot.input_hash}",
+        actor=actor.subject,
+    )
+    audit(
+        db,
+        actor.subject,
+        "tender.decision_snapshot_created",
+        "tender_assessment_snapshot",
+        str(snapshot.id),
+        {
+            "tender_id": tender.id,
+            "status": snapshot.status,
+            "input_hash": snapshot.input_hash,
+            "created": created,
+        },
+    )
+    db.commit()
+    db.refresh(snapshot)
+    response = tender_assessment_view(snapshot)
+    response.update(
+        {
+            "created": created,
+            "participation_review_task_id": (
+                participation_task.id if participation_task else None
+            ),
+            "participation_review_task_status": (
+                participation_task.status if participation_task else None
+            ),
+        }
+    )
+    return response
 
 
 @router.post("/tender-sources/collect")

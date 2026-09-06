@@ -523,6 +523,35 @@ class TenderDocument(Base):
     analyzed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class TenderAssessmentSnapshot(Base):
+    """Append-only, evidence-bound tender decision passport."""
+
+    __tablename__ = "tender_assessment_snapshots"
+    __table_args__ = (
+        UniqueConstraint("record_id", "input_hash", name="uq_tender_assessment_input"),
+        CheckConstraint(
+            "status IN ('needs_verification', 'not_viable', 'owner_risk_review_required', 'ready_for_owner_review')",
+            name="ck_tender_assessment_status",
+        ),
+        CheckConstraint(
+            "recommendation IN ('collect_data', 'skip', 'revise_or_skip', 'consider_participation')",
+            name="ck_tender_assessment_recommendation",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    record_id: Mapped[int] = mapped_column(
+        ForeignKey("business_records.id", ondelete="RESTRICT"), index=True
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), index=True)
+    rules_version: Mapped[str] = mapped_column(String(64), default="tender-decision-v1")
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    recommendation: Mapped[str] = mapped_column(String(32), index=True)
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    result_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_by: Mapped[str] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class SenderMailbox(Base):
     __tablename__ = "sender_mailboxes"
     id: Mapped[int] = mapped_column(primary_key=True)

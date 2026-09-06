@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Optional
 
 from pydantic import BaseModel, EmailStr, Field
@@ -231,6 +232,62 @@ class TenderEvaluationRequest(BaseModel):
     conservative_revenue_decrease_percent: float = Field(default=0, ge=0, le=100)
     legal_risk_flags: list[str] = Field(default_factory=list, max_length=100)
     required_documents: list[str] = Field(default_factory=list, max_length=500)
+    queue_participation_review: bool = True
+
+
+class TenderEvidenceRef(BaseModel):
+    document_id: int = Field(gt=0)
+    document_checksum: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+    locator: str = Field(min_length=1, max_length=128)
+    excerpt: str = Field(min_length=1, max_length=2000)
+
+
+class TenderRequirementFact(BaseModel):
+    code: str = Field(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_.-]*$")
+    description: str = Field(min_length=2, max_length=2000)
+    mandatory: bool = True
+    status: str = Field(pattern="^(satisfied|not_satisfied|unknown)$")
+    evidence: list[TenderEvidenceRef] = Field(default_factory=list, max_length=20)
+
+
+class TenderQualificationFact(BaseModel):
+    code: str = Field(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_.-]*$")
+    description: str = Field(min_length=2, max_length=2000)
+    status: str = Field(pattern="^(satisfied|not_satisfied|unknown)$")
+    evidence: list[TenderEvidenceRef] = Field(default_factory=list, max_length=20)
+
+
+class TenderSupplierQuoteInput(BaseModel):
+    supplier_name: str = Field(min_length=2, max_length=255)
+    quote_reference: str = Field(min_length=1, max_length=255)
+    total_cost: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    currency: str = Field(default="RUB", pattern="^RUB$")
+    vat_included: bool
+    stock_status: str = Field(pattern="^(confirmed|unknown|unavailable)$")
+    valid_until: datetime
+    evidence: list[TenderEvidenceRef] = Field(min_length=1, max_length=20)
+
+
+class TenderDecisionSnapshotCreate(BaseModel):
+    requirements: list[TenderRequirementFact] = Field(min_length=1, max_length=500)
+    qualification_checks: list[TenderQualificationFact] = Field(min_length=1, max_length=200)
+    supplier_quote: TenderSupplierQuoteInput
+    contract_value: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    contract_months: int = Field(gt=0, le=1200)
+    payroll_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    logistics_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    other_direct_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    onboarding_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    application_security: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    performance_security: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    available_working_capital: Decimal = Field(ge=0, max_digits=18, decimal_places=2)
+    payment_delay_days: int = Field(ge=0, le=3650)
+    tax_percent: Decimal = Field(ge=0, le=100, max_digits=7, decimal_places=4)
+    contingency_percent: Decimal = Field(default=Decimal("5"), ge=0, le=100, max_digits=7, decimal_places=4)
+    minimum_margin_percent: Decimal = Field(ge=0, le=100, max_digits=7, decimal_places=4)
+    conservative_cost_increase_percent: Decimal = Field(default=Decimal("15"), ge=0, le=500, max_digits=7, decimal_places=4)
+    conservative_revenue_decrease_percent: Decimal = Field(default=Decimal("0"), ge=0, le=100, max_digits=7, decimal_places=4)
+    maximum_risk_score: int = Field(default=35, ge=0, le=100)
     queue_participation_review: bool = True
 
 

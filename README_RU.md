@@ -92,13 +92,22 @@ creates a protected `tender_participation` task. Approval of that task permits o
 package preparation; `tender_submission` remains a separate critical action. The
 versioned operating policy is in `docs/TENDER_24_7_OPERATING_PROMPT.md`.
 
+For a reproducible decision, `POST /api/tenders/{id}/decision-snapshots`
+accepts typed requirements, qualification checks, a supplier quote and economic
+inputs. It binds evidence to registered document checksums, calculates Decimal
+base/conservative scenarios, stop price and working capital, and stores an
+append-only decision passport. `UNKNOWN`, an expired quote or missing evidence
+produces `needs_verification`; automatic submission always remains disabled.
+History is available from `GET /api/tenders/{id}/decision-snapshots`. The target
+architecture and honest L6 gap analysis are in `docs/tender-autopilot/README.md`.
+
 The operational APIs include `/api/events`, `/api/brain`, `/api/agent-runs`,
 `/api/approvals`, `/api/entities`, `/api/company/graph`, `/api/goals`,
 `/api/finance/site-economics`, `/api/simulations`, `/api/tenders/{id}/score`,
 `/api/imports/leads`, `/api/inbox`, `/api/hr/staffing`, `/api/finance/payment-calendar`,
 `/api/marketing/content`, `/api/operations/quality` and
 `/api/outreach/campaigns/launch`. Apply every migration through the current Alembic
-`head` before deploying (currently `0016`).
+`head` before deploying (currently `0021`).
 
 Domain records now have guarded lifecycle transitions through `PATCH /api/records/{id}`.
 CRM touches are stored through `/api/records/{id}/contacts`. Domain events use a
