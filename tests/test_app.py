@@ -3109,6 +3109,9 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         tender_monitors = db.scalars(
             select(Task).where(Task.title.like("Tender source monitoring · %"))
         ).all()
+        contact_discovery = db.scalars(
+            select(Task).where(Task.title.like("Management contact discovery · %"))
+        ).all()
         system_admin_audits = db.scalars(
             select(Task).where(Task.title.like("System administrator audit · %"))
         ).all()
@@ -3126,6 +3129,10 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         assert coordination_rounds[0].payload["action"] == "marketing_sales_coordination"
         assert coordination_rounds[0].payload["period_minutes"] == 30
         assert len(tender_monitors) == 1
+        assert len(contact_discovery) == 1
+        assert contact_discovery[0].agent_type == "lead_scout"
+        assert contact_discovery[0].payload["segment"] == "management_companies"
+        assert contact_discovery[0].payload["automatic_outreach"] is False
         assert len(system_admin_audits) == 1
         assert system_admin_audits[0].agent_type == "system_admin"
         assert system_admin_audits[0].payload["notify_owner"] is True
@@ -5560,7 +5567,10 @@ def test_research_and_sales_agents_audit_management_company_base_without_sending
         assert (db.scalar(select(func.count(OutboundMessage.id))) or 0) == messages_before
 
 
-def test_management_company_internet_discovery_reports_real_adapter_blocker(client):
+def test_management_company_internet_discovery_reports_real_provider_requirement(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "perplexity_api_key", "")
     task = client.post("/api/tasks", json={
         "title": "Проверить границу интернет-поиска УК",
         "agent_type": "research",
@@ -5570,9 +5580,9 @@ def test_management_company_internet_discovery_reports_real_adapter_blocker(clie
     completed = client.post(f"/api/tasks/{task['id']}/run").json()
     assert completed["status"] == "done"
     result = completed["result"]
-    assert result["status"] == "adapter_required"
-    assert result["configured"] is False
-    assert result["credentials_required"] == ["YANDEX_SEARCH_API_KEY", "YANDEX_CLOUD_FOLDER_ID"]
+    assert result["status"] == "credentials_required"
+    assert result["credentials_required"] == ["PERPLEXITY_API_KEY"]
+    assert result["external_messages_sent"] is False
     assert result["evidence"] == []
 
 
@@ -6449,3 +6459,60 @@ def test_non_owner_role_cannot_decide_protected_approval(client):
         json={"note": "Manager must not approve"},
     )
     assert response.status_code == 403
+
+
+def test_contact_export_api_requires_manager_and_verifies_artifact(client, monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+
+    from app import contact_directory
+    from app.contact_directory import build_weekly_contact_export, upsert_contact_directory
+    from app.db import SessionLocal
+
+    monkeypatch.setattr(contact_directory.settings, "document_storage_path", str(tmp_path))
+    with SessionLocal() as db:
+        upsert_contact_directory(
+            db,
+            email="weekly-api@contact-export.example",
+            organization_name="ТСЖ Проверка API",
+            city="Санкт-Петербург",
+            source_url="https://contact-export.example/contacts",
+            source_kind="public_search",
+            baseline=False,
+        )
+        report = build_weekly_contact_export(
+            db,
+            current=datetime(2045, 6, 5, 12, tzinfo=timezone.utc),
+            notify_owner=False,
+        )
+        db.commit()
+
+    assert client.get(
+        "/api/research/contact-directory/summary",
+        headers={"X-Role": "operator"},
+    ).status_code == 403
+    summary = client.get(
+        "/api/research/contact-directory/summary",
+        headers={"X-Role": "manager"},
+    )
+    assert summary.status_code == 200
+    assert summary.json()["total_contacts"] >= 1
+    listed = client.get(
+        "/api/research/contact-exports",
+        headers={"X-Role": "manager"},
+    )
+    assert listed.status_code == 200
+    assert any(item["id"] == report["report_id"] for item in listed.json())
+
+    download_url = f"/api/research/contact-exports/{report['report_id']}/download/pdf"
+    assert client.get(download_url, headers={"X-Role": "operator"}).status_code == 403
+    downloaded = client.get(download_url, headers={"X-Role": "manager"})
+    assert downloaded.status_code == 200
+    assert downloaded.content.startswith(b"%PDF")
+    assert client.get(
+        f"/api/research/contact-exports/{report['report_id']}/download/docx",
+        headers={"X-Role": "manager"},
+    ).status_code == 404
+
+    artifact_path = Path(report["artifacts"]["pdf"]["storage_path"])
+    artifact_path.write_bytes(artifact_path.read_bytes() + b"tampered")
+    assert client.get(download_url, headers={"X-Role": "manager"}).status_code == 409

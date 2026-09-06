@@ -31,17 +31,18 @@ class DataCollectorAgent:
                 enrich_verified_websites=bool(payload.get("enrich_verified_websites")),
             )
         if payload.get("collection") == "management_company_internet_discovery":
-            return {
-                "status": "adapter_required",
-                "collection": "management_company_internet_discovery",
-                "configured": False,
-                "credentials_required": ["YANDEX_SEARCH_API_KEY", "YANDEX_CLOUD_FOLDER_ID"],
-                "reason": (
-                    "Не настроен официальный поисковый адаптер. До его подключения нельзя выдавать "
-                    "угаданный домен или найденный каталог как официальный сайт организации."
-                ),
-                "evidence": [],
-            }
+            from .lead_scout import run_public_lead_scout
+
+            return run_public_lead_scout(
+                db,
+                {
+                    **payload,
+                    "segment": "management_companies",
+                    "regions": payload.get("regions") or [
+                        item.strip() for item in settings.management_contact_regions.split("|") if item.strip()
+                    ],
+                },
+            )
         sources = payload.get("sources") or [x.strip() for x in settings.tender_sources.split(",") if x.strip()]
         query = payload.get("query", "")
         if payload.get("collection", "tenders") == "tenders":
@@ -108,6 +109,15 @@ class OrchestratorAgent:
             return run_daily_owner_pack(
                 db,
                 report_day=payload.get("scheduled_local_day"),
+                notify_owner=bool(payload.get("notify_owner", True)),
+            )
+        if payload.get("action") == "weekly_contact_export":
+            from .contact_directory import build_weekly_contact_export
+
+            report_at = datetime.fromisoformat(payload["report_at"]) if payload.get("report_at") else None
+            return build_weekly_contact_export(
+                db,
+                current=report_at,
                 notify_owner=bool(payload.get("notify_owner", True)),
             )
         if payload.get("action") == "system_self_check":

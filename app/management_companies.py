@@ -13,6 +13,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .contact_directory import upsert_contact_directory
 from .models import BusinessRecord, ImportJob, OutreachConsent, Suppression
 from .operations import parse_lead_import
 
@@ -118,6 +119,8 @@ def import_management_companies(
     rows = parse_lead_import(filename, content)
     errors: list[dict] = []
     updated = 0
+    directory_created = 0
+    directory_updated = 0
     for index, source in enumerate(rows, 2):
         title = str(
             source.get("company")
@@ -197,17 +200,33 @@ def import_management_companies(
             record.source = source_kind
             updated += 1
         else:
-            db.add(
-                BusinessRecord(
-                    record_type="management_company",
-                    external_id=external_id,
-                    title=title,
-                    status="collected",
-                    source=source_kind,
-                    data={**public_data, "provenance": [provenance]},
-                )
+            record = BusinessRecord(
+                record_type="management_company",
+                external_id=external_id,
+                title=title,
+                status="collected",
+                source=source_kind,
+                data={**public_data, "provenance": [provenance]},
             )
+            db.add(record)
+            db.flush()
             job.imported_rows += 1
+        for contact_email in emails:
+            directory = upsert_contact_directory(
+                db,
+                email=contact_email,
+                organization_name=title,
+                city=region,
+                inn=public_data["inn"],
+                source_url=source_url,
+                source_kind=source_kind,
+                baseline=source_kind == "owner_baseline",
+                linked_record_id=record.id,
+            )
+            if directory["created"]:
+                directory_created += 1
+            else:
+                directory_updated += 1
     job.total_rows = len(rows)
     job.skipped_rows = len(errors)
     job.errors = errors
@@ -224,6 +243,9 @@ def import_management_companies(
         "errors": errors,
         "source_filename": filename,
         "source_sha256": source_sha256,
+        "contact_directory_created": directory_created,
+        "contact_directory_updated": directory_updated,
+        "baseline_contacts": source_kind == "owner_baseline",
     }
 
 
@@ -504,6 +526,18 @@ def enrich_management_company(db: Session, record_id: int) -> dict:
         "marketing_consent_status": data.get("marketing_consent_status") or "unknown",
         "provenance": provenance,
     }
+    for email in emails:
+        upsert_contact_directory(
+            db,
+            email=email,
+            organization_name=record.title,
+            city=record.data.get("region") or "",
+            inn=record.data.get("inn") or "",
+            source_url=resolved,
+            source_kind="company_website",
+            baseline=False,
+            linked_record_id=record.id,
+        )
     db.flush()
     return {
         "status": "enriched",

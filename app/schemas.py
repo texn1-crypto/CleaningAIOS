@@ -271,7 +271,9 @@ class ImportFile(BaseModel):
 
 
 class ManagementCompanyImport(ImportFile):
-    source_kind: str = Field(pattern="^(gis_housing|housing_inspection|company_website|manual_public_export)$")
+    source_kind: str = Field(
+        pattern="^(gis_housing|housing_inspection|company_website|manual_public_export|owner_baseline)$"
+    )
     source_url: str = Field(min_length=8, max_length=1024)
 
 

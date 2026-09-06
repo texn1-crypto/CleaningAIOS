@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     perplexity_coach_interval_minutes: int = 30
     perplexity_max_improvements_per_cycle: int = 3
     perplexity_max_queued_improvements: int = 30
+    management_contact_scout_interval_minutes: int = 6 * 60
+    management_contact_scout_max_results: int = 20
+    management_contact_regions: str = "Санкт-Петербург|Ленинградская область|Москва|Московская область"
+    contact_export_timezone: str = "Europe/Moscow"
+    contact_export_weekday: int = 0
+    contact_export_hour: int = 18
     prompt_candidate_rollout_percent: int = 0
     prompt_rollout_seed: str = "cleaningaios-v1"
     github_research_token: str = ""

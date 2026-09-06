@@ -4,12 +4,14 @@ import hashlib
 import ipaddress
 import re
 from datetime import datetime, timezone
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .contact_directory import upsert_contact_directory
 from .llm import llm_advisor
 from .models import AuditLog, BusinessRecord
 
@@ -123,7 +125,7 @@ def _lead_key(name: str, region: str) -> str:
     return f"public-lead:{digest}"
 
 
-def _contact_owners(rows: list[BusinessRecord]) -> dict[str, str]:
+def _contact_owners(rows: Sequence[BusinessRecord]) -> dict[str, str]:
     owners: dict[str, str] = {}
     for row in rows:
         data = row.data or {}
@@ -139,6 +141,7 @@ def persist_public_business_leads(
     allowed_regions: set[str] | None = None,
     max_results: int = 50,
     observed_at: datetime | None = None,
+    segment: str = "",
 ) -> dict[str, Any]:
     """Validate and persist public organization contacts without granting outreach consent."""
 
@@ -156,6 +159,9 @@ def persist_public_business_leads(
     updated = 0
     rejected: dict[str, int] = {}
     evidence: list[dict[str, Any]] = []
+    directory_created = 0
+    directory_updated = 0
+    candidate_created = 0
 
     def reject(reason: str) -> None:
         rejected[reason] = rejected.get(reason, 0) + 1
@@ -171,6 +177,12 @@ def persist_public_business_leads(
         if not name:
             reject("missing_organization")
             continue
+        organization_type = " ".join(str(candidate.get("organization_type") or "").split())[:100]
+        if segment == "management_companies":
+            classification = f"{organization_type} {name}".lower().replace("ё", "е")
+            if not re.search(r"(^|\W)(ук|тсж|тсн|жск)(\W|$)", classification) and "управляющ" not in classification:
+                reject("outside_management_company_segment")
+                continue
         if region is None:
             reject("outside_target_regions")
             continue
@@ -212,6 +224,10 @@ def persist_public_business_leads(
             "outreach_consent": "not_verified",
             "marketing_contact_allowed": False,
             "automatic_outreach": False,
+            "organization_type": organization_type,
+            "inn": re.sub(r"\D", "", str(candidate.get("inn") or ""))[:12],
+            "city": " ".join(str(candidate.get("city") or region).split())[:255],
+            "segment": segment or "public_business",
         }
         if row is None:
             row = BusinessRecord(
@@ -235,6 +251,22 @@ def persist_public_business_leads(
             updated += 1
         for contact in public_emails + public_phones:
             contact_owners[contact] = external_id
+        if email:
+            directory = upsert_contact_directory(
+                db,
+                email=email,
+                organization_name=name,
+                city=data["city"],
+                inn=data["inn"],
+                source_url=source_url,
+                source_kind="perplexity_public_business_search",
+                baseline=False,
+                linked_record_id=row.id,
+                observed_at=current,
+            )
+            directory_created += int(directory["created"])
+            directory_updated += int(not directory["created"])
+            candidate_created += int(directory["candidate_created"])
         evidence.append({"record_id": row.id, "region": region, "source_url": source_url})
 
     db.add(
@@ -265,6 +297,12 @@ def persist_public_business_leads(
             "marketing_contact_allowed": False,
         },
         "external_messages_sent": False,
+        "contact_directory": {
+            "created": directory_created,
+            "updated": directory_updated,
+            "mailing_candidates_created": candidate_created,
+            "outbound_messages_created": 0,
+        },
         "evidence": evidence,
     }
 
@@ -286,14 +324,21 @@ def run_public_lead_scout(db: Session, payload: dict[str, Any]) -> dict[str, Any
         max_results = max(1, min(int(payload.get("max_results") or 20), 50))
     except (TypeError, ValueError):
         max_results = 20
+    segment = str(payload.get("segment") or "")
+    customer_profile = (
+        "Управляющие компании, ТСЖ, ТСН и ЖСК с объектами жилой недвижимости"
+        if segment == "management_companies"
+        else (
+            "Организации с объектами, которым потенциально нужны регулярная уборка, "
+            "генеральная уборка или обслуживание территории"
+        )
+    )
     provider_result = llm_advisor.discover_public_business_leads(
         {
             "research_kind": "public_business_lead_discovery",
             "regions": regions,
-            "customer_profile": (
-                "Организации с объектами, которым потенциально нужны регулярная уборка, "
-                "генеральная уборка или обслуживание территории"
-            ),
+            "customer_profile": customer_profile,
+            "segment": segment or "public_business",
             "max_results": max_results,
             "constraints": {
                 "public_business_sources_only": True,
@@ -322,6 +367,7 @@ def run_public_lead_scout(db: Session, payload: dict[str, Any]) -> dict[str, Any
         provider_result=provider_result,
         allowed_regions=set(regions),
         max_results=max_results,
+        segment=segment,
     )
     return {
         **persisted,

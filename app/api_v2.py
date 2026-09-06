@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -49,6 +50,11 @@ from .notifications import (
     NotificationNotDelivered,
     NotificationNotFound,
     acknowledge_owner_notification,
+)
+from .contact_directory import (
+    WEEKLY_EXPORT_RECORD_TYPE,
+    contact_directory_summary,
+    verify_contact_export_artifact,
 )
 from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, ensure_participation_review_task, evaluate_tender_viability, merge_registered_document_risks, screening_record_status
 from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest, TelegramTaskQuery
@@ -1512,6 +1518,66 @@ def enrich_management_company_contacts(record_id: int, db: Session = Depends(get
     audit(db, actor.subject, "management_company.contacts_enriched", "management_company", str(record_id), result)
     db.commit()
     return result
+
+
+@router.get("/research/contact-directory/summary")
+def get_contact_directory_summary(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    return contact_directory_summary(db)
+
+
+@router.get("/research/contact-exports")
+def list_contact_exports(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    rows = db.scalars(
+        select(BusinessRecord)
+        .where(BusinessRecord.record_type == WEEKLY_EXPORT_RECORD_TYPE)
+        .order_by(BusinessRecord.id.desc())
+        .limit(100)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "title": row.title,
+            "status": row.status,
+            "week_start": (row.data or {}).get("week_start"),
+            "contact_count": (row.data or {}).get("contact_count", 0),
+            "formats": sorted(((row.data or {}).get("artifacts") or {}).keys()),
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
+
+
+@router.get("/research/contact-exports/{report_id}/download/{file_kind}")
+def download_contact_export(
+    report_id: int,
+    file_kind: str,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    report = db.get(BusinessRecord, report_id)
+    if not report or report.record_type != WEEKLY_EXPORT_RECORD_TYPE or report.status != "completed":
+        raise HTTPException(404, "Completed contact export not found")
+    try:
+        path, artifact = verify_contact_export_artifact(report, file_kind)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    audit(
+        db,
+        actor.subject,
+        "contact_export.downloaded",
+        WEEKLY_EXPORT_RECORD_TYPE,
+        str(report.id),
+        {"format": file_kind},
+    )
+    db.commit()
+    return FileResponse(path, media_type=artifact["content_type"], filename=artifact["filename"])
 
 
 @router.post("/imports/leads", status_code=201)

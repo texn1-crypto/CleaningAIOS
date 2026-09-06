@@ -185,3 +185,10 @@ rows link back to their source resource. Navigation never infers task state loca
   network URLs and uncited results before deduplicated CRM persistence. A public
   address is stored with `outreach_consent=not_verified`; the capability creates no
   consent record and sends no message.
+- Management-company discovery reuses that cited public-source boundary and writes
+  normalized emails into one durable contact directory. Owner-uploaded baseline
+  addresses are marked and excluded from new-contact exports. New public addresses
+  create only `outreach_candidate` records with consent/suppression/owner-approval
+  state; they never create outbound messages directly. A weekly idempotent task
+  generates checksum-bound PDF, XLSX and CSV artifacts and marks contacts only after
+  a successful issue, so later issues contain only newly discovered addresses.

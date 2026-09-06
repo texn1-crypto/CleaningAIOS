@@ -80,6 +80,43 @@ def schedule_cycle() -> None:
             db.add(task)
             db.flush()
             record_task_created(db, task, actor="scheduler", reason="recurring_tender_source_monitoring")
+        contact_interval = max(30, min(settings.management_contact_scout_interval_minutes, 7 * 24 * 60))
+        contact_recent_since = now - timedelta(minutes=contact_interval)
+        contact_active = db.scalar(
+            select(Task.id).where(
+                Task.agent_type == "lead_scout",
+                Task.status.in_(["open", "queued", "running"]),
+                Task.title.like("Management contact discovery · %"),
+            )
+        )
+        contact_recent = db.scalar(
+            select(Task.id).where(
+                Task.agent_type == "lead_scout",
+                Task.created_at >= contact_recent_since,
+                Task.title.like("Management contact discovery · %"),
+            )
+        )
+        if settings.perplexity_api_key and not contact_active and not contact_recent:
+            regions = [item.strip() for item in settings.management_contact_regions.split("|") if item.strip()]
+            task = Task(
+                title=f"Management contact discovery · {now.isoformat(timespec='minutes')}",
+                agent_type="lead_scout",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={
+                    "action": "discover_public_business_leads",
+                    "segment": "management_companies",
+                    "regions": regions,
+                    "max_results": settings.management_contact_scout_max_results,
+                    "source": "scheduler",
+                    "automatic_outreach": False,
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(db, task, actor="scheduler", reason="recurring_management_contact_discovery")
         system_admin_interval = max(
             1,
             min(settings.system_admin_interval_minutes, 24 * 60),
@@ -290,6 +327,37 @@ def schedule_cycle() -> None:
                 actor="scheduler",
                 reason="daily_owner_pdf_pack",
             )
+        contact_export_local_now = now.replace(tzinfo=timezone.utc).astimezone(
+            ZoneInfo(settings.contact_export_timezone)
+        )
+        contact_week_start = contact_export_local_now.date() - timedelta(days=contact_export_local_now.weekday())
+        contact_release_at = datetime.combine(
+            contact_week_start + timedelta(days=max(0, min(settings.contact_export_weekday, 6))),
+            datetime.min.time(),
+            tzinfo=ZoneInfo(settings.contact_export_timezone),
+        ).replace(hour=max(0, min(settings.contact_export_hour, 23)))
+        contact_export_title = f"Weekly new contacts export · {contact_week_start.isoformat()}"
+        if (
+            contact_export_local_now >= contact_release_at
+            and not db.scalar(select(Task.id).where(Task.title == contact_export_title))
+        ):
+            task = Task(
+                title=contact_export_title,
+                agent_type="orchestrator",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={
+                    "action": "weekly_contact_export",
+                    "source": "scheduler",
+                    "notify_owner": True,
+                    "report_at": now.isoformat(),
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(db, task, actor="scheduler", reason="weekly_contact_export")
         active = db.scalar(select(Task.id).where(Task.agent_type == "ceo", Task.status.in_(["open", "queued", "running"])))
         recent = db.scalar(select(Task.id).where(Task.agent_type == "ceo", Task.created_at >= now - timedelta(hours=settings.ceo_review_interval_hours)))
         if not active and not recent:
