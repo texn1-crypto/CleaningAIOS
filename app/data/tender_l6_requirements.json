@@ -934,9 +934,16 @@
       "id": 106,
       "title": "KILL SWITCH",
       "priority": "P0",
-      "status": "missing",
-      "evidence": [],
-      "notes": "A dedicated global autonomous-action kill switch is not implemented."
+      "status": "verified",
+      "evidence": [
+        "app/models.py:SafetyControl",
+        "app/platform.py:DecisionEngine",
+        "app/api_v2.py",
+        "migrations/versions/0023_global_external_actions_kill_switch.py",
+        "tests/test_global_kill_switch.py",
+        "docs/tender-autopilot/SECURITY.md"
+      ],
+      "notes": "Verified 2026-09-07: persisted owner-only control blocks every protected action before approval, preserves read-only work, and records idempotent audit/outbox evidence."
     },
     {
       "id": 107,

@@ -25,7 +25,7 @@
 | Contract execution/actual profit | PARTIAL | Общие operations/finance records есть; procurement lifecycle не связан end-to-end |
 | Learning/backtest/champion-challenger | PARTIAL | Общий replay/evals есть; procurement golden dataset и calibration отсутствуют |
 | Multi-provider AI router | PARTIAL | OpenAI/Claude/Gemini contracts есть; procurement benchmark отсутствует |
-| Kill switches/capability flags | NEEDS_REFACTOR | Protected policy exists, но нужен явный global/per-tender control plane |
+| Kill switches/capability flags | PARTIAL | Persisted owner-only global external-actions kill switch exists; per-capability and per-tender controls remain open |
 | Evidence freshness/conflicts | PARTIAL | Quote/deadline freshness и checksum binding есть; общий conflict registry отсутствует |
 | Security corpus | PARTIAL | SSRF, approval and path tests есть; ZIP bomb/malware/document prompt injection corpus отсутствует |
 

@@ -428,6 +428,11 @@ class ImprovementUpdate(BaseModel):
     test_evidence: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ExternalActionsKillSwitchUpdate(BaseModel):
+    active: bool
+    reason: str = Field(default="", max_length=500)
+
+
 class DeliveryEventCreate(BaseModel):
     event_type: str = Field(pattern="^(delivered|bounce|complaint|unsubscribe)$")
     recipient: EmailStr

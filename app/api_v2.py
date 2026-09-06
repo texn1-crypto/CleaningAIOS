@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument
+from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument
 from .integrations import collect_tenders, download_tender_document
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -25,7 +25,7 @@ from .reports import build_ceo_brief
 from .orchestrator import audit, dispatch
 from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, validate_attachments, verified_recipients
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest
+from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest
 from .security import Principal, principal, require_role
 from .chat import redact_sensitive_text
 from .approval_service import (
@@ -76,6 +76,7 @@ from .tender_requirements import (
 from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest, TelegramTaskQuery
 
 router = APIRouter(prefix="/api")
+GLOBAL_EXTERNAL_ACTIONS_CONTROL = "global_external_actions"
 
 
 def get_db():
@@ -84,6 +85,92 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def _kill_switch_view(row: SafetyControl | None) -> dict[str, object]:
+    if row is None:
+        return {
+            "key": GLOBAL_EXTERNAL_ACTIONS_CONTROL,
+            "active": False,
+            "reason": "",
+            "version": 0,
+            "updated_by": "",
+            "updated_at": None,
+        }
+    return {
+        "key": row.key,
+        "active": row.active,
+        "reason": row.reason,
+        "version": row.version,
+        "updated_by": row.updated_by,
+        "updated_at": row.updated_at,
+    }
+
+
+@router.get("/safety/external-actions-kill-switch")
+def external_actions_kill_switch_status(
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    return _kill_switch_view(db.get(SafetyControl, GLOBAL_EXTERNAL_ACTIONS_CONTROL))
+
+
+@router.put("/safety/external-actions-kill-switch")
+def update_external_actions_kill_switch(
+    payload: ExternalActionsKillSwitchUpdate,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "owner")
+    reason = redact_sensitive_text(payload.reason).strip()
+    if payload.active and len(reason) < 3:
+        raise HTTPException(422, "A reason is required when activating the kill switch")
+    row = db.get(SafetyControl, GLOBAL_EXTERNAL_ACTIONS_CONTROL)
+    changed = row is None or row.active != payload.active or row.reason != reason
+    if row is None:
+        row = SafetyControl(
+            key=GLOBAL_EXTERNAL_ACTIONS_CONTROL,
+            active=payload.active,
+            reason=reason,
+            version=1,
+            updated_by=actor.subject,
+        )
+        db.add(row)
+        db.flush()
+    elif changed:
+        row.active = payload.active
+        row.reason = reason
+        row.version += 1
+        row.updated_by = actor.subject
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.flush()
+    if changed:
+        details = {
+            "active": row.active,
+            "version": row.version,
+            "reason": row.reason,
+        }
+        audit(
+            db,
+            actor.subject,
+            "safety.external_actions_kill_switch_updated",
+            "safety_control",
+            row.key,
+            details,
+        )
+        event_bus.publish(
+            db,
+            "safety.kill_switch_updated",
+            "safety_control",
+            row.key,
+            details,
+            idempotency_key=f"safety-control:{row.key}:version:{row.version}",
+            actor=actor.subject,
+        )
+    db.commit()
+    db.refresh(row)
+    return {**_kill_switch_view(row), "changed": changed}
 
 
 @router.get("/tender-autopilot/master-requirements/summary")

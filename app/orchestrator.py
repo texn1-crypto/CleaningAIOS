@@ -116,19 +116,36 @@ def dispatch(db: Session, task: Task) -> dict:
     )
     policy = decision_engine.evaluate(db, task)
     if not policy["allowed"]:
+        block_reason = str(policy.get("reason") or "policy_blocked")
         transition_task(
             db,
             task,
             "blocked",
             actor="decision_engine",
-            reason="owner_approval_required",
+            reason=block_reason,
             correlation_id=_event_trace(task, "decision_engine")["correlation_id"],
-            transition_key=f"task:{task.id}:approval:{policy['approval_id']}:blocked",
+            transition_key=(
+                f"task:{task.id}:kill-switch:{policy.get('kill_switch', {}).get('version')}:blocked"
+                if block_reason == "global_kill_switch_active"
+                else f"task:{task.id}:approval:{policy['approval_id']}:blocked"
+            ),
         )
         result = {"blocked": True, **policy}
         task.result = result
         audit(db, "decision_engine", "task.blocked", "task", str(task.id), result)
-        event_bus.publish(db, "approval.requested", "task", str(task.id), result, idempotency_key=f"task:{task.id}:approval:{policy['approval_id']}", **_event_trace(task, "decision_engine"))
+        if block_reason == "global_kill_switch_active":
+            switch_version = policy.get("kill_switch", {}).get("version", 0)
+            event_bus.publish(
+                db,
+                "policy.execution_blocked",
+                "task",
+                str(task.id),
+                result,
+                idempotency_key=f"task:{task.id}:kill-switch:{switch_version}",
+                **_event_trace(task, "decision_engine"),
+            )
+        else:
+            event_bus.publish(db, "approval.requested", "task", str(task.id), result, idempotency_key=f"task:{task.id}:approval:{policy['approval_id']}", **_event_trace(task, "decision_engine"))
         return result
     try:
         result = agent_runtime.execute(db, task, finalize_task=False)
