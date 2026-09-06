@@ -209,6 +209,27 @@ def build_activity_report(
     ).all()
 
     active_total = _count(db, Task, Task.status.in_(["open", "queued", "running"]))
+    queued_improvements = _count(
+        db, ImprovementRequest, ImprovementRequest.status == "queued"
+    )
+    queued_improvements_perplexity = _count(
+        db,
+        ImprovementRequest,
+        ImprovementRequest.status == "queued",
+        ImprovementRequest.source_user == "perplexity_agent_coach",
+    )
+    queued_improvements_research = _count(
+        db,
+        ImprovementRequest,
+        ImprovementRequest.status == "queued",
+        ImprovementRequest.source_user == "github_evolution_researcher",
+    )
+    queued_improvements_telegram = _count(
+        db,
+        ImprovementRequest,
+        ImprovementRequest.status == "queued",
+        ImprovementRequest.source_channel == "telegram",
+    )
     summary = {
         "tasks_completed": len(completed),
         "business_tasks_completed": sum(row.agent_type != "request_analyst" for row in completed),
@@ -221,7 +242,17 @@ def build_activity_report(
         "agent_runs_failed": _count(
             db, AgentRun, AgentRun.status == "failed", AgentRun.finished_at >= cutoff
         ),
-        "queued_improvements": _count(db, ImprovementRequest, ImprovementRequest.status == "queued"),
+        "queued_improvements": queued_improvements,
+        "queued_improvements_perplexity": queued_improvements_perplexity,
+        "queued_improvements_research": queued_improvements_research,
+        "queued_improvements_telegram": queued_improvements_telegram,
+        "queued_improvements_other": max(
+            0,
+            queued_improvements
+            - queued_improvements_perplexity
+            - queued_improvements_research
+            - queued_improvements_telegram,
+        ),
         "implemented_improvements": _count(
             db,
             ImprovementRequest,
@@ -359,7 +390,13 @@ def format_activity_report(result: dict[str, Any]) -> str:
         f"🔄 В работе и очереди: {summary.get('tasks_active', 0)}",
         f"⚠️ Ошибок: {summary.get('tasks_failed', 0)}",
         f"⛔ Заблокировано: {summary.get('tasks_blocked', 0)}",
-        f"🛠 Улучшений в очереди: {summary.get('queued_improvements', 0)}",
+        (
+            f"🛠 Улучшений в очереди: {summary.get('queued_improvements', 0)} "
+            f"(Perplexity: {summary.get('queued_improvements_perplexity', 0)}, "
+            f"GitHub research: {summary.get('queued_improvements_research', 0)}, "
+            f"Telegram: {summary.get('queued_improvements_telegram', 0)}, "
+            f"прочие: {summary.get('queued_improvements_other', 0)})"
+        ),
         f"🔐 Ожидают подтверждения: {summary.get('pending_approvals', 0)}",
     ]
     growth = result.get("strategic_growth") or {}

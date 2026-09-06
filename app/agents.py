@@ -587,6 +587,7 @@ class MetaBrainAgent:
             db,
             coaching,
             limit=settings.perplexity_max_improvements_per_cycle,
+            queue_limit=settings.perplexity_max_queued_improvements,
         )
         recommendations = [f"Restore telemetry for {x}" for x in gaps]
         if not measured_successes:

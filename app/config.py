@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     perplexity_timeout_seconds: int = 60
     perplexity_coach_interval_minutes: int = 30
     perplexity_max_improvements_per_cycle: int = 3
+    perplexity_max_queued_improvements: int = 30
     prompt_candidate_rollout_percent: int = 0
     prompt_rollout_seed: str = "cleaningaios-v1"
     github_research_token: str = ""

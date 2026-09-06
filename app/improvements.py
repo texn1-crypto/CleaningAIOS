@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .chat import redact_sensitive_text
@@ -60,7 +60,8 @@ def classify_request_routing(message: str, intent: dict[str, Any]) -> dict[str, 
     """Return low-cardinality routing labels without retaining request content."""
     text = _normalize(redact_sensitive_text(message))
     agent_type = str(intent.get("agent_type") or "orchestrator").lower()
-    payload = intent.get("payload") if isinstance(intent.get("payload"), dict) else {}
+    raw_payload = intent.get("payload")
+    payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
     action = str(payload.get("action") or "").lower()
 
     category = None if agent_type == "orchestrator" else REQUEST_CATEGORY_BY_AGENT.get(agent_type)
@@ -381,7 +382,8 @@ def retry_workspace_handoff(row: ImprovementRequest) -> dict[str, Any]:
 
 def analyze_and_record(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
     request_text = redact_sensitive_text(str(payload.get("message", "")))[:4000]
-    intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
+    raw_intent = payload.get("intent")
+    intent: dict[str, Any] = raw_intent if isinstance(raw_intent, dict) else {}
     routing = classify_request_routing(request_text, intent)
     intent = {**intent, **routing}
     baseline = deterministic_assessment(request_text, intent)
@@ -504,10 +506,28 @@ def record_agent_coaching_improvements(
     coaching: dict[str, Any],
     *,
     limit: int,
+    queue_limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Turn bounded, advisory Perplexity findings into a deduplicated Codex backlog."""
+    """Turn bounded, advisory Perplexity findings into a backpressured Codex backlog."""
     if coaching.get("status") != "succeeded":
         return []
+    effective_queue_limit = max(
+        0,
+        int(
+            settings.perplexity_max_queued_improvements
+            if queue_limit is None
+            else queue_limit
+        ),
+    )
+    queued_count = int(
+        db.scalar(
+            select(func.count(ImprovementRequest.id)).where(
+                ImprovementRequest.status == "queued",
+                ImprovementRequest.source_user == "perplexity_agent_coach",
+            )
+        )
+        or 0
+    )
     recorded: list[dict[str, Any]] = []
     for item in (coaching.get("recommendations") or [])[: max(0, min(limit, 10))]:
         if not isinstance(item, dict):
@@ -529,6 +549,8 @@ def record_agent_coaching_improvements(
             row.occurrence_count += 1
             row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         else:
+            if queued_count >= effective_queue_limit:
+                continue
             request_text = f"Perplexity agent-quality recommendation for {agent_type}: {change}"
             assessment = {
                 "reason": expected_effect or "Research-grounded agent quality improvement",
@@ -564,6 +586,7 @@ def record_agent_coaching_improvements(
             )
             db.add(row)
             db.flush()
+            queued_count += 1
             row.codex_prompt = build_codex_prompt(request_text, assessment, row.id)
         recorded.append({"id": row.id, "status": row.status, "agent_type": agent_type})
     return recorded
