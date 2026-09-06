@@ -6,14 +6,18 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from .chat import redact_sensitive_text
 from .models import (
     AgentRun,
     AgentState,
     ApprovalRequest,
+    AuditLog,
     BusinessGoal,
     BusinessRecord,
+    ContentItem,
     DomainEvent,
     ImprovementRequest,
+    MediaAsset,
     OwnerNotification,
     Task,
 )
@@ -28,6 +32,187 @@ def _utcnow() -> datetime:
 
 def _count(db: Session, model: type, *criteria: Any) -> int:
     return int(db.scalar(select(func.count()).select_from(model).where(*criteria)) or 0)
+
+
+def _short_text(value: object, limit: int = 120) -> str:
+    compact = " ".join(redact_sensitive_text(str(value or "")).split())
+    return compact if len(compact) <= limit else compact[: limit - 1] + "…"
+
+
+def _social_runtime_activity(db: Session, *, cutoff: datetime) -> list[dict[str, Any]]:
+    published = _count(
+        db,
+        ContentItem,
+        ContentItem.status == "published",
+        ContentItem.published_at >= cutoff,
+    )
+    social_statuses = dict(
+        db.execute(
+            select(ContentItem.status, func.count(ContentItem.id))
+            .where(ContentItem.status != "published")
+            .group_by(ContentItem.status)
+        ).all()
+    )
+    blockers = [
+        ("approval", "ожидают подтверждения владельца"),
+        ("visual_pending", "ожидают готовых изображений"),
+        ("credentials_required", "требуют credentials площадки"),
+        ("adapter_required", "требуют официального адаптера"),
+        ("publication_failed", "завершились ошибкой публикации"),
+        ("reconciliation_required", "требуют проверки результата площадки"),
+    ]
+    publication_reasons = [
+        f"{int(social_statuses.get(status, 0))} {label}"
+        for status, label in blockers
+        if social_statuses.get(status)
+    ]
+    social_publisher = {
+        "agent_type": "social_publisher",
+        "status": "worked" if published else "blocked" if publication_reasons else "idle",
+        "runs": published,
+        "succeeded": published,
+        "failed": 0,
+        "running": 0,
+        "active_tasks": 0,
+        "last_task_id": None,
+        "last_task_title": "",
+        "last_heartbeat_at": None,
+        "did_work": bool(published),
+        "inactivity_reason": "" if published else "; ".join(publication_reasons) or "нет подготовленных публикаций",
+    }
+
+    generated = _count(
+        db,
+        AuditLog,
+        AuditLog.actor == "social_image_agent",
+        AuditLog.action == "marketing.social_visual_generated",
+        AuditLog.created_at >= cutoff,
+    )
+    generation_failures = _count(
+        db,
+        AuditLog,
+        AuditLog.actor == "social_image_agent",
+        AuditLog.action == "marketing.social_visual_failed",
+        AuditLog.created_at >= cutoff,
+    )
+    media_statuses = dict(
+        db.execute(
+            select(MediaAsset.status, func.count(MediaAsset.id))
+            .where(MediaAsset.kind == "image")
+            .group_by(MediaAsset.status)
+        ).all()
+    )
+    if generated:
+        image_reason = ""
+    elif media_statuses.get("credentials_required"):
+        image_reason = (
+            f"{int(media_statuses['credentials_required'])} визуалов требуют IMAGE_GENERATION_API_KEY "
+            "или нового уникального media pool"
+        )
+    elif media_statuses.get("queued"):
+        image_reason = f"{int(media_statuses['queued'])} визуалов ожидают обработки worker"
+    else:
+        image_reason = "за период не было новых запросов на изображения"
+    social_image = {
+        "agent_type": "social_image",
+        "status": "worked" if generated else "blocked" if media_statuses.get("credentials_required") else "idle",
+        "runs": generated + generation_failures,
+        "succeeded": generated,
+        "failed": generation_failures,
+        "running": int(media_statuses.get("queued", 0)),
+        "active_tasks": int(media_statuses.get("queued", 0)),
+        "last_task_id": None,
+        "last_task_title": "",
+        "last_heartbeat_at": None,
+        "did_work": bool(generated),
+        "inactivity_reason": image_reason,
+    }
+    return [social_image, social_publisher]
+
+
+def _agent_activity(db: Session, *, cutoff: datetime) -> list[dict[str, Any]]:
+    from .agents import AGENTS
+
+    states = {
+        row.agent_type: row
+        for row in db.scalars(select(AgentState)).all()
+        if row.agent_type in AGENTS
+    }
+    runs = db.scalars(
+        select(AgentRun)
+        .where(AgentRun.started_at >= cutoff)
+        .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
+    ).all()
+    runs_by_agent: dict[str, list[AgentRun]] = {name: [] for name in AGENTS}
+    for run in runs:
+        if run.agent_type in runs_by_agent:
+            runs_by_agent[run.agent_type].append(run)
+    task_ids = {run.task_id for run in runs if run.task_id is not None}
+    tasks_by_id = (
+        {
+            row.id: row
+            for row in db.scalars(select(Task).where(Task.id.in_(task_ids))).all()
+        }
+        if task_ids
+        else {}
+    )
+    active_tasks = db.scalars(
+        select(Task)
+        .where(Task.status.in_(["open", "queued", "running"]))
+        .order_by(Task.id)
+    ).all()
+    active_by_agent: dict[str, list[Task]] = {name: [] for name in AGENTS}
+    for task in active_tasks:
+        if task.agent_type in active_by_agent:
+            active_by_agent[task.agent_type].append(task)
+
+    rows: list[dict[str, Any]] = []
+    for agent_type in sorted(AGENTS):
+        agent_runs = runs_by_agent[agent_type]
+        succeeded = sum(row.status == "succeeded" for row in agent_runs)
+        failed = sum(row.status in {"failed", "incomplete"} for row in agent_runs)
+        running = sum(row.status == "running" for row in agent_runs)
+        latest_run = agent_runs[0] if agent_runs else None
+        latest_task = tasks_by_id.get(latest_run.task_id) if latest_run else None
+        waiting = active_by_agent[agent_type]
+        state = states.get(agent_type)
+        if succeeded or failed:
+            inactivity_reason = ""
+            status = "worked" if not failed else "degraded"
+        elif running:
+            inactivity_reason = ""
+            status = "running"
+        elif waiting:
+            inactivity_reason = f"задача #{waiting[0].id} ожидает выполнения worker"
+            status = "waiting"
+        elif state and state.last_error:
+            inactivity_reason = "последняя ошибка: " + _short_text(state.last_error, 160)
+            status = "error"
+        else:
+            inactivity_reason = "за отчётный период агенту не назначались задачи"
+            status = "idle"
+        rows.append(
+            {
+                "agent_type": agent_type,
+                "status": status,
+                "runs": len(agent_runs),
+                "succeeded": succeeded,
+                "failed": failed,
+                "running": running,
+                "active_tasks": len(waiting),
+                "last_task_id": latest_task.id if latest_task else None,
+                "last_task_title": _short_text(latest_task.title, 100) if latest_task else "",
+                "last_heartbeat_at": (
+                    state.last_heartbeat_at.isoformat()
+                    if state and state.last_heartbeat_at
+                    else None
+                ),
+                "did_work": bool(succeeded or failed),
+                "inactivity_reason": inactivity_reason,
+            }
+        )
+    rows.extend(_social_runtime_activity(db, cutoff=cutoff))
+    return sorted(rows, key=lambda row: str(row["agent_type"]))
 
 
 def build_ceo_brief(db: Session) -> dict[str, Any]:
@@ -274,6 +459,7 @@ def build_activity_report(
         }
         for row in agents
     ]
+    agent_activity = _agent_activity(db, cutoff=cutoff)
     blockers = []
     if summary["tasks_failed"]:
         blockers.append(f"Задач с ошибкой: {summary['tasks_failed']}")
@@ -356,6 +542,7 @@ def build_activity_report(
             if (row.payload or {}).get("action") != "system_activity_report"
         ],
         "agent_statuses": agent_statuses,
+        "agent_activity": agent_activity,
         "strategic_growth": strategic_growth,
         "marketing_sales_coordination": marketing_sales_coordination,
         "blockers": blockers,
@@ -399,6 +586,34 @@ def format_activity_report(result: dict[str, Any]) -> str:
         ),
         f"🔐 Ожидают подтверждения: {summary.get('pending_approvals', 0)}",
     ]
+    agent_activity = result.get("agent_activity") or []
+    if agent_activity:
+        lines.append("\n🤖 Работа каждого ИИ-агента:")
+        for row in agent_activity:
+            agent_type = _short_text(row.get("agent_type"), 40)
+            if row.get("did_work"):
+                detail = (
+                    f"{int(row.get('succeeded') or 0)}/{int(row.get('runs') or 0)} успешно"
+                )
+                if row.get("failed"):
+                    detail += f", ошибок: {int(row['failed'])}"
+                if row.get("last_task_id"):
+                    detail += (
+                        f"; последнее #{row['last_task_id']} "
+                        f"{_short_text(row.get('last_task_title'), 70)}"
+                    )
+            elif row.get("running"):
+                detail = f"работает — выполняется запусков: {int(row['running'])}"
+                if row.get("last_task_id"):
+                    detail += f"; сейчас #{row['last_task_id']} {_short_text(row.get('last_task_title'), 70)}"
+            else:
+                detail = "не работал — " + _short_text(
+                    row.get("inactivity_reason") or "причина не зафиксирована",
+                    150,
+                )
+            if row.get("active_tasks"):
+                detail += f"; ожидают задач: {int(row['active_tasks'])}"
+            lines.append(f"• {agent_type}: {detail}")
     growth = result.get("strategic_growth") or {}
     if growth:
         lines.extend([
@@ -410,30 +625,30 @@ def format_activity_report(result: dict[str, Any]) -> str:
     coordination = result.get("marketing_sales_coordination") or {}
     if coordination:
         lines.append("\n🤝 Marketing ↔ Research ↔ Sales")
-        for item in (coordination.get("discussion") or [])[:4]:
+        for item in (coordination.get("discussion") or [])[:2]:
             message = str(item.get("message") or "").strip()
-            if len(message) > 360:
-                message = message[:357] + "..."
+            if len(message) > 160:
+                message = message[:157] + "..."
             lines.append(f"• {item.get('agent', 'agent')}: {message}")
         actions = coordination.get("actions") or []
         if actions:
             lines.append("Следующие действия:")
-            for item in actions[:5]:
+            for item in actions[:3]:
                 status = str(item.get("status") or "planned")
                 action = str(item.get("action") or "").strip()
-                if len(action) > 240:
-                    action = action[:237] + "..."
+                if len(action) > 140:
+                    action = action[:137] + "..."
                 task_id = f"#{item['task_id']} " if item.get("task_id") else ""
                 lines.append(f"• {task_id}[{item.get('agent', 'agent')}/{status}] {action}")
         lines.append("Автоматическая отправка: не выполнялась.")
     recent = result.get("recent_completed_tasks") or []
     if recent:
         lines.append("\nПоследние результаты:")
-        lines.extend(f"• #{row['id']} [{row['agent_type']}] {row['title']}" for row in recent[:5])
+        lines.extend(f"• #{row['id']} [{row['agent_type']}] {row['title']}" for row in recent[:3])
     upcoming = result.get("upcoming_tasks") or []
     if upcoming:
         lines.append("\nЗапланировано AI CEO:")
-        lines.extend(f"• #{row['id']} [{row['agent_type']}] {row['title']}" for row in upcoming[:5])
+        lines.extend(f"• #{row['id']} [{row['agent_type']}] {row['title']}" for row in upcoming[:3])
     blockers = result.get("blockers") or []
     lines.append("\nТребуют внимания: " + ("; ".join(blockers) if blockers else "нет."))
     return "\n".join(lines)

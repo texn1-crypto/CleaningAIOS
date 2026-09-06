@@ -50,11 +50,13 @@ Set `TELEGRAM_API_IP` in the server `.env`, then recreate the bot and worker:
 docker compose --profile telegram up -d --force-recreate bot worker
 ```
 
-`OWNER_ACTIVITY_REPORT_INTERVAL_MINUTES=30` makes the scheduler create one
-idempotent operational-report task per 30-minute window. The Orchestrator builds
-the report from PostgreSQL and the worker delivers it through the persisted owner
-notification queue. Set a value from 5 to 1440 minutes; delivery requires
-`TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID`.
+`OWNER_ACTIVITY_REPORT_INTERVAL_MINUTES=60` makes the scheduler create one
+idempotent operational-report task per hourly window. The Orchestrator builds the
+report from PostgreSQL, including every registered AI agent plus the social-image
+and social-publisher runtimes. For each role it records completed/failed runs, the
+latest task, queued work, or an explicit inactivity reason. The worker delivers it
+through the persisted owner notification queue. Set a value from 5 to 1440
+minutes; delivery requires `TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID`.
 
 `DAILY_OWNER_PACK_HOUR=18` and `DAILY_OWNER_PACK_TIMEZONE=Europe/Moscow` create one
 daily Orchestrator task that produces three separate checksum-bound PDFs under the

@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     agent_mcp_read_servers_json: str = "[]"
     agent_mcp_protocol_version: str = "2026-07-28"
     ceo_review_interval_hours: int = 24
-    owner_activity_report_interval_minutes: int = 30
+    owner_activity_report_interval_minutes: int = 60
     daily_owner_pack_timezone: str = "Europe/Moscow"
     daily_owner_pack_hour: int = 18
     ceo_development_cadence_hours: int = 24

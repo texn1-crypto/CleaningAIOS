@@ -84,7 +84,7 @@ class OrchestratorAgent:
                     channel="telegram",
                     resource_type="activity_report",
                     resource_id=str(payload.get("scheduled_window_start") or result["generated_at"]),
-                    subject="Регулярный отчёт CleaningAI OS",
+                    subject="🛡 Почасовой отчёт по ИИ-агентам",
                     body=format_activity_report(result),
                     data={
                         "report_kind": result["report_kind"],
@@ -420,10 +420,30 @@ class MarketingAgent:
             day = datetime.fromisoformat(payload["day"]) if payload.get("day") else None
             return prepare_daily_social_plan(db, day=day)
         if payload.get("action") == "prepare_daily_cleaning_news_plan":
-            from .social_marketing import prepare_daily_cleaning_news_plan
+            from .social_marketing import (
+                prepare_daily_cleaning_news_plan,
+                prepare_daily_social_plan,
+            )
 
             day = datetime.fromisoformat(payload["day"]) if payload.get("day") else None
-            return prepare_daily_cleaning_news_plan(db, day=day)
+            news_result = prepare_daily_cleaning_news_plan(db, day=day)
+            if news_result.get("status") != "news_unavailable":
+                return news_result
+            fallback = prepare_daily_social_plan(db, day=day)
+            return {
+                **fallback,
+                "content_source": "evergreen_fallback",
+                "news_status": news_result.get("status"),
+                "news_reason": news_result.get("reason"),
+                "evidence": [
+                    *(news_result.get("evidence") or []),
+                    *(fallback.get("evidence") or []),
+                    {
+                        "type": "evergreen_social_fallback",
+                        "reason": "fresh_cleaning_news_unavailable",
+                    },
+                ],
+            }
         campaigns = db.scalar(select(func.count(BusinessRecord.id)).where(BusinessRecord.record_type == "campaign")) or 0
         experiments = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "marketing_experiment")).all()
         providers = db.scalar(select(func.count(BusinessRecord.id)).where(BusinessRecord.record_type == "marketing_provider")) or 0
