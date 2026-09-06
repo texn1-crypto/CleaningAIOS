@@ -66,6 +66,7 @@ def test_agent_observability_reports_per_agent_slo_and_prometheus_metrics(client
         in metrics.text
     )
     assert "cleaningai_agent_stale_runs" in metrics.text
+    assert "cleaningai_orchestrator_decision_success_rate_percent" in metrics.text
     assert "synthetic failure" not in metrics.text
 
 

@@ -491,6 +491,10 @@ class OrchestratorDecision(Base):
             "outcome_status IN ('pending', 'succeeded', 'expectation_missed')",
             name="ck_orchestrator_decision_outcome",
         ),
+        CheckConstraint(
+            "decision_outcome IN ('pending', 'success', 'partial', 'fail')",
+            name="ck_orchestrator_decision_explicit_outcome",
+        ),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     decision_key: Mapped[str] = mapped_column(String(128))
@@ -501,6 +505,7 @@ class OrchestratorDecision(Base):
     expected_result: Mapped[str] = mapped_column(String(255))
     expectation_status: Mapped[str] = mapped_column(String(32), default="success_expected", index=True)
     outcome_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    decision_outcome: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     successful: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, index=True)
     correlation_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)

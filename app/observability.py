@@ -171,6 +171,13 @@ def agent_observability_snapshot(
         value = int(count)
         tool_statuses[str(status)] += value
         per_tool[str(tool_name)][str(status)] = value
+    from .orchestrator_telemetry import routing_decision_outcome_summary
+
+    decision_outcomes = routing_decision_outcome_summary(
+        db,
+        window_hours=hours,
+        now=generated_at,
+    )
     return {
         "generated_at": generated_at.isoformat() + "Z",
         "window_hours": hours,
@@ -189,6 +196,7 @@ def agent_observability_snapshot(
             "p95_duration_seconds": p95_duration,
             "cost": round(total_cost, 6),
         },
+        "decision_outcomes": decision_outcomes,
         "slo": {
             "overall_status": overall_status,
             "success_rate": {
@@ -381,6 +389,7 @@ def prometheus_metrics(snapshot: dict[str, Any]) -> str:
                 f'{item[status]}'
             )
     runs = snapshot["runs"]
+    decision_outcomes = snapshot["decision_outcomes"]
     lines.extend(
         [
             "# HELP cleaningai_agent_success_rate_percent Agent run success rate in the configured window.",
@@ -395,8 +404,25 @@ def prometheus_metrics(snapshot: dict[str, Any]) -> str:
             "# HELP cleaningai_pending_approvals Owner approvals currently pending.",
             "# TYPE cleaningai_pending_approvals gauge",
             f'cleaningai_pending_approvals {snapshot["workflow"]["pending_approvals"]}',
+            "# HELP cleaningai_orchestrator_decision_success_rate_percent Successful orchestrator decisions in the configured window.",
+            "# TYPE cleaningai_orchestrator_decision_success_rate_percent gauge",
+            "cleaningai_orchestrator_decision_success_rate_percent "
+            f'{decision_outcomes["decision_success_rate_percent"] if decision_outcomes["decision_success_rate_percent"] is not None else "NaN"}',
         ]
     )
+    lines.extend(
+        [
+            "# HELP cleaningai_orchestrator_decision_outcomes Orchestrator decision outcomes by selected agent.",
+            "# TYPE cleaningai_orchestrator_decision_outcomes gauge",
+        ]
+    )
+    for item in decision_outcomes["per_agent"]:
+        for outcome in ("success", "partial", "fail"):
+            lines.append(
+                "cleaningai_orchestrator_decision_outcomes"
+                f'{{agent_type="{_label(item["agent_type"])}",outcome="{outcome}"}} '
+                f'{item[outcome]}'
+            )
     for family, statuses in (
         ("tasks", snapshot["workflow"]["tasks"]),
         ("events", snapshot["workflow"]["events"]),

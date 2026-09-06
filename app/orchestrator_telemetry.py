@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 import re
 from typing import Any
@@ -22,6 +23,7 @@ _MISSED_EXPECTATION_STATUSES = frozenset(
         "tender_closed",
     }
 )
+_PARTIAL_OUTCOME_STATUSES = frozenset({"partial", "partially_completed"})
 
 
 def _now() -> datetime:
@@ -43,6 +45,28 @@ def _expectation_status(task: Task, now: datetime) -> str:
     approval_is_required = bool(payload.get("action_kind"))
     retry_budget_is_low = task.max_attempts <= 1
     return "at_risk" if deadline_is_tight or approval_is_required or retry_budget_is_low else "success_expected"
+
+
+def classify_routing_decision_outcome(task: Task) -> str:
+    """Map a terminal delegated task to a stable, PII-free decision outcome."""
+
+    result = task.result or {}
+    if task.status != "done":
+        return "fail"
+    explicit = str(result.get("decision_outcome") or "").strip().lower()
+    if explicit in {"success", "partial", "fail"}:
+        return explicit
+    result_status = str(result.get("status") or "").strip().lower()
+    if (
+        result.get("partial") is True or result_status in _PARTIAL_OUTCOME_STATUSES
+    ):
+        return "partial"
+    if (
+        not result.get("error")
+        and result_status not in _MISSED_EXPECTATION_STATUSES
+    ):
+        return "success"
+    return "fail"
 
 
 def record_routing_decisions(
@@ -154,11 +178,9 @@ def measure_routing_outcome(db: Session, task: Task) -> OrchestratorDecision | N
         return row
     if task.status == "failed" and task.attempts < task.max_attempts:
         return row
-    successful = bool(
-        task.status == "done"
-        and not result.get("error")
-        and result_status not in _MISSED_EXPECTATION_STATUSES
-    )
+    decision_outcome = classify_routing_decision_outcome(task)
+    successful = decision_outcome == "success"
+    row.decision_outcome = decision_outcome
     row.successful = successful
     row.outcome_status = "succeeded" if successful else "expectation_missed"
     row.measured_at = _now()
@@ -171,6 +193,9 @@ def measure_routing_outcome(db: Session, task: Task) -> OrchestratorDecision | N
             details={
                 "delegated_task_id": task.id,
                 "selected_agent": row.selected_agent,
+                "agent_type": row.selected_agent,
+                "task_category": row.task_type,
+                "decision_outcome": decision_outcome,
                 "outcome_status": row.outcome_status,
                 "successful": successful,
                 "correlation_id": row.correlation_id,
@@ -197,18 +222,80 @@ def sync_routing_outcomes(db: Session) -> int:
     return measured
 
 
+def routing_decision_outcome_summary(
+    db: Session,
+    *,
+    window_hours: int = 24,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Aggregate measured routing outcomes globally and by selected agent."""
+
+    generated_at = now or _now()
+    hours = max(1, min(int(window_hours), 7 * 24))
+    cutoff = generated_at - timedelta(hours=hours)
+    rows = db.scalars(
+        select(OrchestratorDecision).where(
+            OrchestratorDecision.measured_at.is_not(None),
+            OrchestratorDecision.measured_at >= cutoff,
+            OrchestratorDecision.measured_at <= generated_at,
+        )
+    ).all()
+    totals: Counter[str] = Counter()
+    by_agent: dict[str, Counter[str]] = defaultdict(Counter)
+    for row in rows:
+        outcome = row.decision_outcome
+        if outcome not in {"success", "partial", "fail"}:
+            outcome = "success" if row.successful else "fail"
+        totals[outcome] += 1
+        by_agent[row.selected_agent][outcome] += 1
+
+    def _summary(counts: Counter[str]) -> dict[str, Any]:
+        measured = sum(counts.values())
+        return {
+            "measured": measured,
+            "success": counts["success"],
+            "partial": counts["partial"],
+            "fail": counts["fail"],
+            "decision_success_rate_percent": (
+                round(counts["success"] * 100 / measured, 2) if measured else None
+            ),
+        }
+
+    return {
+        "generated_at": generated_at.isoformat() + "Z",
+        "window_hours": hours,
+        **_summary(totals),
+        "per_agent": [
+            {"agent_type": agent_type, **_summary(counts)}
+            for agent_type, counts in sorted(by_agent.items())
+        ],
+        "privacy": {
+            "aggregate_only": True,
+            "task_payloads_included": False,
+            "personal_data_included": False,
+            "secrets_included": False,
+        },
+    }
+
+
 def routing_decision_view(row: OrchestratorDecision) -> dict[str, Any]:
     return {
         "id": row.id,
         "source_task_id": row.source_task_id,
         "delegated_task_id": row.delegated_task_id,
         "task_type": row.task_type,
+        "task_category": row.task_type,
         "selected_agent": row.selected_agent,
+        "agent_type": row.selected_agent,
         "expected_result": row.expected_result,
         "expectation_status": row.expectation_status,
         "outcome_status": row.outcome_status,
+        "decision_outcome": (
+            row.decision_outcome if row.decision_outcome != "pending" else None
+        ),
         "successful": row.successful,
         "correlation_id": row.correlation_id,
         "created_at": row.created_at,
         "measured_at": row.measured_at,
+        "timestamp": row.measured_at,
     }

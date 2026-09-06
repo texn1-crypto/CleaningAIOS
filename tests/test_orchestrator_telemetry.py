@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import json
 
 from sqlalchemy import func, select
@@ -7,7 +8,11 @@ from sqlalchemy import func, select
 from app.agents import MetaBrainAgent
 from app.db import SessionLocal
 from app.models import AuditLog, OrchestratorDecision, Task
-from app.orchestrator_telemetry import measure_routing_outcome, record_routing_decisions
+from app.orchestrator_telemetry import (
+    measure_routing_outcome,
+    record_routing_decisions,
+    routing_decision_outcome_summary,
+)
 
 
 def test_orchestrator_routing_is_audited_measured_and_pii_free(client, monkeypatch):
@@ -208,4 +213,101 @@ def test_routing_outcome_distinguishes_integration_gap_from_pending_approval():
         assert by_agent["sales"].successful is None
         assert by_agent["sales"].outcome_status == "pending"
         assert by_agent["sales"].measured_at is None
+        db.rollback()
+
+
+def test_partial_routing_outcome_is_logged_with_required_dimensions():
+    with SessionLocal() as db:
+        source = Task(title="Telemetry partial source", agent_type="orchestrator")
+        child = Task(
+            title="Telemetry partial child",
+            agent_type="marketing",
+            status="done",
+            result={"status": "partial"},
+        )
+        db.add_all([source, child])
+        db.flush()
+        decision = record_routing_decisions(
+            db,
+            source_task=source,
+            result={
+                "delegated_tasks": [
+                    {"id": child.id, "agent_type": child.agent_type}
+                ]
+            },
+        )[0]
+
+        measure_routing_outcome(db, child)
+
+        assert decision.decision_outcome == "partial"
+        assert decision.successful is False
+        audit = db.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "orchestrator.routing_outcome_measured",
+                AuditLog.resource_id == str(decision.id),
+            )
+            .order_by(AuditLog.id.desc())
+        )
+        assert audit is not None
+        assert audit.details == {
+            "delegated_task_id": child.id,
+            "selected_agent": "marketing",
+            "agent_type": "marketing",
+            "task_category": "marketing",
+            "decision_outcome": "partial",
+            "outcome_status": "expectation_missed",
+            "successful": False,
+            "correlation_id": f"task:{source.id}",
+        }
+        db.rollback()
+
+
+def test_decision_outcome_summary_aggregates_24_outcomes_by_agent():
+    now = datetime(2026, 9, 6, 12, 0, 0)
+    with SessionLocal() as db:
+        source = Task(title="Telemetry aggregate source", agent_type="orchestrator")
+        db.add(source)
+        db.flush()
+        for index in range(24):
+            agent_type = "research" if index < 18 else "finance"
+            outcome = "success" if index < 12 else "fail" if index < 18 else "partial"
+            task = Task(
+                title=f"Telemetry aggregate child {index}",
+                agent_type=agent_type,
+                status="done" if outcome != "fail" else "failed",
+                result={"decision_outcome": outcome},
+            )
+            db.add(task)
+            db.flush()
+            db.add(
+                OrchestratorDecision(
+                    decision_key=f"aggregate-test:{index}",
+                    source_task_id=source.id,
+                    delegated_task_id=task.id,
+                    task_type=agent_type,
+                    selected_agent=agent_type,
+                    expected_result="Synthetic aggregate-only regression outcome.",
+                    expectation_status="success_expected",
+                    outcome_status=(
+                        "succeeded" if outcome == "success" else "expectation_missed"
+                    ),
+                    decision_outcome=outcome,
+                    successful=outcome == "success",
+                    measured_at=now - timedelta(minutes=index),
+                )
+            )
+        db.flush()
+
+        summary = routing_decision_outcome_summary(db, window_hours=24, now=now)
+
+        assert summary["measured"] == 24
+        assert summary["success"] == 12
+        assert summary["partial"] == 6
+        assert summary["fail"] == 6
+        assert summary["decision_success_rate_percent"] == 50.0
+        by_agent = {row["agent_type"]: row for row in summary["per_agent"]}
+        assert by_agent["research"]["decision_success_rate_percent"] == 66.67
+        assert by_agent["finance"]["partial"] == 6
+        assert summary["privacy"]["aggregate_only"] is True
         db.rollback()
