@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -327,10 +328,13 @@ def _prompt(operation: str, subject: Any) -> PromptSelection:
 
 
 def prompt_deployment_catalog() -> dict[str, Any]:
-    return deployment_catalog(
+    catalog = deployment_catalog(
         PROMPT_DEPLOYMENTS,
         candidate_rollout_percent=settings.prompt_candidate_rollout_percent,
     )
+    if not isinstance(catalog, dict):
+        raise TypeError("Prompt deployment catalog was not a JSON object")
+    return catalog
 
 
 def _prompt_result(result: dict[str, Any], selection: PromptSelection) -> dict[str, Any]:
@@ -392,6 +396,51 @@ def _validate_perplexity_endpoint(base_url: str) -> str:
     if settings.production and parsed.scheme != "https":
         raise ValueError("PERPLEXITY_BASE_URL must use HTTPS in production")
     return endpoint
+
+
+def _validate_gemini_endpoint(base_url: str, model: str) -> str:
+    normalized_model = model.strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", normalized_model):
+        raise ValueError("GEMINI_MODEL must be a valid model identifier")
+    endpoint = f"{base_url.rstrip('/')}/models/{normalized_model}:generateContent"
+    parsed = urlparse(endpoint)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("GEMINI_BASE_URL must be an absolute HTTP(S) URL without credentials or query parameters")
+    if settings.production and parsed.scheme != "https":
+        raise ValueError("GEMINI_BASE_URL must use HTTPS in production")
+    return endpoint
+
+
+def _gemini_response_text(body: dict[str, Any]) -> str:
+    prompt_feedback = body.get("promptFeedback")
+    if isinstance(prompt_feedback, dict) and prompt_feedback.get("blockReason"):
+        raise ValueError("Gemini blocked the advisory request")
+    candidates = body.get("candidates")
+    if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+        raise ValueError("Gemini response did not contain a candidate")
+    candidate = candidates[0]
+    finish_reason = str(candidate.get("finishReason") or "STOP").upper()
+    if finish_reason not in {"STOP", "FINISH_REASON_UNSPECIFIED"}:
+        raise ValueError("Gemini response was incomplete")
+    content = candidate.get("content")
+    parts = content.get("parts") if isinstance(content, dict) else None
+    chunks = [
+        str(part["text"])
+        for part in (parts or [])
+        if isinstance(part, dict)
+        and isinstance(part.get("text"), str)
+        and not part.get("thought")
+    ]
+    if not chunks:
+        raise ValueError("Gemini response did not contain text")
+    return "".join(chunks)
 
 
 def _anthropic_response_text(body: dict[str, Any]) -> str:
@@ -706,6 +755,145 @@ class OpenAIResponsesAdvisor:
             )
 
 
+class GoogleGeminiAdvisor:
+    """Native Gemini adapter for structured advice; it has no application tools."""
+
+    provider = "google_gemini"
+
+    def configuration_status(self) -> str:
+        if not settings.gemini_api_key:
+            return "credentials_required"
+        if not settings.gemini_model.strip():
+            return "model_configuration_required"
+        if settings.gemini_thinking_level.strip().lower() not in {"low", "medium", "high"}:
+            return "model_configuration_required"
+        return "configured"
+
+    def _request(self, *, system: str, content: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": json.dumps(content, ensure_ascii=False, default=str)}],
+                }
+            ],
+            "generationConfig": {
+                "maxOutputTokens": settings.llm_max_output_tokens,
+                "responseMimeType": "application/json",
+                "responseSchema": schema,
+                "thinkingConfig": {
+                    "thinkingLevel": settings.gemini_thinking_level.strip().upper(),
+                },
+            },
+        }
+        with httpx.Client(
+            timeout=settings.gemini_timeout_seconds,
+            headers={
+                "x-goog-api-key": settings.gemini_api_key,
+                "Content-Type": "application/json",
+            },
+        ) as client:
+            response = client.post(
+                _validate_gemini_endpoint(settings.gemini_base_url, settings.gemini_model),
+                json=payload,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if not isinstance(body, dict):
+                raise ValueError("Gemini response was not a JSON object")
+            return body
+
+    def _safe_error(self, exc: Exception) -> str:
+        message = str(exc)
+        if settings.gemini_api_key:
+            message = message.replace(settings.gemini_api_key, "[REDACTED]")
+        return f"{type(exc).__name__}: {message[:500]}"
+
+    def review(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        prompt = _prompt("business_review", snapshot)
+        status = self.configuration_status()
+        if status != "configured":
+            return _prompt_result(
+                {
+                    "status": status,
+                    "provider": self.provider,
+                    "model": settings.gemini_model or None,
+                    "recommendations": [],
+                },
+                prompt,
+            )
+        try:
+            body = self._request(
+                system=prompt.release.content,
+                content=snapshot,
+                schema=BUSINESS_REVIEW_SCHEMA,
+            )
+            clean = _clean_business_review(json.loads(_gemini_response_text(body)))
+            return _prompt_result(
+                {
+                    "status": "succeeded",
+                    "provider": self.provider,
+                    "model": body.get("modelVersion", settings.gemini_model),
+                    **clean,
+                    "usage": body.get("usageMetadata", {}),
+                },
+                prompt,
+            )
+        except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            return _prompt_result(
+                {
+                    "status": "unavailable",
+                    "provider": self.provider,
+                    "model": settings.gemini_model,
+                    "error": self._safe_error(exc),
+                    "recommendations": [],
+                },
+                prompt,
+            )
+
+    def analyze_request(self, message: str, intent: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+        prompt_subject = {
+            "request": message,
+            "intent": intent,
+            "deterministic_baseline": baseline,
+        }
+        prompt = _prompt("request_analysis", prompt_subject)
+        status = self.configuration_status()
+        if status != "configured":
+            return _prompt_result(
+                {"status": status, "provider": self.provider, "model": settings.gemini_model or None},
+                prompt,
+            )
+        try:
+            body = self._request(
+                system=prompt.release.content,
+                content=prompt_subject,
+                schema=REQUEST_ANALYSIS_SCHEMA,
+            )
+            clean = _clean_request_analysis(json.loads(_gemini_response_text(body)))
+            return _prompt_result(
+                {
+                    "status": "succeeded",
+                    "provider": self.provider,
+                    "model": body.get("modelVersion", settings.gemini_model),
+                    **clean,
+                    "usage": body.get("usageMetadata", {}),
+                },
+                prompt,
+            )
+        except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            return _prompt_result(
+                {
+                    "status": "unavailable",
+                    "provider": self.provider,
+                    "model": settings.gemini_model,
+                    "error": self._safe_error(exc),
+                },
+                prompt,
+            )
+
+
 class AnthropicMessagesAdvisor:
     """Native Claude Messages API adapter with no application tools or write authority."""
 
@@ -738,7 +926,10 @@ class AnthropicMessagesAdvisor:
         ) as client:
             response = client.post(_validate_anthropic_endpoint(settings.anthropic_base_url), json=payload)
             response.raise_for_status()
-            return response.json()
+            body = response.json()
+            if not isinstance(body, dict):
+                raise ValueError("Claude response was not a JSON object")
+            return body
 
     def review(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         prompt = _prompt("business_review", snapshot)
@@ -1045,12 +1236,14 @@ class LLMAdvisor:
     def __init__(self) -> None:
         self.openai = OpenAIResponsesAdvisor()
         self.anthropic = AnthropicMessagesAdvisor()
+        self.gemini = GoogleGeminiAdvisor()
         self.perplexity = PerplexityAgentCoach()
 
     def provider_statuses(self) -> dict[str, str]:
         return {
             self.openai.provider: self.openai.configuration_status(),
             self.anthropic.provider: self.anthropic.configuration_status(),
+            self.gemini.provider: self.gemini.configuration_status(),
             self.perplexity.provider: self.perplexity.configuration_status(),
         }
 
@@ -1061,11 +1254,14 @@ class LLMAdvisor:
             return statuses[self.openai.provider]
         if provider == "anthropic":
             return statuses[self.anthropic.provider]
+        if provider == "gemini":
+            return statuses[self.gemini.provider]
         if provider != "auto":
             return "provider_configuration_required"
         business_statuses = [
             statuses[self.openai.provider],
             statuses[self.anthropic.provider],
+            statuses[self.gemini.provider],
         ]
         if "configured" in business_statuses:
             return "configured"
@@ -1081,11 +1277,18 @@ class LLMAdvisor:
             return [self.openai]
         if provider == "anthropic":
             return [self.anthropic]
+        if provider == "gemini":
+            return [self.gemini]
         if provider != "auto":
             return []
         # Claude handles strategic/business synthesis; OpenAI handles product
-        # capability classification. Both remain advisory-only.
-        return [self.anthropic, self.openai] if operation == "review" else [self.openai, self.anthropic]
+        # capability classification. Gemini is the fast structured fallback.
+        # Every provider remains advisory-only and receives no application tools.
+        return (
+            [self.anthropic, self.openai, self.gemini]
+            if operation == "review"
+            else [self.openai, self.gemini, self.anthropic]
+        )
 
     def _run(self, operation: str, *args: Any) -> dict[str, Any]:
         attempted: list[str] = []

@@ -11,6 +11,7 @@ application tools by default.
 | Orchestration | CleaningAI OS | State, RBAC, audit, approvals, idempotency, queues | Controlled local writes |
 | Request analysis | OpenAI Responses | Structured intent and capability analysis | None |
 | Business review | Anthropic Messages | Alternative strategic review and risk critique | None |
+| Fast advisory fallback | Google Gemini 3.7 Flash | Structured request and business analysis when a primary provider is unavailable | None |
 | Agent quality research | Perplexity Sonar | Research-grounded review of aggregate telemetry and evaluation proposals | None |
 | Product implementation | Codex/Workspace Agent | Code changes with tests and review | Repository only |
 | Business execution | Deterministic local adapters | Approved publication, delivery and platform operations | Policy-gated |

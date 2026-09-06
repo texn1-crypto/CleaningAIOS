@@ -43,6 +43,11 @@ def integration_status() -> dict[str, Any]:
                     "status": llm_advisor.provider_statuses()["anthropic_messages"],
                     "model": settings.anthropic_model or None,
                 },
+                "google_gemini": {
+                    "status": llm_advisor.provider_statuses()["google_gemini"],
+                    "model": settings.gemini_model or None,
+                    "role": "fast_structured_advisory_fallback",
+                },
                 "perplexity_sonar": {
                     "status": llm_advisor.provider_statuses()["perplexity_sonar"],
                     "model": settings.perplexity_model or None,

@@ -70,12 +70,14 @@ def test_llm_adapters_report_selected_prompt_even_without_credentials(monkeypatc
 
     monkeypatch.setattr(settings, "llm_api_key", "")
     monkeypatch.setattr(settings, "anthropic_api_key", "")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
     monkeypatch.setattr(settings, "perplexity_api_key", "")
     monkeypatch.setattr(settings, "prompt_candidate_rollout_percent", 0)
 
     results = [
         llm.OpenAIResponsesAdvisor().review({"business_health": 90}),
         llm.AnthropicMessagesAdvisor().analyze_request("test", {}, {}),
+        llm.GoogleGeminiAdvisor().review({"business_health": 90}),
         llm.PerplexityAgentCoach().coach_agents({"runs": 3}),
         llm.PerplexityAgentCoach().research_evolution({"sources": 2}),
         llm.PerplexityAgentCoach().discover_public_business_leads({"regions": ["Москва"]}),
@@ -84,13 +86,14 @@ def test_llm_adapters_report_selected_prompt_even_without_credentials(monkeypatc
     assert [result["prompt"]["name"] for result in results] == [
         "business_review",
         "request_analysis",
+        "business_review",
         "agent_coaching",
         "evolution_research",
         "public_lead_discovery",
     ]
     for index, result in enumerate(results):
         assert result["prompt"]["variant"] == "stable"
-        expected_version = "1.1.0" if index == 2 else "1.0.0"
+        expected_version = "1.1.0" if index == 3 else "1.0.0"
         assert result["prompt"]["version"] == expected_version
         assert "content" not in result["prompt"]
 

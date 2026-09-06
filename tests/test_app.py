@@ -675,6 +675,7 @@ def test_integration_status_is_truthful(client):
     assert set(status["llm"]["providers"]) == {
         "openai_responses",
         "anthropic_messages",
+        "google_gemini",
         "perplexity_sonar",
     }
 
@@ -770,6 +771,67 @@ def test_anthropic_adapter_uses_native_messages_structured_output(monkeypatch):
     assert "Authorization" not in captured["headers"]
 
 
+def test_gemini_adapter_uses_native_generate_content_structured_output(monkeypatch):
+    import json
+    from app import llm
+    from app.config import settings
+
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+        def json(self):
+            output = {
+                "summary": "Gemini: устойчивое состояние",
+                "risks": [],
+                "data_gaps": ["Нет данных о марже"],
+                "recommendations": [{
+                    "title": "Проверить экономику объекта",
+                    "agent_type": "finance",
+                    "rationale": "Маржа не рассчитана",
+                    "priority": "high",
+                    "needs_owner_decision": False,
+                }],
+            }
+            return {
+                "modelVersion": "gemini-3.7-flash",
+                "candidates": [{
+                    "finishReason": "STOP",
+                    "content": {"parts": [{"text": json.dumps(output)}]},
+                }],
+                "usageMetadata": {"totalTokenCount": 42},
+            }
+
+    class Client:
+        def __init__(self, *args, **kwargs): captured["headers"] = kwargs["headers"]
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, url, json): captured.update({"url": url, "payload": json}); return Response()
+
+    monkeypatch.setattr(llm.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "gemini_api_key", "gemini-test-secret")
+    monkeypatch.setattr(settings, "gemini_base_url", "https://generativelanguage.example/v1beta")
+    monkeypatch.setattr(settings, "gemini_model", "gemini-3.7-flash")
+    monkeypatch.setattr(settings, "gemini_thinking_level", "low")
+
+    result = llm.GoogleGeminiAdvisor().review({"business_health": 88})
+
+    assert result["status"] == "succeeded"
+    assert result["provider"] == "google_gemini"
+    assert result["recommendations"][0]["agent_type"] == "finance"
+    assert captured["url"] == (
+        "https://generativelanguage.example/v1beta/models/"
+        "gemini-3.7-flash:generateContent"
+    )
+    assert "gemini-test-secret" not in captured["url"]
+    assert captured["payload"]["generationConfig"]["responseMimeType"] == "application/json"
+    assert captured["payload"]["generationConfig"]["responseSchema"]["additionalProperties"] is False
+    assert captured["payload"]["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "LOW"
+    assert "tools" not in captured["payload"]
+    assert captured["headers"]["x-goog-api-key"] == "gemini-test-secret"
+    assert "Authorization" not in captured["headers"]
+
+
 def test_perplexity_agent_coach_is_structured_and_advisory_only(monkeypatch):
     import json
     from app import llm
@@ -827,6 +889,7 @@ def test_multi_provider_router_assigns_tasks_and_falls_back(monkeypatch):
     monkeypatch.setattr(settings, "llm_provider", "auto")
     monkeypatch.setattr(settings, "llm_api_key", "openai-secret")
     monkeypatch.setattr(settings, "anthropic_api_key", "anthropic-secret")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
     router = llm.LLMAdvisor()
     monkeypatch.setattr(router.anthropic, "review", lambda snapshot: {
         "status": "succeeded", "provider": "anthropic_messages", "model": "claude-test", "recommendations": [],
@@ -850,6 +913,26 @@ def test_multi_provider_router_assigns_tasks_and_falls_back(monkeypatch):
     fallback = router.review({"business_health": 90})
     assert fallback["provider"] == "openai_responses"
     assert fallback["attempted_providers"] == ["anthropic_messages", "openai_responses"]
+
+    monkeypatch.setattr(settings, "gemini_api_key", "gemini-secret")
+    monkeypatch.setattr(router.openai, "review", lambda snapshot: {
+        "status": "unavailable", "provider": "openai_responses", "model": "gpt-test", "recommendations": [],
+    })
+    monkeypatch.setattr(router.gemini, "review", lambda snapshot: {
+        "status": "succeeded", "provider": "google_gemini", "model": "gemini-test", "recommendations": [],
+    })
+    gemini_fallback = router.review({"business_health": 90})
+    assert gemini_fallback["provider"] == "google_gemini"
+    assert gemini_fallback["attempted_providers"] == [
+        "anthropic_messages",
+        "openai_responses",
+        "google_gemini",
+    ]
+
+    monkeypatch.setattr(settings, "llm_provider", "gemini")
+    gemini = router.review({"business_health": 90})
+    assert gemini["provider"] == "google_gemini"
+    assert gemini["attempted_providers"] == ["google_gemini"]
 
 
 def test_ai_ceo_falls_back_without_llm_credentials(client, monkeypatch):

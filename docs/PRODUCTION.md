@@ -152,16 +152,20 @@ or quota response uses a separate automatic cooldown, 24 hours by default throug
 provider restriction. The resume endpoint only requeues existing approved messages
 and does not bypass consent, suppression, unsubscribe or daily limits.
 
-Set `LLM_API_KEY` for OpenAI and/or `ANTHROPIC_API_KEY` for Claude. The default
+Set `LLM_API_KEY` for OpenAI, `ANTHROPIC_API_KEY` for Claude and/or
+`GEMINI_API_KEY` for Google Gemini. The default
 `LLM_PROVIDER=auto` assigns aggregate CEO/business synthesis to Claude, request and
-product capability analysis to OpenAI, and falls back to the other configured
-provider on a transient provider error. Pin `LLM_PROVIDER=openai` or `anthropic` if
-needed. OpenAI defaults to `https://api.openai.com/v1` and `gpt-5.6-terra`; Claude
+product capability analysis to OpenAI, then uses Gemini as a fast structured
+fallback on a transient provider error. Pin `LLM_PROVIDER=openai`, `anthropic`, or
+`gemini` if needed. OpenAI defaults to `https://api.openai.com/v1` and
+`gpt-5.6-terra`; Claude
 uses the native `https://api.anthropic.com/v1/messages` contract and defaults to
-`claude-sonnet-4-6`. Override the corresponding base URL, model and timeout settings
-only for a reviewed provider or gateway. Production rejects unencrypted HTTP
-endpoints. Neither provider receives tools, secrets, banking credentials or authority
-to execute protected actions. The application remains deterministic when both keys
+`claude-sonnet-4-6`; Gemini uses the native Google Generate Content contract and
+defaults to `gemini-3.7-flash` with low thinking effort. Override the corresponding
+base URL, model and timeout settings only for a reviewed provider or gateway.
+Production rejects unencrypted HTTP endpoints. No provider receives tools, secrets,
+banking credentials or authority
+to execute protected actions. The application remains deterministic when all keys
 are absent or providers are unavailable.
 
 Optionally set `WORKSPACE_AGENT_TRIGGER_ID` and `WORKSPACE_AGENT_ACCESS_TOKEN`

@@ -152,15 +152,17 @@ rows link back to their source resource. Navigation never infers task state loca
   `deadline_at`, scoring data and `documents`. `TENDER_SOURCE_TOKEN` supplies an
   optional bearer token. Portal-specific authentication or non-JSON formats still
   require a legal provider adapter. No fabricated tenders are used.
-- The advisory router supports two native contracts. `LLM_BASE_URL` targets the
+- The advisory router supports three native contracts. `LLM_BASE_URL` targets the
   OpenAI Responses API and sends `LLM_API_KEY` only in the Authorization header with
   `store=false`. `ANTHROPIC_BASE_URL` targets Claude Messages API and sends
   `ANTHROPIC_API_KEY` only as `x-api-key`, with an explicit `anthropic-version`.
-  Both adapters require JSON-schema structured output and have no application tools.
+  `GEMINI_BASE_URL` targets Google's Generate Content API and sends `GEMINI_API_KEY`
+  only as `x-goog-api-key`. All adapters require JSON-schema structured output and
+  have no application tools.
   With `LLM_PROVIDER=auto`, Claude is preferred for aggregate business synthesis,
-  OpenAI for product/request capability analysis, and a transient provider failure
-  falls back to the other configured provider. Decisions, scoring, approvals and
-  simulations remain deterministic and auditable.
+  OpenAI for product/request capability analysis, and Gemini 3.7 Flash is the fast
+  structured fallback after a transient primary-provider failure. Decisions,
+  scoring, approvals and simulations remain deterministic and auditable.
 - AI prompts are immutable releases with semantic versions and SHA-256 digests.
   Stable/candidate selection is deterministic per canonical input, defaults to a
   zero-percent candidate cohort and can be rolled back without rewriting run

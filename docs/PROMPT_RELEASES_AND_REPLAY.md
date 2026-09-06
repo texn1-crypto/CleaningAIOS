@@ -2,7 +2,7 @@
 
 ## Versioned prompt deployments
 
-Every OpenAI, Anthropic and Perplexity advisory operation selects an immutable
+Every OpenAI, Anthropic, Google Gemini and Perplexity advisory operation selects an immutable
 prompt release from `app/llm.py`. A release has a semantic version, response-schema
 name and SHA-256 digest. Provider results and therefore persisted `AgentRun.output`
 include only this metadata; the prompt text is intentionally absent from the

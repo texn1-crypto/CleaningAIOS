@@ -48,6 +48,20 @@ def provider_catalog() -> list[dict[str, Any]]:
             "forbidden": ["raw_personal_data", "banking_credentials", "unapproved_commitments", "application_tools"],
         },
         {
+            "capability": "business_reasoning",
+            "provider": "google_gemini",
+            "status": llm_advisor.provider_statuses()["google_gemini"],
+            "routing": "fast_structured_advisory_fallback",
+            "scopes": ["aggregate_metrics", "redacted_business_context"],
+            "forbidden": [
+                "raw_personal_data",
+                "banking_credentials",
+                "credentials",
+                "unapproved_commitments",
+                "application_tools",
+            ],
+        },
+        {
             "capability": "agent_quality_research",
             "provider": "perplexity_sonar",
             "status": llm_advisor.provider_statuses()["perplexity_sonar"],

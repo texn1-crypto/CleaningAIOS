@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
     anthropic_version: str = "2023-06-01"
     anthropic_timeout_seconds: int = 60
+    gemini_api_key: str = ""
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_model: str = "gemini-3.7-flash"
+    gemini_thinking_level: str = "low"
+    gemini_timeout_seconds: int = 60
     perplexity_api_key: str = ""
     perplexity_base_url: str = "https://api.perplexity.ai"
     perplexity_model: str = "sonar-pro"
