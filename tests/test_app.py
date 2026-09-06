@@ -5757,13 +5757,13 @@ def test_marketing_agent_creates_two_posts_per_social_channel_for_approval(clien
     completed = client.post(f"/api/tasks/{task['id']}/run").json()
     assert completed["status"] == "done"
     result = completed["result"]
-    assert result["created"] == 8
+    assert result["created"] == 10
     assert result["approval_id"] is None
     assert len(result["media_asset_ids"]) == 2
     items = [row for row in client.get("/api/marketing/content?status=visual_pending").json() if row["id"] in result["content_item_ids"]]
-    assert len(items) == 8
-    assert {row["channel"] for row in items} == {"telegram", "vk", "odnoklassniki", "instagram"}
-    assert all(sum(row["channel"] == channel for row in items) == 2 for channel in {"telegram", "vk", "odnoklassniki", "instagram"})
+    assert len(items) == 10
+    assert {row["channel"] for row in items} == {"telegram", "vk", "odnoklassniki", "instagram", "website"}
+    assert all(sum(row["channel"] == channel for row in items) == 2 for channel in {"telegram", "vk", "odnoklassniki", "instagram", "website"})
     assets = [row for row in client.get("/api/marketing/media-assets?status=queued").json() if row["id"] in result["media_asset_ids"]]
     assert len(assets) == 2
     assert all(row["provider"] == "openai_images" for row in assets)
@@ -5789,7 +5789,7 @@ def test_marketing_agent_creates_two_posts_per_social_channel_for_approval(clien
     assert approval_id
     preview = client.get(f"/api/marketing/social-batches/{result['batch_id']}/preview", headers={"X-Role": "manager"}).json()
     assert preview["all_visuals_ready"] is True
-    assert len(preview["posts"]) == 8
+    assert len(preview["posts"]) == 10
     assert all(post["image_url"] and post["body"] for post in preview["posts"])
     assert len({post["visual_asset_id"] for post in preview["posts"]}) == 2
 
@@ -5803,8 +5803,8 @@ def test_marketing_agent_creates_two_posts_per_social_channel_for_approval(clien
     assert approved.status_code == 200
     scheduled = client.get("/api/marketing/content?status=scheduled").json()
     scheduled_items = [row for row in scheduled if row["id"] in result["content_item_ids"]]
-    assert len(scheduled_items) == 6
-    assert {row["channel"] for row in scheduled_items} == {"telegram", "vk", "odnoklassniki"}
+    assert len(scheduled_items) == 8
+    assert {row["channel"] for row in scheduled_items} == {"telegram", "vk", "odnoklassniki", "website"}
     instagram_drafts = [row for row in client.get("/api/marketing/content?status=approval").json() if row["id"] in result["content_item_ids"]]
     assert len(instagram_drafts) == 2
     assert all(row["metrics"]["publication_status"] == "legal_review_required" for row in instagram_drafts)

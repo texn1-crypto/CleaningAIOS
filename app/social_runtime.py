@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import re
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -142,16 +144,42 @@ def _use_local_media_pool(db: Session, asset: MediaAsset, metadata: dict) -> Non
         if hashlib.sha256(raw).hexdigest() not in used_hashes:
             selected = relative_path, raw
             break
+    variant = "original"
     if selected is None:
-        raise LocalVisualPoolExhausted("Every original fallback visual has already been used")
-    relative_path, raw = selected
+        relative_path = LOCAL_SOCIAL_MEDIA_POOL[start]
+        source = (Path(__file__).resolve().parent / "static" / relative_path).resolve()
+        raw = _branded_local_variant(source.read_bytes(), seed=f"{asset.id}:{batch_id}:{slot}")
+        variant = "deterministic_brand_variant_v1"
+    else:
+        relative_path, raw = selected
     _store_verified_image(db, asset, raw, provider="local_media_pool", metadata={
         **metadata,
         "media_pool_source": relative_path,
         "rights_basis": "original_project_asset",
         "unique_visual_enforced": True,
+        "variant": variant,
         "model": None,
     })
+
+
+def _branded_local_variant(raw: bytes, *, seed: str) -> bytes:
+    """Create a deterministic owned-media variant after every original was used."""
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    with Image.open(io.BytesIO(raw)) as source:
+        image = ImageOps.fit(ImageOps.exif_transpose(source).convert("RGB"), (1024, 1024))
+    image = ImageEnhance.Brightness(image).enhance(0.96 + digest[0] / 2550)
+    image = ImageEnhance.Contrast(image).enhance(0.97 + digest[1] / 2550)
+    image = ImageEnhance.Color(image).enhance(0.94 + digest[2] / 2125)
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    accent = (20, 91 + digest[3] % 35, 145 + digest[4] % 45, 54)
+    height = 34 + digest[5] % 30
+    top = 1024 - height - (digest[6] % 22)
+    draw.rounded_rectangle((42, top, 982, top + height), radius=height // 2, fill=accent)
+    image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=90, optimize=True, progressive=True)
+    return output.getvalue()
 
 
 def queue_direct_image_request(db: Session, payload: dict) -> dict:
@@ -285,21 +313,27 @@ def _queue_direct_image_notification(db: Session, asset: MediaAsset, *, succeede
 
 
 def generate_next_social_visual(db: Session) -> bool:
-    asset = db.scalar(
+    candidates = db.scalars(
         select(MediaAsset)
         .where(
             # ``imagegen`` was used by the original deterministic social-plan
             # workflow. Keep consuming those persisted jobs while all newly
             # created jobs use the canonical ``openai_images`` provider.
             MediaAsset.provider.in_(["imagegen", "openai_images", "local_media_pool"]),
-            # Credential failures are terminal until an operator explicitly
-            # fixes configuration and requeues the asset. This prevents a hot
-            # retry loop against a rejected API key.
-            MediaAsset.status == "queued",
+            MediaAsset.status.in_(["queued", "credentials_required"]),
         )
         .order_by(MediaAsset.id)
-        .limit(1)
+        .limit(1000)
         .with_for_update(skip_locked=True)
+    ).all()
+    asset = next(
+        (
+            row
+            for row in candidates
+            if row.status == "queued"
+            or (row.metadata_json or {}).get("error_type") == "LocalVisualPoolExhausted"
+        ),
+        None,
     )
     if asset is None:
         return False
@@ -636,6 +670,8 @@ def _publish_odnoklassniki(item: ContentItem, asset: MediaAsset) -> str:
 
 
 def _channel_credentials_ready(channel: str) -> bool:
+    if channel == "website":
+        return bool(publication_url("website"))
     if channel == "telegram":
         return bool(settings.telegram_bot_token and settings.telegram_social_chat_id)
     if channel == "vk":
@@ -653,7 +689,7 @@ def _channel_credentials_ready(channel: str) -> bool:
 def _resume_approved_configured_post(db: Session, current: datetime) -> None:
     ready_channels = [
         channel
-        for channel in ("telegram", "vk", "odnoklassniki")
+        for channel in ("telegram", "vk", "odnoklassniki", "website")
         if _channel_credentials_ready(channel)
     ]
     if not ready_channels:
@@ -716,7 +752,7 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
         item.metrics = {**(item.metrics or {}), "publication_status": "approved_visual_unavailable"}
         db.commit()
         return True
-    if item.channel not in {"telegram", "vk", "odnoklassniki"}:
+    if item.channel not in {"telegram", "vk", "odnoklassniki", "website"}:
         item.status = "adapter_required"
         item.metrics = {**(item.metrics or {}), "publication_status": f"{item.channel}_official_adapter_required"}
         db.commit()
@@ -740,7 +776,10 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
         return True
 
     try:
-        if item.channel == "telegram":
+        if item.channel == "website":
+            external_post_id = str(item.id)
+            provider = "cleaningaios_website"
+        elif item.channel == "telegram":
             endpoint = _https_endpoint("https://api.telegram.org", f"/bot{settings.telegram_bot_token}/sendPhoto")
             raw = _verified_asset_bytes(asset)
             extension = _image_extension(raw)
@@ -775,6 +814,7 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
             "external_post_id": external_post_id,
             "provider": provider,
             "published_image_sha256": (asset.metadata_json or {}).get("sha256"),
+            **({"cover_url": asset.public_url} if item.channel == "website" else {}),
             **({"public_post_url": public_post_url} if public_post_url else {}),
         }
         event_bus.publish(

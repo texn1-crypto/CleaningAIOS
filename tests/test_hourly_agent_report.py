@@ -95,14 +95,14 @@ def test_marketing_agent_uses_daily_evergreen_fallback_when_news_is_unavailable(
         db.commit()
         assert first["content_source"] == "evergreen_fallback"
         assert first["news_status"] == "news_unavailable"
-        assert first["created"] == 8
+        assert first["created"] == 10
         assert any(
             row.get("type") == "evergreen_social_fallback"
             for row in first["evidence"]
         )
-        assert db.scalar(select(func.count(ContentItem.id))) == 8
+        assert db.scalar(select(func.count(ContentItem.id))) == 10
 
         repeated = MarketingAgent().execute(db, payload)
         db.commit()
         assert repeated["created"] == 0
-        assert db.scalar(select(func.count(ContentItem.id))) == 8
+        assert db.scalar(select(func.count(ContentItem.id))) == 10

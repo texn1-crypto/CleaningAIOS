@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
+from PIL import Image
 from sqlalchemy import select, update
 
 from app.config import settings
@@ -108,6 +109,60 @@ def test_website_publish_persists_verified_public_page(client, monkeypatch):
         assert verified_publication_url(item) == "https://cleaning.example/#news"
 
 
+def test_worker_publishes_approved_website_post_without_external_adapter(monkeypatch):
+    monkeypatch.setattr(settings, "public_base_url", "https://cleaning.example")
+    with SessionLocal() as db:
+        batch = BusinessRecord(
+            record_type="social_content_batch",
+            external_id="website-worker-publish-2042",
+            title="Website Publisher",
+            status="scheduled",
+            data={},
+        )
+        db.add(batch)
+        db.flush()
+        approval = ApprovalRequest(
+            action_kind="social_publication",
+            resource_type="social_content_batch",
+            resource_id=str(batch.id),
+            status="approved",
+        )
+        db.add(approval)
+        db.flush()
+        asset = MediaAsset(
+            kind="image",
+            title="Website image",
+            provider="local_media_pool",
+            public_url="/api/public/social-media/991/image.jpg",
+            status="ready",
+            metadata_json={"sha256": "a" * 64},
+        )
+        db.add(asset)
+        db.flush()
+        item = ContentItem(
+            channel="website",
+            title="Website news",
+            body="Точный одобренный текст для сайта",
+            status="scheduled",
+            scheduled_at=datetime(1998, 1, 1),
+            metrics={
+                "batch_id": batch.id,
+                "approval_id": approval.id,
+                "visual_asset_id": asset.id,
+            },
+        )
+        db.add(item)
+        db.commit()
+
+        assert publish_next_social_post(db, now=datetime(2042, 1, 1)) is True
+        db.refresh(item)
+        assert item.status == "published"
+        assert item.metrics["provider"] == "cleaningaios_website"
+        assert item.metrics["cover_url"] == asset.public_url
+        assert item.metrics["public_post_url"] == "https://cleaning.example/#news"
+        assert verified_publication_url(item) == "https://cleaning.example/#news"
+
+
 def test_news_agent_creates_source_bound_posts_and_image_jobs(client, monkeypatch):
     monkeypatch.setattr(settings, "llm_api_key", "")
     news = [
@@ -117,9 +172,9 @@ def test_news_agent_creates_source_bound_posts_and_image_jobs(client, monkeypatc
     with SessionLocal() as db:
         result = prepare_daily_cleaning_news_plan(db, day=datetime(2042, 2, 3, 7), news_items=news)
         db.commit()
-        assert result["created"] == 8
+        assert result["created"] == 10
         items = [db.get(ContentItem, value) for value in result["content_item_ids"]]
-        assert {item.channel for item in items} == {"telegram", "vk", "odnoklassniki", "instagram"}
+        assert {item.channel for item in items} == {"telegram", "vk", "odnoklassniki", "instagram", "website"}
         assert all("Источник: Trade source" in item.body for item in items)
         assert {item.metrics["source_url"] for item in items} == {value.source_url for value in news}
         assert all(item.metrics["source_verified"] is True for item in items)
@@ -237,12 +292,13 @@ def test_local_photo_pool_skips_hash_used_by_superseded_visual(monkeypatch, tmp_
         assert queued.metadata_json["unique_visual_enforced"] is True
 
 
-def test_local_photo_pool_exhaustion_blocks_repeat_and_notifies_owner(monkeypatch, tmp_path):
+def test_local_photo_pool_exhaustion_creates_unique_owned_variant(monkeypatch, tmp_path):
     from app import social_runtime
 
-    raw = b"\x89PNG\r\n\x1a\nonly-original-photo"
+    image = Image.new("RGB", (64, 64), (210, 220, 230))
     source = tmp_path / "only.png"
-    source.write_bytes(raw)
+    image.save(source)
+    raw = source.read_bytes()
     monkeypatch.setattr(social_runtime, "LOCAL_SOCIAL_MEDIA_POOL", (str(source),))
     monkeypatch.setattr(settings, "social_image_generation_enabled", False)
     monkeypatch.setattr(settings, "image_generation_api_key", "")
@@ -265,23 +321,45 @@ def test_local_photo_pool_exhaustion_blocks_repeat_and_notifies_owner(monkeypatc
             provider="openai_images",
             prompt="Safe prompt",
             status="queued",
-            metadata_json={"slot": 1, "batch_id": 99101},
+            metadata_json={"slot": 1, "batch_id": 0},
         )
         db.add_all([used, queued])
         db.commit()
         assert generate_next_social_visual(db) is True
         db.refresh(queued)
-        assert queued.status == "credentials_required"
-        assert queued.public_url == ""
-        assert queued.metadata_json["error_type"] == "LocalVisualPoolExhausted"
+        assert queued.status == "ready"
+        assert queued.public_url
+        assert queued.metadata_json["variant"] == "deterministic_brand_variant_v1"
+        assert queued.metadata_json["sha256"] != hashlib.sha256(raw).hexdigest()
         assert queued.metadata_json["unique_visual_enforced"] is True
-        notification = db.scalar(
-            select(OwnerNotification).where(
-                OwnerNotification.idempotency_key == "social-visual-pool-exhausted:99101"
-            )
+
+
+def test_image_agent_recovers_previous_local_pool_exhaustion(monkeypatch, tmp_path):
+    from app import social_runtime
+
+    source = tmp_path / "owned.png"
+    Image.new("RGB", (64, 64), (180, 200, 220)).save(source)
+    monkeypatch.setattr(social_runtime, "LOCAL_SOCIAL_MEDIA_POOL", (str(source),))
+    monkeypatch.setattr(settings, "social_image_generation_enabled", False)
+    monkeypatch.setattr(settings, "image_generation_api_key", "")
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path / "storage"))
+    with SessionLocal() as db:
+        db.execute(update(MediaAsset).where(MediaAsset.status == "queued").values(status="test_skipped"))
+        exhausted = MediaAsset(
+            kind="image",
+            title="Previously exhausted",
+            provider="openai_images",
+            prompt="Safe prompt",
+            status="credentials_required",
+            metadata_json={"slot": 1, "batch_id": 0, "error_type": "LocalVisualPoolExhausted"},
         )
-        assert notification is not None
-        assert "Повтор не допущен" in notification.body
+        db.add(exhausted)
+        db.commit()
+        assert generate_next_social_visual(db) is True
+        db.refresh(exhausted)
+        assert exhausted.status == "ready"
+        assert exhausted.provider == "local_media_pool"
+        assert exhausted.metadata_json["generation_status"] == "ready_for_owner_preview"
 
 
 def test_image_agent_consumes_legacy_imagegen_job(client, monkeypatch, tmp_path):
@@ -668,9 +746,11 @@ def test_odnoklassniki_publisher_resumes_approved_post_and_uses_official_api(cli
 def test_social_summary_does_not_expose_credentials(client, monkeypatch):
     monkeypatch.setattr(settings, "telegram_bot_token", "super-secret-bot-token")
     monkeypatch.setattr(settings, "telegram_social_chat_id", "@channel")
+    monkeypatch.setattr(settings, "public_base_url", "https://cleaning.example")
     response = client.get("/api/marketing/social-summary", headers={"X-Role": "viewer"})
     assert response.status_code == 200
     assert response.json()["integrations"]["telegram"] == "ready"
+    assert response.json()["integrations"]["website"] == "ready"
     assert "super-secret" not in response.text
 
 

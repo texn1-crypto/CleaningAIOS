@@ -15,7 +15,7 @@ from .platform import approval_engine, event_bus
 from .social_news import CleaningNewsItem, editorialize_news, fetch_cleaning_news
 
 
-SOCIAL_CHANNELS = ("telegram", "vk", "odnoklassniki", "instagram")
+SOCIAL_CHANNELS = ("telegram", "vk", "odnoklassniki", "instagram", "website")
 LEGAL_REVIEW_CHANNELS = {"instagram"}
 MOSCOW = ZoneInfo("Europe/Moscow")
 VISUAL_APPROVAL_VERSION = 1
@@ -106,10 +106,15 @@ def _social_platform_state(channel: str) -> dict:
         credentials_present = False
         missing = ["LEGAL_REVIEW", "MANUAL_PUBLICATION_ONLY"]
         owner_steps = ["Пройти юридическую проверку площадки и подтвердить только ручной режим публикации."]
+    elif channel == "website":
+        public_url = settings.public_base_url
+        credentials_present = True
+        missing = []
+        owner_steps = ["Проверить финальный текст и изображение в единой карточке согласования."]
     else:
         raise ValueError(f"Unsupported social channel: {channel}")
 
-    adapter_ready = channel in {"telegram", "vk", "odnoklassniki"}
+    adapter_ready = channel in {"telegram", "vk", "odnoklassniki", "website"}
     return {
         "channel": channel,
         "public_url": public_url,
@@ -208,6 +213,7 @@ def _adapt(channel: str, title: str, body: str) -> str:
         "vk": "\n\nРасскажите о типе объекта — подготовим перечень работ для предварительной оценки. #клининг #управляющаякомпания",
         "odnoklassniki": "\n\nКакая зона на вашем объекте требует больше всего внимания? Поделитесь в комментариях.",
         "instagram": "\n\nСохраняйте памятку и задавайте вопросы в сообщениях. #клинингспб #уборка #чистыйдом",
+        "website": "\n\nНужен расчёт клининга для вашего объекта? Оставьте заявку на сайте — подготовим предварительную оценку.",
     }[channel]
     return f"{title}\n\n{body}{suffix}"
 

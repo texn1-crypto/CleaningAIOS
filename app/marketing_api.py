@@ -358,7 +358,7 @@ def social_summary(db: Session = Depends(get_db), actor: Principal = Depends(pri
         str(status): int(count)
         for status, count in db.execute(
             select(ContentItem.status, func.count(ContentItem.id))
-            .where(ContentItem.channel.in_(["telegram", "vk", "odnoklassniki", "instagram"]))
+            .where(ContentItem.channel.in_(["telegram", "vk", "odnoklassniki", "instagram", "website"]))
             .group_by(ContentItem.status)
         ).all()
     }
@@ -382,6 +382,7 @@ def social_summary(db: Session = Depends(get_db), actor: Principal = Depends(pri
                 else "credentials_required"
             ),
             "instagram": "manual_legal_review_only",
+            "website": "ready" if publication_url("website") else "configuration_required",
             "images": (
                 "ready"
                 if settings.image_generation_configured
