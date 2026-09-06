@@ -328,6 +328,48 @@ def schedule_cycle() -> None:
                 actor="scheduler",
                 reason="daily_owner_pdf_pack",
             )
+        budget_advisor_local_now = now.replace(tzinfo=timezone.utc).astimezone(
+            ZoneInfo(settings.marketing_budget_advisor_timezone)
+        )
+        budget_advisor_day = budget_advisor_local_now.date().isoformat()
+        budget_advisor_title = f"Daily marketing budget advice · {budget_advisor_day}"
+        if (
+            budget_advisor_local_now.hour
+            >= max(0, min(settings.marketing_budget_advisor_daily_hour, 23))
+            and not db.scalar(select(Task.id).where(Task.title == budget_advisor_title))
+        ):
+            from .marketing_budget_advisor import HARD_DAILY_BUDGET_CAP_RUB
+
+            task = Task(
+                title=budget_advisor_title,
+                agent_type="marketing",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={
+                    "action": "daily_marketing_budget_advice",
+                    "source": "scheduler",
+                    "notify_owner": True,
+                    "scheduled_local_day": budget_advisor_day,
+                    "daily_budget_rub": max(
+                        0.0,
+                        min(
+                            float(settings.marketing_budget_daily_limit_rub),
+                            HARD_DAILY_BUDGET_CAP_RUB,
+                        ),
+                    ),
+                    "automatic_spend": False,
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(
+                db,
+                task,
+                actor="scheduler",
+                reason="daily_marketing_budget_advice",
+            )
         contact_export_local_now = now.replace(tzinfo=timezone.utc).astimezone(
             ZoneInfo(settings.contact_export_timezone)
         )

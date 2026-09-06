@@ -69,6 +69,15 @@ Per-day/per-document idempotency keys prevent repeat delivery when the scheduler
 task is retried. Reports are read-only snapshots; public contact availability does
 not grant outreach consent.
 
+`MARKETING_BUDGET_ADVISOR_DAILY_HOUR=17` and
+`MARKETING_BUDGET_ADVISOR_TIMEZONE=Europe/Moscow` create one daily recommendation
+from PostgreSQL funnel and attribution facts. `MARKETING_BUDGET_DAILY_LIMIT_RUB`
+may lower the recommendation, but code always caps it at 2,000 RUB/day. The
+Telegram card contains expected KPI and a code-owned, HTTPS-only official
+advertising-cabinet URL. Approval records the owner's decision only: payment,
+campaign creation and activation remain manual, and no advertising token or
+banking credential is included in the advisory payload.
+
 `SYSTEM_ADMIN_INTERVAL_MINUTES=5` keeps the structured system-administrator audit
 running continuously, while `SYSTEM_ADMIN_REPORT_INTERVAL_MINUTES=120` deduplicates
 its owner summary to one Telegram report per two-hour window. Each audit correlates

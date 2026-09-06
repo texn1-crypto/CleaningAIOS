@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     owner_activity_report_interval_minutes: int = 60
     daily_owner_pack_timezone: str = "Europe/Moscow"
     daily_owner_pack_hour: int = 18
+    marketing_budget_advisor_timezone: str = "Europe/Moscow"
+    marketing_budget_advisor_daily_hour: int = 17
+    marketing_budget_daily_limit_rub: float = 2_000
     ceo_development_cadence_hours: int = 24
     growth_review_interval_hours: int = 24
     smtp_host: str = ""

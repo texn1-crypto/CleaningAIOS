@@ -163,11 +163,29 @@ def _apply_resource_transition(
             decision.status = row.status
             decision.decided_by = actor.subject
             decision.decided_at = row.decided_at
-    elif row.resource_type in {"marketing_invoice", "marketing_experiment", "proposal_revision"}:
+    elif row.resource_type in {
+        "marketing_invoice",
+        "marketing_experiment",
+        "marketing_budget_advice",
+        "proposal_revision",
+    }:
         resource = db.get(BusinessRecord, int(row.resource_id))
         if resource and resource.record_type == row.resource_type and action in {"approve", "reject"}:
             if row.resource_type == "marketing_invoice":
                 resource.status = "approved_for_manual_payment" if action == "approve" else "rejected"
+            elif row.resource_type == "marketing_budget_advice":
+                resource.status = (
+                    "approved_for_manual_activation" if action == "approve" else "rejected"
+                )
+                resource.data = {
+                    **(resource.data or {}),
+                    "owner_approved": action == "approve",
+                    "automatic_spend": False,
+                    "activation_mode": "manual_after_owner_approval",
+                    "approval_decision_at": (
+                        row.decided_at.isoformat() if row.decided_at else None
+                    ),
+                }
             elif row.resource_type == "proposal_revision":
                 resource.status = "approved" if action == "approve" else "rejected"
                 resource.data = {

@@ -408,6 +408,15 @@ class SalesAgent:
 class MarketingAgent:
     name = "marketing"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "daily_marketing_budget_advice":
+            from .marketing_budget_advisor import build_daily_marketing_budget_advice
+
+            return build_daily_marketing_budget_advice(
+                db,
+                local_day=payload.get("scheduled_local_day"),
+                requested_daily_budget_rub=payload.get("daily_budget_rub"),
+                notify_owner=bool(payload.get("notify_owner", True)),
+            )
         if payload.get("action") == "prepare_lead_generation_strategy":
             from .marketing_coordination import prepare_lead_generation_strategy
 

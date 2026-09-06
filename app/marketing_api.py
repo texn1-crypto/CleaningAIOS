@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .ai_router import marketing_channel_status, media_provider, provider_catalog
 from .config import settings
 from .db import SessionLocal
+from .marketing_budget_advisor import advice_view
 from .models import BusinessRecord, CompanyRequisite, ContentItem, MediaAsset, OwnerNotification
 from .notifications import (
     NotificationNotDelivered,
@@ -259,6 +260,18 @@ def marketing_invoices(db: Session = Depends(get_db), actor: Principal = Depends
     require_role(actor, "manager")
     rows = db.scalars(select(BusinessRecord).where(BusinessRecord.record_type == "marketing_invoice").order_by(BusinessRecord.id.desc())).all()
     return [{"id": row.id, "title": row.title, "status": row.status, "deadline_at": row.deadline_at, "data": row.data, "automatic_payment": False} for row in rows]
+
+
+@router.get("/marketing/budget-advice")
+def marketing_budget_advice(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    rows = db.scalars(
+        select(BusinessRecord)
+        .where(BusinessRecord.record_type == "marketing_budget_advice")
+        .order_by(BusinessRecord.id.desc())
+        .limit(31)
+    ).all()
+    return [advice_view(db, row) for row in rows]
 
 
 @router.post("/marketing/media-assets", status_code=201)
