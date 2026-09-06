@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app import notifications, scheduler
 from app.daily_owner_pack import PUBLIC_LEAD_SOURCE, run_daily_owner_pack
 from app.db import Base
-from app.models import BusinessRecord, OwnerNotification, Task
+from app.models import BusinessRecord, ContentItem, OwnerNotification, Task
 
 
 def _session_factory():
@@ -26,7 +26,7 @@ def _session_factory():
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
-def test_daily_owner_pack_builds_three_verified_pdfs_and_deduplicates_delivery(
+def test_daily_owner_pack_builds_four_verified_pdfs_and_deduplicates_delivery(
     monkeypatch,
     tmp_path,
 ):
@@ -35,6 +35,8 @@ def test_daily_owner_pack_builds_three_verified_pdfs_and_deduplicates_delivery(
     monkeypatch.setattr(notifications.settings, "owner_telegram_id", "123")
     monkeypatch.setattr(notifications.settings, "telegram_bot_token", "test-token")
     monkeypatch.setattr(notifications.settings, "daily_owner_pack_timezone", "Europe/Moscow")
+    monkeypatch.setattr(notifications.settings, "public_base_url", "https://cleaning.example")
+    monkeypatch.setattr(notifications.settings, "social_telegram_url", "https://t.me/cleaning_channel")
 
     with session_factory() as db:
         db.add_all(
@@ -76,6 +78,47 @@ def test_daily_owner_pack_builds_three_verified_pdfs_and_deduplicates_delivery(
                     status="done",
                     result={"evidence": [{"type": "test"}]},
                 ),
+                ContentItem(
+                    channel="telegram",
+                    title="Опубликованный пост",
+                    body="Текст публикации",
+                    status="published",
+                    published_at=datetime(2040, 1, 2, 12),
+                    metrics={
+                        "publication_status": "published",
+                        "external_post_id": "812",
+                        "public_post_url": "https://t.me/cleaning_channel/812",
+                    },
+                ),
+                ContentItem(
+                    channel="website",
+                    title="Новость на сайте",
+                    body="Текст новости",
+                    status="published",
+                    published_at=datetime(2040, 1, 2, 13),
+                    metrics={},
+                ),
+                ContentItem(
+                    channel="vk",
+                    title="Ошибка ВКонтакте",
+                    body="Не опубликовано",
+                    status="publication_failed",
+                    scheduled_at=datetime(2040, 1, 2, 14),
+                    metrics={
+                        "publication_status": "publication_failed",
+                        "public_post_url": "javascript:alert(1)",
+                    },
+                ),
+                ContentItem(
+                    channel="odnoklassniki",
+                    title="Ожидает согласования",
+                    body="Черновик",
+                    status="approval",
+                    scheduled_at=datetime(2040, 1, 2, 14, 30),
+                    metrics={
+                        "public_post_url": "https://user:secret@ok.ru/group/1/topic/2",
+                    },
+                ),
             ]
         )
         db.commit()
@@ -94,9 +137,9 @@ def test_daily_owner_pack_builds_three_verified_pdfs_and_deduplicates_delivery(
         db.commit()
 
         assert first["status"] == "completed"
-        assert len(first["artifacts"]) == 3
-        assert len(second["artifacts"]) == 3
-        assert db.scalar(select(func.count(OwnerNotification.id))) == 3
+        assert len(first["artifacts"]) == 4
+        assert len(second["artifacts"]) == 4
+        assert db.scalar(select(func.count(OwnerNotification.id))) == 4
         rows = db.scalars(select(OwnerNotification).order_by(OwnerNotification.id)).all()
 
         extracted = []
@@ -110,6 +153,24 @@ def test_daily_owner_pack_builds_three_verified_pdfs_and_deduplicates_delivery(
         assert "Публичный бизнес-центр" in extracted[0]
         assert "Клиент из CRM" in extracted[1]
         assert "Ежедневный операционный отчёт" in extracted[2]
+        publication_text = extracted[3]
+        assert "https://t.me/cleaning_channel/812" in publication_text
+        assert "https://cleaning.example/#news" in publication_text
+        assert "Ошибка публикации" in publication_text
+        assert "Ожидает действия" in publication_text
+        assert "javascript:" not in publication_text
+        assert "user:secret" not in publication_text
+        publication_reader = PdfReader(first["artifacts"][3]["path"])
+        publication_links = {
+            str(action["/URI"])
+            for page in publication_reader.pages
+            for annotation in page.get("/Annots", [])
+            if (action := annotation.get_object().get("/A")) and action.get("/URI")
+        }
+        assert publication_links == {
+            "https://t.me/cleaning_channel/812",
+            "https://cleaning.example/#news",
+        }
 
         sent = []
 
@@ -134,7 +195,7 @@ def test_daily_owner_pack_builds_three_verified_pdfs_and_deduplicates_delivery(
         monkeypatch.setattr(notifications.httpx, "Client", Client)
         for row in rows:
             notifications._send_telegram(db, row)
-        assert len(sent) == 3
+        assert len(sent) == 4
         assert all(url.endswith("/sendDocument") for url, _ in sent)
         assert {
             kwargs["files"]["document"][0] for _, kwargs in sent
@@ -164,8 +225,8 @@ def test_daily_owner_pack_runs_through_task_api(client, monkeypatch, tmp_path):
     completed = client.post(f"/api/tasks/{task['id']}/run").json()
     assert completed["status"] == "done"
     assert completed["result"]["report_kind"] == "daily_owner_pdf_pack"
-    assert len(completed["result"]["artifacts"]) == 3
-    assert completed["result"]["notifications_created"] == 3
+    assert len(completed["result"]["artifacts"]) == 4
+    assert completed["result"]["notifications_created"] == 4
 
 
 def test_scheduler_creates_only_one_daily_owner_pack_task(monkeypatch):

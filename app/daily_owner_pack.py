@@ -29,8 +29,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import BusinessRecord, OwnerNotification
+from .models import BusinessRecord, ContentItem, OwnerNotification
 from .notifications import queue_owner_notification
+from .publication_links import verified_publication_url
 from .reports import build_activity_report
 
 
@@ -198,14 +199,20 @@ def _build_pdf(
         label = entry.get("label") or f"Запись {index}"
         details = entry.get("details") or []
         lines = [str(item) for item in details if _text(item)] if isinstance(details, list) else []
-        story.append(
-            KeepTogether(
-                [
-                    _paragraph(f"{index}. {label}", heading),
-                    _paragraph("\n".join(lines) or "Нет дополнительных данных.", body),
-                ]
+        blocks = [
+            _paragraph(f"{index}. {label}", heading),
+            _paragraph("\n".join(lines) or "Нет дополнительных данных.", body),
+        ]
+        safe_url = str(entry.get("url") or "")
+        if safe_url:
+            blocks.append(
+                Paragraph(
+                    f'<link href="{escape(safe_url, quote=True)}" color="#0b66c3">'
+                    f'{escape(safe_url)}</link>',
+                    body,
+                )
             )
-        )
+        story.append(KeepTogether(blocks))
     story.append(
         _paragraph(
             "Отчёт предназначен владельцу. Публичность контакта не означает согласие на рассылку; "
@@ -284,6 +291,91 @@ def _operation_entries(report: dict[str, Any]) -> list[dict[str, object]]:
             }
         )
     return entries
+
+
+def _content_local_day(value: datetime | None, timezone_name: str) -> date | None:
+    if value is None:
+        return None
+    aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    return aware.astimezone(ZoneInfo(timezone_name)).date()
+
+
+def _publication_snapshot(
+    rows: Sequence[ContentItem],
+    *,
+    report_day: date,
+    timezone_name: str,
+) -> dict[str, Any]:
+    published: list[dict[str, object]] = []
+    published_without_link: list[dict[str, object]] = []
+    failed: list[dict[str, object]] = []
+    waiting: list[dict[str, object]] = []
+    failure_statuses = {
+        "publication_failed",
+        "credentials_required",
+        "adapter_required",
+        "reconciliation_required",
+    }
+    waiting_statuses = {"idea", "draft", "approval", "scheduled", "visual_pending"}
+    channel_labels = {
+        "telegram": "Telegram",
+        "vk": "ВКонтакте",
+        "odnoklassniki": "Одноклассники",
+        "instagram": "Instagram",
+        "website": "Сайт",
+    }
+    for item in rows:
+        relevant_at = item.published_at if item.status == "published" else (item.scheduled_at or item.created_at)
+        if _content_local_day(relevant_at, timezone_name) != report_day:
+            continue
+        channel = channel_labels.get(item.channel, item.channel)
+        base_details = [
+            f"Канал: {channel} · Статус: {item.status}",
+            f"Content ID: {item.id} · Время: {relevant_at.isoformat() if relevant_at else 'не указано'}",
+        ]
+        if item.status == "published":
+            url = verified_publication_url(item)
+            entry: dict[str, object] = {
+                "label": f"Опубликовано · {_text(item.title, limit=255)}",
+                "details": base_details,
+            }
+            if url:
+                entry["url"] = url
+                published.append(entry)
+            else:
+                entry["details"] = [
+                    *base_details,
+                    "Ссылка недоступна: нет проверяемого публичного URL от канала.",
+                ]
+                published_without_link.append(entry)
+        elif item.status in failure_statuses:
+            failed.append(
+                {
+                    "label": f"Ошибка публикации · {_text(item.title, limit=255)}",
+                    "details": [
+                        *base_details,
+                        f"Причина: {_text((item.metrics or {}).get('publication_status')) or item.status}",
+                        "Ссылка не показывается: успешная публикация не подтверждена.",
+                    ],
+                }
+            )
+        elif item.status in waiting_statuses:
+            waiting.append(
+                {
+                    "label": f"Ожидает действия · {_text(item.title, limit=255)}",
+                    "details": [
+                        *base_details,
+                        "Ссылка не показывается: публикация ещё не подтверждена.",
+                    ],
+                }
+            )
+    return {
+        "published": published,
+        "published_without_link": published_without_link,
+        "failed": failed,
+        "waiting": waiting,
+        "entries": published + published_without_link + failed + waiting,
+    }
 
 
 def _existing_notification_artifact(
@@ -367,6 +459,16 @@ def run_daily_owner_pack(
     ).all()
     operational = build_activity_report(db, period_hours=24)
     summary = operational.get("summary") or {}
+    content_rows = db.scalars(
+        select(ContentItem)
+        .order_by(ContentItem.created_at.desc(), ContentItem.id.desc())
+        .limit(MAX_REPORT_ROWS)
+    ).all()
+    publication = _publication_snapshot(
+        content_rows,
+        report_day=day,
+        timezone_name=settings.daily_owner_pack_timezone,
+    )
 
     output_dir = Path(settings.document_storage_path) / "reports" / "daily-owner-pack" / day.isoformat()
     definitions: list[dict[str, Any]] = [
@@ -403,6 +505,18 @@ def run_daily_owner_pack(
                 ("Требуют внимания", "; ".join(operational.get("blockers") or []) or "нет"),
             ],
             "entries": _operation_entries(operational),
+        },
+        {
+            "kind": "publication-results",
+            "title": "Публикации CleaningAIOS: проверенные ссылки",
+            "summary": [
+                ("Опубликовано с проверенной ссылкой", len(publication["published"])),
+                ("Опубликовано без публичной ссылки", len(publication["published_without_link"])),
+                ("Ошибки публикации", len(publication["failed"])),
+                ("Ожидают согласования или выполнения", len(publication["waiting"])),
+                ("Правило безопасности", "Только HTTPS и официальные домены каналов"),
+            ],
+            "entries": publication["entries"],
         },
     ]
 

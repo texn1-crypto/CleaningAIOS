@@ -18,6 +18,7 @@ from .models import ApprovalRequest, ContentItem, MediaAsset
 from .notifications import queue_owner_notification
 from .orchestrator import audit
 from .platform import event_bus
+from .publication_links import publication_url
 from .social_marketing import finalize_social_preview_batch
 
 
@@ -765,6 +766,7 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
         else:
             external_post_id = _publish_odnoklassniki(item, asset)
             provider = "odnoklassniki_official_api"
+        public_post_url = publication_url(item.channel, external_post_id)
         item.status = "published"
         item.published_at = current
         item.metrics = {
@@ -773,16 +775,32 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
             "external_post_id": external_post_id,
             "provider": provider,
             "published_image_sha256": (asset.metadata_json or {}).get("sha256"),
+            **({"public_post_url": public_post_url} if public_post_url else {}),
         }
         event_bus.publish(
             db,
             "marketing.social_post_published",
             "content_item",
             str(item.id),
-            {"channel": item.channel, "external_post_id": external_post_id},
+            {
+                "channel": item.channel,
+                "external_post_id": external_post_id,
+                **({"public_post_url": public_post_url} if public_post_url else {}),
+            },
             idempotency_key=f"social-post-published:{item.id}:{external_post_id}",
         )
-        audit(db, "social_publisher_agent", "marketing.social_post_published", "content_item", str(item.id), {"channel": item.channel, "external_post_id": external_post_id})
+        audit(
+            db,
+            "social_publisher_agent",
+            "marketing.social_post_published",
+            "content_item",
+            str(item.id),
+            {
+                "channel": item.channel,
+                "external_post_id": external_post_id,
+                **({"public_post_url": public_post_url} if public_post_url else {}),
+            },
+        )
     except httpx.TimeoutException:
         item.status = "reconciliation_required"
         item.metrics = {**(item.metrics or {}), "publication_status": f"{item.channel}_result_ambiguous_manual_reconciliation_required"}

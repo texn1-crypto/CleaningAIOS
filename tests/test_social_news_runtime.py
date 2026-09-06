@@ -15,6 +15,7 @@ from app.models import ApprovalRequest, BusinessRecord, ContentItem, MediaAsset,
 from app.social_marketing import prepare_daily_cleaning_news_plan
 from app.social_news import CleaningNewsItem, parse_cleaning_news_feed
 from app.social_runtime import _https_endpoint, _ok_signature, _safe_provider_failure, generate_next_social_visual, publish_next_social_post, queue_direct_image_request
+from app.publication_links import publication_url, verified_publication_url
 
 
 def test_odnoklassniki_signature_matches_provider_protocol(monkeypatch):
@@ -53,6 +54,58 @@ def test_provider_endpoint_keeps_base_path_and_token_colon_in_path():
     assert _https_endpoint("https://api.telegram.org", "/bot123456:secret/sendPhoto") == (
         "https://api.telegram.org/bot123456:secret/sendPhoto"
     )
+
+
+def test_publication_links_reject_unsafe_or_unrelated_hosts(monkeypatch):
+    monkeypatch.setattr(settings, "social_telegram_url", "javascript:alert(1)")
+    assert publication_url("telegram", "42") == ""
+    monkeypatch.setattr(settings, "social_telegram_url", "https://user:secret@t.me/channel")
+    assert publication_url("telegram", "42") == ""
+    monkeypatch.setattr(settings, "social_telegram_url", "https://example.com/channel")
+    assert publication_url("telegram", "42") == ""
+    monkeypatch.setattr(settings, "social_telegram_url", "https://t.me/channel?token=secret")
+    assert publication_url("telegram", "42") == ""
+
+    item = ContentItem(
+        channel="telegram",
+        title="Unverified",
+        status="published",
+        published_at=datetime(2042, 1, 1),
+        metrics={
+            "publication_status": "publication_failed",
+            "external_post_id": "42",
+            "public_post_url": "https://t.me/channel/42",
+        },
+    )
+    assert verified_publication_url(item) == ""
+
+
+def test_website_publish_persists_verified_public_page(client, monkeypatch):
+    monkeypatch.setattr(settings, "public_base_url", "https://cleaning.example")
+    with SessionLocal() as db:
+        item = ContentItem(
+            channel="website",
+            title="Новость на сайте",
+            body="Проверенный текст",
+            status="draft",
+            metrics={"public_post_url": "javascript:alert(1)"},
+        )
+        db.add(item)
+        db.commit()
+        item_id = item.id
+
+    response = client.patch(
+        f"/api/marketing/content/{item_id}",
+        headers={"X-Role": "operator"},
+        json={"status": "published"},
+    )
+    assert response.status_code == 200
+    with SessionLocal() as db:
+        item = db.get(ContentItem, item_id)
+        assert item is not None
+        assert item.published_at is not None
+        assert item.metrics["public_post_url"] == "https://cleaning.example/#news"
+        assert verified_publication_url(item) == "https://cleaning.example/#news"
 
 
 def test_news_agent_creates_source_bound_posts_and_image_jobs(client, monkeypatch):
@@ -443,6 +496,7 @@ def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeyp
     monkeypatch.setattr("app.social_runtime.httpx.Client", Client)
     monkeypatch.setattr(settings, "telegram_bot_token", "test-token")
     monkeypatch.setattr(settings, "telegram_social_chat_id", "@cleaning_channel")
+    monkeypatch.setattr(settings, "social_telegram_url", "https://t.me/cleaning_channel")
     monkeypatch.setattr(settings, "public_base_url", "https://cleaning.example")
     monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
     with SessionLocal() as db:
@@ -469,6 +523,7 @@ def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeyp
         db.refresh(item)
         assert item.status == "published"
         assert item.metrics["external_post_id"] == "812"
+        assert item.metrics["public_post_url"] == "https://t.me/cleaning_channel/812"
         assert len(calls) == 1
         assert calls[0][1]["data"]["caption"] == item.body
         assert calls[0][1]["files"]["photo"] == ("social.png", raw, "image/png")
@@ -539,6 +594,7 @@ def test_vk_publisher_uses_official_upload_and_wall_apis_after_approval(client, 
         assert item.status == "published"
         assert item.metrics["external_post_id"] == "789"
         assert item.metrics["provider"] == "vk_official_api"
+        assert item.metrics["public_post_url"] == "https://vk.com/wall-123_789"
     assert [url.rsplit("/", 1)[-1] for url, _ in calls] == [
         "photos.getWallUploadServer", "photo", "photos.saveWallPhoto", "wall.post"
     ]
@@ -595,6 +651,7 @@ def test_odnoklassniki_publisher_resumes_approved_post_and_uses_official_api(cli
         assert item.status == "published"
         assert item.metrics["external_post_id"] == "topic-812"
         assert item.metrics["provider"] == "odnoklassniki_official_api"
+        assert item.metrics["public_post_url"] == "https://ok.ru/group/812345/topic/topic-812"
 
     api_calls = [kwargs["data"] for url, kwargs in calls if url == "https://api.ok.ru/fb.do"]
     assert [payload["method"] for payload in api_calls] == ["photosV2.getUploadUrl", "mediatopic.post"]

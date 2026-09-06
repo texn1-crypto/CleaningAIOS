@@ -59,12 +59,15 @@ through the persisted owner notification queue. Set a value from 5 to 1440
 minutes; delivery requires `TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID`.
 
 `DAILY_OWNER_PACK_HOUR=18` and `DAILY_OWNER_PACK_TIMEZONE=Europe/Moscow` create one
-daily Orchestrator task that produces three separate checksum-bound PDFs under the
-protected document root: public organization prospects, CRM leads and a 24-hour
-operational report. The worker delivers each document through the durable Telegram
-notification queue. Per-day/per-document idempotency keys prevent repeat delivery
-when the scheduler or task is retried. Reports are read-only snapshots; public
-contact availability does not grant outreach consent.
+daily Orchestrator task that produces four separate checksum-bound PDFs under the
+protected document root: public organization prospects, CRM leads, a 24-hour
+operational report, and publication results. The publication report contains
+clickable links only for rows proven published and only after strict HTTPS/provider
+domain validation; failed and approval-pending rows are separated without links.
+The worker delivers each document through the durable Telegram notification queue.
+Per-day/per-document idempotency keys prevent repeat delivery when the scheduler or
+task is retried. Reports are read-only snapshots; public contact availability does
+not grant outreach consent.
 
 `SYSTEM_ADMIN_INTERVAL_MINUTES=5` keeps the structured system-administrator audit
 running continuously, while `SYSTEM_ADMIN_REPORT_INTERVAL_MINUTES=120` deduplicates

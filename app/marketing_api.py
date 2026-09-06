@@ -21,6 +21,7 @@ from .notifications import (
 )
 from .orchestrator import audit
 from .platform import approval_engine, event_bus
+from .publication_links import publication_url
 from .schemas import CompanyRequisiteCreate, ContentItemUpdate, MarketingExperimentCreate, MarketingExperimentLaunch, MarketingInvoiceCreate, MarketingProviderCreate, MediaAssetCreate, MediaAssetUpdate
 from .security import Principal, principal, require_role
 
@@ -409,6 +410,10 @@ def update_content(content_id: int, payload: ContentItemUpdate, db: Session = De
         setattr(row, field, value)
     if row.status == "published":
         row.published_at = row.published_at or now_utc()
+        if row.channel == "website":
+            public_post_url = publication_url("website")
+            if public_post_url:
+                row.metrics = {**(row.metrics or {}), "public_post_url": public_post_url}
     event_bus.publish(db, "marketing.content_updated", "content_item", str(row.id), {"status": row.status, "channel": row.channel})
     audit(db, actor.subject, "marketing.content_updated", "content_item", str(row.id), {"status": row.status})
     db.commit(); db.refresh(row)
