@@ -185,6 +185,12 @@ rows link back to their source resource. Navigation never infers task state loca
   network URLs and uncited results before deduplicated CRM persistence. A public
   address is stored with `outreach_consent=not_verified`; the capability creates no
   consent record and sends no message.
+- A lead coordinator fans each bounded research wave out to specialized management,
+  commercial-property, tender and public-social scouts. They share the same durable
+  lead/contact registry rather than separate lists. Every newly discovered or
+  materially changed lead creates an idempotent, checksum-bound PDF and queues it
+  for immediate Telegram delivery; repeated observations do not resend the same
+  report. Manager-only API endpoints retain downloadable report history.
 - Management-company discovery reuses that cited public-source boundary and writes
   normalized emails into one durable contact directory. Owner-uploaded baseline
   addresses are marked and excluded from new-contact exports. New public addresses

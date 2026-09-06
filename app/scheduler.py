@@ -82,32 +82,33 @@ def schedule_cycle() -> None:
             record_task_created(db, task, actor="scheduler", reason="recurring_tender_source_monitoring")
         contact_interval = max(30, min(settings.management_contact_scout_interval_minutes, 7 * 24 * 60))
         contact_recent_since = now - timedelta(minutes=contact_interval)
+        contact_window = owner_report_window(now, contact_interval)
         contact_active = db.scalar(
             select(Task.id).where(
-                Task.agent_type == "lead_scout",
+                Task.agent_type == "lead_coordinator",
                 Task.status.in_(["open", "queued", "running"]),
-                Task.title.like("Management contact discovery · %"),
+                Task.title.like("Lead intelligence coordination · %"),
             )
         )
         contact_recent = db.scalar(
             select(Task.id).where(
-                Task.agent_type == "lead_scout",
+                Task.agent_type == "lead_coordinator",
                 Task.created_at >= contact_recent_since,
-                Task.title.like("Management contact discovery · %"),
+                Task.title.like("Lead intelligence coordination · %"),
             )
         )
         if settings.perplexity_api_key and not contact_active and not contact_recent:
             regions = [item.strip() for item in settings.management_contact_regions.split("|") if item.strip()]
             task = Task(
-                title=f"Management contact discovery · {now.isoformat(timespec='minutes')}",
-                agent_type="lead_scout",
+                title=f"Lead intelligence coordination · {contact_window.isoformat()}",
+                agent_type="lead_coordinator",
                 status="queued",
                 priority="high",
                 run_after=now,
                 max_attempts=3,
                 payload={
-                    "action": "discover_public_business_leads",
-                    "segment": "management_companies",
+                    "action": "coordinate_specialized_lead_scouts",
+                    "wave_key": contact_window.isoformat(),
                     "regions": regions,
                     "max_results": settings.management_contact_scout_max_results,
                     "source": "scheduler",
@@ -116,7 +117,7 @@ def schedule_cycle() -> None:
             )
             db.add(task)
             db.flush()
-            record_task_created(db, task, actor="scheduler", reason="recurring_management_contact_discovery")
+            record_task_created(db, task, actor="scheduler", reason="recurring_lead_intelligence_coordination")
         system_admin_interval = max(
             1,
             min(settings.system_admin_interval_minutes, 24 * 60),

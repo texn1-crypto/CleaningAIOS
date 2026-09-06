@@ -214,6 +214,7 @@ def persist_public_business_leads(
         public_phones = sorted(set(old_data.get("public_phones") or []) | ({phone} if phone else set()))
         source_urls = sorted(set(old_data.get("source_urls") or []) | {source_url})
         data = {
+            **old_data,
             "region": region,
             "website": website or old_data.get("website") or "",
             "public_emails": public_emails,
@@ -325,7 +326,7 @@ def run_public_lead_scout(db: Session, payload: dict[str, Any]) -> dict[str, Any
     except (TypeError, ValueError):
         max_results = 20
     segment = str(payload.get("segment") or "")
-    customer_profile = (
+    customer_profile = str(payload.get("customer_profile") or "").strip() or (
         "Управляющие компании, ТСЖ, ТСН и ЖСК с объектами жилой недвижимости"
         if segment == "management_companies"
         else (
@@ -333,12 +334,19 @@ def run_public_lead_scout(db: Session, payload: dict[str, Any]) -> dict[str, Any
             "генеральная уборка или обслуживание территории"
         )
     )
+    requested_sources = payload.get("source_focus") or []
+    if isinstance(requested_sources, str):
+        requested_sources = [requested_sources]
+    source_focus = [str(item)[:300] for item in requested_sources if str(item).strip()][:10]
+    scout_role = str(payload.get("scout_role") or "lead_scout")[:64]
     provider_result = llm_advisor.discover_public_business_leads(
         {
             "research_kind": "public_business_lead_discovery",
             "regions": regions,
             "customer_profile": customer_profile,
             "segment": segment or "public_business",
+            "traffic_channel": str(payload.get("traffic_channel") or "public_web")[:64],
+            "source_focus": source_focus,
             "max_results": max_results,
             "constraints": {
                 "public_business_sources_only": True,
@@ -369,10 +377,21 @@ def run_public_lead_scout(db: Session, payload: dict[str, Any]) -> dict[str, Any
         max_results=max_results,
         segment=segment,
     )
+    from .lead_reports import build_instant_lead_report
+
+    instant_report = build_instant_lead_report(
+        db,
+        lead_ids=[int(item["record_id"]) for item in persisted["records"] if item.get("record_id")],
+        scout_role=scout_role,
+        notify_owner=bool(payload.get("notify_owner", True)),
+    )
     return {
         **persisted,
         "provider": provider_result.get("provider"),
         "model": provider_result.get("model"),
         "prompt": provider_result.get("prompt"),
         "citations_reviewed": len(_normalized_source_set(list(provider_result.get("citations") or []))),
+        "scout_role": scout_role,
+        "source_focus": source_focus,
+        "instant_lead_report": instant_report,
     }

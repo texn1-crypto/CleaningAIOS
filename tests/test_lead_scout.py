@@ -6,12 +6,23 @@ from app.db import SessionLocal
 from app.models import BusinessRecord, OutreachConsent, OutboundMessage
 
 
-def test_public_lead_scout_filters_personal_uncited_and_out_of_region_contacts(client, monkeypatch):
-    from app import lead_scout
+def test_public_lead_scout_filters_personal_uncited_and_out_of_region_contacts(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    from app import lead_reports, lead_scout
+
+    monkeypatch.setattr(lead_reports.settings, "document_storage_path", str(tmp_path))
 
     with SessionLocal() as db:
         consent_count_before = db.scalar(select(func.count(OutreachConsent.address)))
         outbound_count_before = db.scalar(select(func.count(OutboundMessage.id)))
+        lead_count_before = db.scalar(
+            select(func.count(BusinessRecord.id)).where(
+                BusinessRecord.source == "perplexity_public_business_search"
+            )
+        )
 
     cited = "https://business-center.example/contacts"
     provider_result = {
@@ -102,6 +113,8 @@ def test_public_lead_scout_filters_personal_uncited_and_out_of_region_contacts(c
     assert first["result"]["created"] == 2
     assert first["result"]["updated"] == 1
     assert first["result"]["external_messages_sent"] is False
+    assert first["result"]["instant_lead_report"]["status"] == "completed"
+    assert first["result"]["instant_lead_report"]["lead_count"] == 2
     assert first["result"]["consent"]["marketing_contact_allowed"] is False
     assert first["result"]["rejected"] == {
         "outside_target_regions": 1,
@@ -115,7 +128,7 @@ def test_public_lead_scout_filters_personal_uncited_and_out_of_region_contacts(c
                 BusinessRecord.source == "perplexity_public_business_search"
             )
         ).all()
-        assert len(leads) == 2
+        assert len(leads) == lead_count_before + 2
         northern = next(row for row in leads if row.title == "Бизнес-центр Север")
         assert northern.data["public_emails"] == [
             "info@business-center.example",
@@ -138,13 +151,14 @@ def test_public_lead_scout_filters_personal_uncited_and_out_of_region_contacts(c
     repeated = client.post(f"/api/tasks/{repeated_task['id']}/run").json()
     assert repeated["result"]["created"] == 0
     assert repeated["result"]["updated"] == 2
+    assert repeated["result"]["instant_lead_report"]["status"] == "no_new_information"
     assert repeated["result"]["rejected"]["outside_requested_regions"] == 3
     with SessionLocal() as db:
         assert db.scalar(
             select(func.count(BusinessRecord.id)).where(
                 BusinessRecord.source == "perplexity_public_business_search"
             )
-        ) == 2
+        ) == lead_count_before + 2
 
 
 def test_chat_routes_public_customer_search_to_lead_scout():

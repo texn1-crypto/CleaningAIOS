@@ -93,7 +93,7 @@ def test_llm_adapters_report_selected_prompt_even_without_credentials(monkeypatc
     ]
     for index, result in enumerate(results):
         assert result["prompt"]["variant"] == "stable"
-        expected_version = "1.1.0" if index == 3 else "1.0.0"
+        expected_version = "1.1.0" if index in {3, 5} else "1.0.0"
         assert result["prompt"]["version"] == expected_version
         assert "content" not in result["prompt"]
 

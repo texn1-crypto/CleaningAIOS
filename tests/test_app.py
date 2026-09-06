@@ -3109,8 +3109,8 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         tender_monitors = db.scalars(
             select(Task).where(Task.title.like("Tender source monitoring · %"))
         ).all()
-        contact_discovery = db.scalars(
-            select(Task).where(Task.title.like("Management contact discovery · %"))
+        lead_coordination = db.scalars(
+            select(Task).where(Task.title.like("Lead intelligence coordination · %"))
         ).all()
         system_admin_audits = db.scalars(
             select(Task).where(Task.title.like("System administrator audit · %"))
@@ -3129,10 +3129,10 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         assert coordination_rounds[0].payload["action"] == "marketing_sales_coordination"
         assert coordination_rounds[0].payload["period_minutes"] == 30
         assert len(tender_monitors) == 1
-        assert len(contact_discovery) == 1
-        assert contact_discovery[0].agent_type == "lead_scout"
-        assert contact_discovery[0].payload["segment"] == "management_companies"
-        assert contact_discovery[0].payload["automatic_outreach"] is False
+        assert len(lead_coordination) == 1
+        assert lead_coordination[0].agent_type == "lead_coordinator"
+        assert lead_coordination[0].payload["action"] == "coordinate_specialized_lead_scouts"
+        assert lead_coordination[0].payload["automatic_outreach"] is False
         assert len(system_admin_audits) == 1
         assert system_admin_audits[0].agent_type == "system_admin"
         assert system_admin_audits[0].payload["notify_owner"] is True
@@ -6514,5 +6514,61 @@ def test_contact_export_api_requires_manager_and_verifies_artifact(client, monke
     ).status_code == 404
 
     artifact_path = Path(report["artifacts"]["pdf"]["storage_path"])
+    artifact_path.write_bytes(artifact_path.read_bytes() + b"tampered")
+    assert client.get(download_url, headers={"X-Role": "manager"}).status_code == 409
+
+
+def test_lead_report_api_requires_manager_and_verifies_artifact(client, monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+
+    from app import lead_reports
+    from app.db import SessionLocal
+    from app.lead_reports import build_instant_lead_report
+    from app.models import BusinessRecord
+
+    monkeypatch.setattr(lead_reports.settings, "document_storage_path", str(tmp_path))
+    with SessionLocal() as db:
+        lead = BusinessRecord(
+            record_type="lead",
+            external_id="lead-report-api-test",
+            title="Склад Проверка API",
+            status="researched",
+            owner="sales",
+            source="perplexity_public_business_search",
+            data={
+                "region": "Москва",
+                "city": "Москва",
+                "website": "https://warehouse-lead.example/",
+                "public_emails": ["info@warehouse-lead.example"],
+                "public_phones": [],
+                "source_urls": ["https://warehouse-lead.example/contacts"],
+                "outreach_consent": "not_verified",
+                "automatic_outreach": False,
+            },
+        )
+        db.add(lead)
+        db.flush()
+        report = build_instant_lead_report(
+            db,
+            lead_ids=[lead.id],
+            scout_role="commercial_lead_scout",
+            generated_at=datetime(2046, 7, 6, 12, tzinfo=timezone.utc),
+            notify_owner=False,
+        )
+        db.commit()
+
+    list_url = "/api/research/lead-reports"
+    assert client.get(list_url, headers={"X-Role": "operator"}).status_code == 403
+    listed = client.get(list_url, headers={"X-Role": "manager"})
+    assert listed.status_code == 200
+    assert any(item["id"] == report["report_id"] for item in listed.json())
+
+    download_url = f"/api/research/lead-reports/{report['report_id']}/download"
+    assert client.get(download_url, headers={"X-Role": "operator"}).status_code == 403
+    downloaded = client.get(download_url, headers={"X-Role": "manager"})
+    assert downloaded.status_code == 200
+    assert downloaded.content.startswith(b"%PDF")
+
+    artifact_path = Path(report["artifact"]["storage_path"])
     artifact_path.write_bytes(artifact_path.read_bytes() + b"tampered")
     assert client.get(download_url, headers={"X-Role": "manager"}).status_code == 409

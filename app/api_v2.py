@@ -56,6 +56,7 @@ from .contact_directory import (
     contact_directory_summary,
     verify_contact_export_artifact,
 )
+from .lead_reports import LEAD_REPORT_RECORD_TYPE, verify_lead_report_artifact
 from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, ensure_participation_review_task, evaluate_tender_viability, merge_registered_document_risks, screening_record_status
 from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest, TelegramTaskQuery
 
@@ -1524,6 +1525,58 @@ def enrich_management_company_contacts(record_id: int, db: Session = Depends(get
 def get_contact_directory_summary(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "manager")
     return contact_directory_summary(db)
+
+
+@router.get("/research/lead-reports")
+def list_lead_reports(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    rows = db.scalars(
+        select(BusinessRecord)
+        .where(BusinessRecord.record_type == LEAD_REPORT_RECORD_TYPE)
+        .order_by(BusinessRecord.id.desc())
+        .limit(100)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "title": row.title,
+            "status": row.status,
+            "lead_count": int((row.data or {}).get("lead_count") or 0),
+            "scout_role": (row.data or {}).get("scout_role"),
+            "source_count": int((row.data or {}).get("source_count") or 0),
+            "created_at": row.created_at,
+            "download_url": f"/api/research/lead-reports/{row.id}/download",
+        }
+        for row in rows
+    ]
+
+
+@router.get("/research/lead-reports/{report_id}/download")
+def download_lead_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    report = db.get(BusinessRecord, report_id)
+    if not report or report.record_type != LEAD_REPORT_RECORD_TYPE or report.status != "completed":
+        raise HTTPException(404, "Completed lead report not found")
+    try:
+        path, artifact = verify_lead_report_artifact(report)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    audit(
+        db,
+        actor.subject,
+        "lead_report.downloaded",
+        LEAD_REPORT_RECORD_TYPE,
+        str(report.id),
+        {},
+    )
+    db.commit()
+    return FileResponse(path, media_type=artifact["content_type"], filename=artifact["filename"])
 
 
 @router.get("/research/contact-exports")

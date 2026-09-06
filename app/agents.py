@@ -691,6 +691,26 @@ class PublicLeadScoutAgent:
         return run_public_lead_scout(db, payload)
 
 
+class FocusedLeadScoutAgent:
+    def __init__(self, name: str):
+        self.name = name
+
+    def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        from .lead_coordination import focused_scout_payload
+        from .lead_scout import run_public_lead_scout
+
+        return run_public_lead_scout(db, focused_scout_payload(self.name, payload))
+
+
+class LeadCoordinatorAgent:
+    name = "lead_coordinator"
+
+    def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        from .lead_coordination import coordinate_lead_scouts
+
+        return coordinate_lead_scouts(db, payload)
+
+
 class SystemAdminAgent:
     name = "system_admin"
 
@@ -769,7 +789,30 @@ class CreativeAgent:
 
 
 AGENTS: dict[str, Agent] = {}
-for agent in [OrchestratorAgent(), DataCollectorAgent(), TenderAgent(), SalesAgent(), MarketingAgent(), HRAgent(), FinanceAgent(), CEOAgent(), GrowthOfficerAgent(), MetaBrainAgent(), EvolutionResearcherAgent(), PublicLeadScoutAgent(), SystemAdminAgent(), RequestAnalystAgent(), CopywriterAgent(), CreativeAgent()]:
+registered_agents: list[Agent] = [
+    OrchestratorAgent(),
+    DataCollectorAgent(),
+    TenderAgent(),
+    SalesAgent(),
+    MarketingAgent(),
+    HRAgent(),
+    FinanceAgent(),
+    CEOAgent(),
+    GrowthOfficerAgent(),
+    MetaBrainAgent(),
+    EvolutionResearcherAgent(),
+    PublicLeadScoutAgent(),
+    LeadCoordinatorAgent(),
+    FocusedLeadScoutAgent("management_lead_scout"),
+    FocusedLeadScoutAgent("commercial_lead_scout"),
+    FocusedLeadScoutAgent("tender_lead_scout"),
+    FocusedLeadScoutAgent("social_lead_scout"),
+    SystemAdminAgent(),
+    RequestAnalystAgent(),
+    CopywriterAgent(),
+    CreativeAgent(),
+]
+for agent in registered_agents:
     AGENTS[agent.name] = agent
 
 
