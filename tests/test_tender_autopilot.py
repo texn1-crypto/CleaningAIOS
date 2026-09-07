@@ -147,6 +147,19 @@ def test_tender_decision_snapshot_is_decimal_evidence_bound_and_idempotent(clien
     }
     assert body["result"]["economics"]["conservative"]["net_profit"] == "155125.00"
     assert body["result"]["economics"]["stop_price"] == "812500.00"
+    assert body["result"]["auction_forecast"] == {
+        "model": "deterministic_owner_assumption_v1",
+        "external_ai_used": False,
+        "starting_price": "1000000.00",
+        "expected_discount_percent": "0.00",
+        "expected_bid": "1000000.00",
+        "expected_economics": body["result"]["economics"]["base"],
+        "stop_price": "812500.00",
+        "maximum_safe_discount_percent": "18.75",
+        "hard_stop_invariant": "expected_bid_greater_than_or_equal_to_stop_price",
+        "hard_stop_invariant_holds": True,
+        "automatic_bidding_allowed": False,
+    }
     assert body["result"]["automatic_submission_allowed"] is False
     assert body["participation_review_task_id"] is not None
 
@@ -365,4 +378,29 @@ def test_expired_supplier_quote_cannot_become_ready(client):
     assert body["status"] == "needs_verification"
     assert "supplier_quote_expired" in body["result"]["verification_gaps"]
     assert body["result"]["economics"]["valid"] is False
+    assert body["participation_review_task_id"] is None
+
+
+def test_auction_forecast_below_stop_price_fails_closed(client):
+    tender_id, specification_id, quote_id = _create_tender_with_evidence(
+        client, "unsafe-auction"
+    )
+    payload = _assessment_payload(specification_id, quote_id)
+    payload["auction_expected_discount_percent"] = "25.00"
+
+    body = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=payload,
+    ).json()
+
+    forecast = body["result"]["auction_forecast"]
+    assert body["status"] == "not_viable"
+    assert body["recommendation"] == "skip"
+    assert forecast["expected_bid"] == "750000.00"
+    assert forecast["stop_price"] == "812500.00"
+    assert forecast["maximum_safe_discount_percent"] == "18.75"
+    assert forecast["hard_stop_invariant_holds"] is False
+    assert forecast["automatic_bidding_allowed"] is False
+    assert "auction_forecast_below_stop_price" in body["result"]["hard_stops"]
     assert body["participation_review_task_id"] is None

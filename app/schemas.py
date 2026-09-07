@@ -287,6 +287,13 @@ class TenderDecisionSnapshotCreate(BaseModel):
     minimum_margin_percent: Decimal = Field(ge=0, le=100, max_digits=7, decimal_places=4)
     conservative_cost_increase_percent: Decimal = Field(default=Decimal("15"), ge=0, le=500, max_digits=7, decimal_places=4)
     conservative_revenue_decrease_percent: Decimal = Field(default=Decimal("0"), ge=0, le=100, max_digits=7, decimal_places=4)
+    auction_expected_discount_percent: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+        le=100,
+        max_digits=7,
+        decimal_places=4,
+    )
     maximum_risk_score: int = Field(default=35, ge=0, le=100)
     queue_participation_review: bool = True
 

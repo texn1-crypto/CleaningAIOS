@@ -20,7 +20,7 @@
 | Application builder | PARTIAL | Checklist есть в legacy flow; templates/readiness graph неполны |
 | Official submission adapters | MISSING | Feature должен оставаться OFF |
 | Signing/МЧД/ЭЦП | MISSING | Требуется local privileged bridge и отдельный threat model |
-| Auction simulator/autobid | MISSING | До production обязателен simulator и invariant `bid >= stop_price` |
+| Auction simulator/autobid | PARTIAL | Decision snapshot моделирует owner-provided expected discount и fail-closed invariant `expected_bid >= stop_price`; event/replay corpus и autobid controller отсутствуют |
 | Payment/bank integration | MISSING | Только approval/manual paths; private bank credentials запрещены AI |
 | Contract execution/actual profit | PARTIAL | Общие operations/finance records есть; procurement lifecycle не связан end-to-end |
 | Learning/backtest/champion-challenger | PARTIAL | Общий replay/evals есть; procurement golden dataset и calibration отсутствуют |

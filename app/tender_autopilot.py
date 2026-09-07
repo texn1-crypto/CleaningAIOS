@@ -19,7 +19,7 @@ from .schemas import (
 )
 
 
-RULES_VERSION = "tender-decision-v1"
+RULES_VERSION = "tender-decision-v2"
 MONEY_QUANTUM = Decimal("0.01")
 PERCENT_QUANTUM = Decimal("0.01")
 
@@ -183,6 +183,9 @@ def _canonical_input(
             "conservative_revenue_decrease_percent": _percent(
                 payload.conservative_revenue_decrease_percent
             ),
+            "auction_expected_discount_percent": _percent(
+                payload.auction_expected_discount_percent
+            ),
             "maximum_risk_score": payload.maximum_risk_score,
         },
     }
@@ -311,6 +314,27 @@ def build_tender_assessment(
             / denominator
         )
 
+    auction_expected_bid = payload.contract_value * (
+        Decimal("1")
+        - payload.auction_expected_discount_percent / Decimal("100")
+    )
+    auction_expected = _scenario(
+        revenue=auction_expected_bid,
+        direct_cost=direct_cost,
+        tax_percent=payload.tax_percent,
+        contingency_percent=payload.contingency_percent,
+    )
+    maximum_safe_discount_percent: Decimal | None = None
+    auction_stop_invariant_holds = False
+    if stop_price is not None:
+        maximum_safe_discount_percent = max(
+            Decimal("0"),
+            (payload.contract_value - stop_price)
+            / payload.contract_value
+            * Decimal("100"),
+        )
+        auction_stop_invariant_holds = auction_expected_bid >= stop_price
+
     economic_hard_stops: list[str] = []
     if Decimal(base["net_profit"]) <= 0:
         economic_hard_stops.append("base_scenario_non_profitable")
@@ -320,6 +344,8 @@ def build_tender_assessment(
         economic_hard_stops.append("conservative_scenario_non_profitable")
     if capital_gap > 0:
         economic_hard_stops.append("working_capital_shortfall")
+    if stop_price is not None and not auction_stop_invariant_holds:
+        economic_hard_stops.append("auction_forecast_below_stop_price")
 
     economics_valid = not verification_gaps
     if economics_valid:
@@ -402,6 +428,25 @@ def build_tender_assessment(
                 "available": _money(payload.available_working_capital),
                 "gap": _money(capital_gap),
             },
+        },
+        "auction_forecast": {
+            "model": "deterministic_owner_assumption_v1",
+            "external_ai_used": False,
+            "starting_price": _money(payload.contract_value),
+            "expected_discount_percent": _percent(
+                payload.auction_expected_discount_percent
+            ),
+            "expected_bid": _money(auction_expected_bid),
+            "expected_economics": auction_expected,
+            "stop_price": _money(stop_price) if stop_price is not None else None,
+            "maximum_safe_discount_percent": (
+                _percent(maximum_safe_discount_percent)
+                if maximum_safe_discount_percent is not None
+                else None
+            ),
+            "hard_stop_invariant": "expected_bid_greater_than_or_equal_to_stop_price",
+            "hard_stop_invariant_holds": auction_stop_invariant_holds,
+            "automatic_bidding_allowed": False,
         },
         "verification_gaps": sorted(set(verification_gaps)),
         "hard_stops": sorted(set(hard_stops)),

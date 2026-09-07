@@ -907,9 +907,13 @@
       "id": 103,
       "title": "SIMULATED AUCTION",
       "priority": "P1",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py",
+        "tests/test_tender_autopilot.py",
+        "docs/tender-autopilot/ECONOMICS_ENGINE.md"
+      ],
+      "notes": "A persisted deterministic expected-discount scenario enforces expected_bid >= stop_price. Event/replay corpus and auction controller remain missing."
     },
     {
       "id": 104,
@@ -2572,9 +2576,13 @@
       "id": 287,
       "title": "STOP PRICE TELEMETRY",
       "priority": "P2",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py",
+        "app/models.py",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": "Immutable decision snapshots expose stop price and invariant outcome. Live auction event telemetry remains missing."
     },
     {
       "id": 288,
@@ -2667,9 +2675,10 @@
       "evidence": [
         "app/tender_autopilot.py",
         "app/tender_document_intelligence.py",
-        "docs/tender-autopilot/README.md"
+        "docs/tender-autopilot/README.md",
+        "tests/test_tender_autopilot.py"
       ],
-      "notes": ""
+      "notes": "The decision pipeline now includes an assumption-bound auction forecast, but supplier discovery/quote acquisition and product compliance are not end-to-end."
     },
     {
       "id": 298,
@@ -2817,9 +2826,10 @@
       "evidence": [
         "docs/tender-autopilot/GAP_ANALYSIS.md",
         "app/tender_autopilot.py",
-        "app/tender_document_intelligence.py"
+        "app/tender_document_intelligence.py",
+        "tests/test_tender_autopilot.py"
       ],
-      "notes": ""
+      "notes": "Auction forecast and hard stop are persisted; real tender/provider adapters, supplier acquisition, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2857,7 +2867,7 @@
         "app/tender_document_intelligence.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": ""
+      "notes": "Fixture-to-approval-card path includes deterministic auction forecast. Real provider ingest and supplier quote acquisition remain open."
     },
     {
       "id": 318,

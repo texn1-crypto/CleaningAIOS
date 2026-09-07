@@ -22,6 +22,14 @@ stop_price = direct * (1 + contingency_rate)
              / (1 - tax_rate - minimum_margin_rate)
 ```
 
+## Auction forecast boundary
+
+The decision snapshot accepts an owner-provided expected auction discount and
+persists a deterministic forecast of the resulting bid, profit and margin. This
+is an assumption analysis, not an AI prediction. The forecast fails closed when
+the expected bid is below `stop_price`, never enables automatic bidding, and
+records the invariant and its result in the immutable decision snapshot.
+
 Если знаменатель неположительный, policy невалидна. Ни одно protected действие
 не разрешается на основании provisional economics. В v1 ещё не моделируются VAT
 credit, financing price, probability distributions, penalties и actual accounting
