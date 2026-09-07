@@ -268,6 +268,23 @@ class TenderProductComplianceParameter(BaseModel):
     evidence: list[TenderEvidenceRef] = Field(default_factory=list, max_length=20)
 
 
+class TenderProductSpecificationReviewDecision(BaseModel):
+    candidate_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    accepted: bool
+    corrected_parameter: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    corrected_value: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    reason: str = Field(default="", max_length=1000)
+
+
+class TenderProductSpecificationReviewCreate(BaseModel):
+    document_checksum: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+    extractor_version: str = Field(min_length=1, max_length=128)
+    decisions: list[TenderProductSpecificationReviewDecision] = Field(
+        min_length=1,
+        max_length=500,
+    )
+
+
 class TenderSupplierQuoteInput(BaseModel):
     supplier_name: str = Field(min_length=2, max_length=255)
     quote_reference: str = Field(min_length=1, max_length=255)

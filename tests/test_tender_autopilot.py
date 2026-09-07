@@ -427,6 +427,10 @@ def test_supplier_product_specification_extraction_is_fail_closed_and_idempotent
     assert result["external_ai_used"] is False
     assert result["content_trust"] == "untrusted"
     assert result["confidence_is_advisory_only"] is True
+    assert all(
+        len(candidate["candidate_hash"]) == 64
+        for candidate in result["candidates"]
+    )
     assert {item["match_status"] for item in result["candidates"]} == {"unknown"}
     assert {item["verification_status"] for item in result["candidates"]} == {
         "needs_verification"
@@ -511,6 +515,118 @@ def test_product_specification_extraction_rejects_untrusted_storage_and_viewer(
     assert rejected.json()["detail"] == (
         "Tender document is outside protected storage"
     )
+
+
+def test_product_specification_review_is_exact_audited_and_idempotent(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    source = tmp_path / "reviewed-specification.txt"
+    source.write_text(
+        "Плотность бумаги: 80 г/м²\nКоличество листов: 500\n",
+        encoding="utf-8",
+    )
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    tender = client.post(
+        "/api/records",
+        headers=MANAGER,
+        json={
+            "record_type": "tender",
+            "external_id": "product-specification-review",
+            "title": "Поставка бумаги",
+            "data": {},
+        },
+    ).json()
+    document = client.post(
+        f"/api/tenders/{tender['id']}/documents",
+        headers=MANAGER,
+        json={
+            "name": source.name,
+            "content_type": "text/plain",
+            "storage_path": str(source),
+            "checksum": checksum,
+            "analysis": {"kind": "supplier_specification"},
+        },
+    ).json()
+    extraction = client.post(
+        f"/api/tender-documents/{document['id']}/product-specification/extract",
+        headers=MANAGER,
+    ).json()
+    endpoint = (
+        f"/api/tender-documents/{document['id']}/product-specification/review"
+    )
+    decisions = [
+        {
+            "candidate_hash": extraction["candidates"][0]["candidate_hash"],
+            "accepted": True,
+            "corrected_value": "80 г/м²",
+        },
+        {
+            "candidate_hash": extraction["candidates"][1]["candidate_hash"],
+            "accepted": False,
+            "reason": "Значение требует нового документа поставщика",
+        },
+    ]
+    payload = {
+        "document_checksum": checksum,
+        "extractor_version": extraction["extractor_version"],
+        "decisions": decisions,
+    }
+
+    forbidden = client.post(endpoint, headers={"X-Role": "operator"}, json=payload)
+    assert forbidden.status_code == 403
+
+    incomplete = client.post(
+        endpoint,
+        headers=MANAGER,
+        json={**payload, "decisions": decisions[:1]},
+    )
+    assert incomplete.status_code == 422
+    assert incomplete.json()["detail"] == (
+        "Product specification review must cover the exact extracted candidate set"
+    )
+
+    stale = client.post(
+        endpoint,
+        headers=MANAGER,
+        json={**payload, "document_checksum": "f" * 64},
+    )
+    assert stale.status_code == 422
+    assert stale.json()["detail"] == "Product specification checksum is stale"
+
+    first = client.post(endpoint, headers=MANAGER, json=payload)
+    assert first.status_code == 200
+    result = first.json()
+    assert result["created"] is True
+    assert result["status"] == "reviewed"
+    assert result["source_role"] == "offered_product"
+    assert result["accepted_count"] == 1
+    assert result["rejected_count"] == 1
+    assert result["eligible_for_draft_comparison"] is True
+    assert result["automatic_matching_allowed"] is False
+    assert result["automatic_eligibility_allowed"] is False
+    assert result["automatic_submission_allowed"] is False
+    assert {item["verification_status"] for item in result["candidates"]} == {
+        "verified",
+        "rejected",
+    }
+
+    repeated = client.post(endpoint, headers=MANAGER, json=payload).json()
+    assert repeated == {**result, "created": False}
+
+    with SessionLocal() as db:
+        persisted = db.get(TenderDocument, document["id"])
+        assert persisted is not None
+        review = persisted.analysis["product_specification_review"]
+        assert review["review_hash"] == result["review_hash"]
+        assert db.scalar(
+            select(func.count())
+            .select_from(DomainEvent)
+            .where(
+                DomainEvent.event_type == "tender.product_specification_reviewed",
+                DomainEvent.aggregate_id == str(tender["id"]),
+            )
+        ) == 1
 
 
 def test_expired_supplier_quote_cannot_become_ready(client):

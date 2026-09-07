@@ -5,7 +5,9 @@
 - `BusinessRecord(record_type=tender)` — агрегат найденной закупки и mutable
   projection её текущего состояния.
 - `TenderDocument` — зарегистрированный оригинал/версия с source URL, storage path,
-  MIME, checksum и analysis metadata.
+  MIME, checksum и analysis metadata. Product specification extraction хранится
+  как `extracted/needs_verification`; отдельный review привязан к checksum,
+  extractor version, полному набору candidate hashes и actor.
 - `TenderAssessmentSnapshot` — append-only паспорт решения: canonical inputs,
   exact hashes, rules version, result и actor. Внутри snapshot хранится
   evidence-bound product compliance matrix; confidence остаётся только

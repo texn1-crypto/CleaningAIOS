@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +16,7 @@ from .models import TenderDocument
 
 
 EXTRACTOR_VERSION = "tender-requirements-v1"
-PRODUCT_SPEC_EXTRACTOR_VERSION = "tender-product-specification-v1"
+PRODUCT_SPEC_EXTRACTOR_VERSION = "tender-product-specification-v2"
 SUPPORTED_SUFFIXES = {".docx", ".md", ".pdf", ".txt"}
 MAX_SEGMENTS = 20_000
 MAX_CANDIDATES = 500
@@ -77,6 +78,10 @@ _TENDER_SPEC_KINDS = {
 
 
 class TenderDocumentExtractionError(ValueError):
+    pass
+
+
+class TenderDocumentReviewError(ValueError):
     pass
 
 
@@ -249,9 +254,16 @@ def extract_product_specification_candidates(
             continue
         seen.add(fingerprint)
         code_hash = hashlib.sha256(normalized_parameter.encode("utf-8")).hexdigest()
+        candidate_hash = hashlib.sha256(
+            (
+                f"{document.checksum.lower()}:{normalized_parameter}:"
+                f"{normalized_value}:{locator}"
+            ).encode("utf-8")
+        ).hexdigest()
         excerpt = text[:2_000]
         candidates.append(
             {
+                "candidate_hash": candidate_hash,
                 "code": f"product.{code_hash[:12]}",
                 "parameter": parameter,
                 "value": value,
@@ -316,6 +328,145 @@ def extract_product_specification_candidates(
     document.analysis = {
         **(document.analysis or {}),
         "product_specification_extraction": result,
+    }
+    document.status = "analyzed"
+    document.analyzed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    return result, True
+
+
+def review_product_specification_candidates(
+    document: TenderDocument,
+    *,
+    document_checksum: str,
+    extractor_version: str,
+    decisions: list[dict[str, Any]],
+    reviewed_by: str,
+) -> tuple[dict[str, Any], bool]:
+    extraction = (document.analysis or {}).get("product_specification_extraction")
+    if not isinstance(extraction, dict):
+        raise TenderDocumentReviewError(
+            "Product specification must be extracted before review"
+        )
+    actual_checksum = str(document.checksum or "").lower()
+    if document_checksum.lower() != actual_checksum:
+        raise TenderDocumentReviewError("Product specification checksum is stale")
+    if extraction.get("document_checksum") != actual_checksum:
+        raise TenderDocumentReviewError("Extracted product specification is stale")
+    if extractor_version != extraction.get("extractor_version"):
+        raise TenderDocumentReviewError("Product specification extractor version is stale")
+    source_role = str(extraction.get("source_role") or "unknown")
+    if source_role == "unknown":
+        raise TenderDocumentReviewError(
+            "Product specification role must be classified before review"
+        )
+
+    candidates = extraction.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise TenderDocumentReviewError("Product specification has no candidates to review")
+    candidate_map = {
+        str(candidate.get("candidate_hash")): candidate
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("candidate_hash")
+    }
+    expected_hashes = set(candidate_map)
+    submitted_hashes = [str(decision.get("candidate_hash") or "") for decision in decisions]
+    if len(submitted_hashes) != len(set(submitted_hashes)):
+        raise TenderDocumentReviewError("Product specification review has duplicate decisions")
+    if set(submitted_hashes) != expected_hashes:
+        raise TenderDocumentReviewError(
+            "Product specification review must cover the exact extracted candidate set"
+        )
+
+    canonical_decisions: list[dict[str, Any]] = []
+    reviewed_candidates: list[dict[str, Any]] = []
+    for decision in sorted(decisions, key=lambda item: str(item["candidate_hash"])):
+        candidate_hash = str(decision["candidate_hash"])
+        candidate = candidate_map[candidate_hash]
+        accepted = bool(decision.get("accepted"))
+        reason = str(decision.get("reason") or "").strip()
+        if not accepted and not reason:
+            raise TenderDocumentReviewError(
+                "Rejected product specification candidates require a reason"
+            )
+        parameter = str(
+            decision.get("corrected_parameter") or candidate.get("parameter") or ""
+        ).strip()
+        value = str(
+            decision.get("corrected_value") or candidate.get("value") or ""
+        ).strip()
+        if not parameter or not value:
+            raise TenderDocumentReviewError(
+                "Reviewed product specification parameter and value are required"
+            )
+        normalized_parameter = parameter.lower().replace("ё", "е")
+        code_hash = hashlib.sha256(normalized_parameter.encode("utf-8")).hexdigest()
+        canonical_decisions.append(
+            {
+                "candidate_hash": candidate_hash,
+                "accepted": accepted,
+                "corrected_parameter": parameter,
+                "corrected_value": value,
+                "reason": reason,
+            }
+        )
+        reviewed_candidates.append(
+            {
+                "candidate_hash": candidate_hash,
+                "code": f"product.{code_hash[:12]}",
+                "parameter": parameter,
+                "value": value,
+                "source_role": source_role,
+                "review_outcome": "accepted" if accepted else "rejected",
+                "verification_status": "verified" if accepted else "rejected",
+                "reason": reason,
+                "evidence": candidate.get("evidence") or [],
+                "data_class": "verified" if accepted else "rejected",
+            }
+        )
+
+    canonical = {
+        "document_id": document.id,
+        "document_checksum": actual_checksum,
+        "extractor_version": extractor_version,
+        "source_role": source_role,
+        "decisions": canonical_decisions,
+    }
+    review_hash = hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    previous = (document.analysis or {}).get("product_specification_review")
+    if isinstance(previous, dict) and previous.get("review_hash") == review_hash:
+        return previous, False
+
+    accepted_count = sum(
+        candidate["review_outcome"] == "accepted"
+        for candidate in reviewed_candidates
+    )
+    result: dict[str, Any] = {
+        "review_hash": review_hash,
+        "document_checksum": actual_checksum,
+        "extractor_version": extractor_version,
+        "source_role": source_role,
+        "status": "reviewed",
+        "candidate_count": len(reviewed_candidates),
+        "accepted_count": accepted_count,
+        "rejected_count": len(reviewed_candidates) - accepted_count,
+        "candidates": reviewed_candidates,
+        "reviewed_by": reviewed_by,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "eligible_for_draft_comparison": accepted_count > 0,
+        "automatic_matching_allowed": False,
+        "automatic_eligibility_allowed": False,
+        "automatic_submission_allowed": False,
+    }
+    document.analysis = {
+        **(document.analysis or {}),
+        "product_specification_review": result,
     }
     document.status = "analyzed"
     document.analyzed_at = datetime.now(timezone.utc).replace(tzinfo=None)
