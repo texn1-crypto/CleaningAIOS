@@ -187,10 +187,11 @@
       "evidence": [
         "app/schemas.py",
         "app/tender_autopilot.py",
+        "app/tender_document_intelligence.py",
         "tests/test_tender_autopilot.py",
         "docs/tender-autopilot/DOMAIN_MODEL.md"
       ],
-      "notes": "Decision snapshots persist an evidence-bound parameter matrix and fail closed for mandatory UNKNOWN/mismatch. Automated supplier specification extraction remains missing."
+      "notes": "Decision snapshots persist an evidence-bound parameter matrix and fail closed for mandatory UNKNOWN/mismatch. A local extractor now persists parameter/value candidates from classified tender or supplier specifications as UNKNOWN. Automated cross-document matching and reviewer workflow remain missing."
     },
     {
       "id": 20,
@@ -2683,7 +2684,7 @@
         "docs/tender-autopilot/README.md",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The decision pipeline now includes an assumption-bound auction forecast and manual evidence-bound product matching, but supplier discovery/quote acquisition and automated specification extraction are not end-to-end."
+      "notes": "The decision pipeline includes an assumption-bound auction forecast, manual evidence-bound product matching, and fail-closed local parameter extraction. Supplier discovery/quote acquisition and reviewed cross-document matching are not end-to-end."
     },
     {
       "id": 298,
@@ -2834,7 +2835,7 @@
         "app/tender_document_intelligence.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Auction forecast, stop price and evidence-bound product matching are persisted; real tender/provider adapters, supplier acquisition, broader document controls and A4 E2E remain incomplete."
+      "notes": "Auction forecast, stop price, evidence-bound product matching, and fail-closed parameter extraction are persisted; real tender/provider adapters, supplier acquisition, reviewed matching, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2872,7 +2873,7 @@
         "app/tender_document_intelligence.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Fixture-to-approval-card path includes deterministic auction forecast and product compliance gates. Real provider ingest, automated specification extraction and supplier quote acquisition remain open."
+      "notes": "Fixture-to-approval-card path includes deterministic auction forecast, product compliance gates, and fail-closed local parameter extraction. Real provider ingest, reviewed cross-document matching and supplier quote acquisition remain open."
     },
     {
       "id": 318,
