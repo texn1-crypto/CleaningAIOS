@@ -12,6 +12,7 @@
 | Requirement extraction | PARTIAL | Локальный deterministic extractor сохраняет evidence-bound кандидаты как UNKNOWN/NEEDS_VERIFICATION; reviewer workflow, OCR и полный typed graph не подключены |
 | Company qualification | PARTIAL | Typed checks входят в snapshot; company digital twin неполон |
 | Supplier quotes | PARTIAL | Typed current quote и evidence есть; RFQ, reservations и backup suppliers отсутствуют |
+| Product compliance matcher | PARTIAL | Decision snapshot хранит required/offered/match/confidence/evidence по параметрам и fail-closed обязательные UNKNOWN/mismatch; автоматический разбор supplier specifications и knowledge graph отсутствуют |
 | Decimal economics | PARTIAL | Новый snapshot считает Decimal base/conservative/stop/capital; legacy evaluator всё ещё `float` |
 | Explainable decision passport | EXISTS | Append-only snapshot, input/economics hashes, factors и approval card |
 | Immutable decision history | EXISTS | PostgreSQL trigger запрещает UPDATE/DELETE snapshot |

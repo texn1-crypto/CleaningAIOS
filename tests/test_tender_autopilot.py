@@ -147,6 +147,17 @@ def test_tender_decision_snapshot_is_decimal_evidence_bound_and_idempotent(clien
     }
     assert body["result"]["economics"]["conservative"]["net_profit"] == "155125.00"
     assert body["result"]["economics"]["stop_price"] == "812500.00"
+    assert body["result"]["product_compliance"] == {
+        "required": False,
+        "applicable": False,
+        "product_match": "not_applicable",
+        "total": 0,
+        "matched": 0,
+        "unknown": 0,
+        "mismatched": 0,
+        "matrix": [],
+        "confidence_is_advisory_only": True,
+    }
     assert body["result"]["auction_forecast"] == {
         "model": "deterministic_owner_assumption_v1",
         "external_ai_used": False,
@@ -404,3 +415,146 @@ def test_auction_forecast_below_stop_price_fails_closed(client):
     assert forecast["automatic_bidding_allowed"] is False
     assert "auction_forecast_below_stop_price" in body["result"]["hard_stops"]
     assert body["participation_review_task_id"] is None
+
+
+def test_product_compliance_matrix_is_evidence_bound_and_persisted(client):
+    tender_id, specification_id, quote_id = _create_tender_with_evidence(
+        client, "product-match"
+    )
+    payload = _assessment_payload(specification_id, quote_id)
+    payload["product_compliance_required"] = True
+    payload["product_compliance"] = [
+        {
+            "code": "paper.grammage",
+            "parameter": "Плотность бумаги",
+            "required_value": "80 г/м²",
+            "offered_value": "80 г/м²",
+            "mandatory": True,
+            "match_status": "match",
+            "confidence": "0.9000",
+            "evidence": [
+                {
+                    "document_id": specification_id,
+                    "document_checksum": "a" * 64,
+                    "locator": "page 3",
+                    "excerpt": "Требуется бумага плотностью 80 г/м²",
+                },
+                {
+                    "document_id": quote_id,
+                    "document_checksum": "b" * 64,
+                    "locator": "page 1",
+                    "excerpt": "Предлагаемая бумага: 80 г/м²",
+                },
+            ],
+        }
+    ]
+
+    body = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=payload,
+    ).json()
+
+    compliance = body["result"]["product_compliance"]
+    assert body["status"] == "ready_for_owner_review"
+    assert compliance["product_match"] == "verified"
+    assert compliance["matched"] == 1
+    assert compliance["confidence_is_advisory_only"] is True
+    assert compliance["matrix"][0] == {
+        "code": "paper.grammage",
+        "parameter": "Плотность бумаги",
+        "required": "80 г/м²",
+        "offered": "80 г/м²",
+        "mandatory": True,
+        "match": "match",
+        "confidence": "0.9000",
+        "evidence": payload["product_compliance"][0]["evidence"],
+    }
+
+
+def test_unknown_or_mismatched_mandatory_product_parameter_fails_closed(client):
+    tender_id, specification_id, quote_id = _create_tender_with_evidence(
+        client, "product-fail-closed"
+    )
+    payload = _assessment_payload(specification_id, quote_id)
+    payload["product_compliance_required"] = True
+
+    missing = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=payload,
+    ).json()
+    assert missing["status"] == "needs_verification"
+    assert missing["result"]["product_compliance"]["product_match"] == "unverified"
+    assert "product_compliance:parameters_missing" in missing["result"][
+        "verification_gaps"
+    ]
+
+    payload["product_compliance"] = [
+        {
+            "code": "paper.sheets",
+            "parameter": "Количество листов",
+            "required_value": "500",
+            "offered_value": "500",
+            "mandatory": True,
+            "match_status": "match",
+            "confidence": "1.0000",
+            "evidence": [
+                {
+                    "document_id": specification_id,
+                    "document_checksum": "a" * 64,
+                    "locator": "page 3",
+                    "excerpt": "Требуется 500 листов",
+                }
+            ],
+        }
+    ]
+    incomplete = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=payload,
+    ).json()
+    assert incomplete["status"] == "needs_verification"
+    assert incomplete["result"]["product_compliance"]["product_match"] == (
+        "unverified"
+    )
+    assert "product_compliance:paper.sheets:evidence_incomplete" in incomplete[
+        "result"
+    ]["verification_gaps"]
+
+    payload["product_compliance"] = [
+        {
+            "code": "paper.sheets",
+            "parameter": "Количество листов",
+            "required_value": "500",
+            "offered_value": "450",
+            "mandatory": True,
+            "match_status": "mismatch",
+            "confidence": "1.0000",
+            "evidence": [
+                {
+                    "document_id": specification_id,
+                    "document_checksum": "a" * 64,
+                    "locator": "page 3",
+                    "excerpt": "Требуется 500 листов",
+                },
+                {
+                    "document_id": quote_id,
+                    "document_checksum": "b" * 64,
+                    "locator": "page 1",
+                    "excerpt": "В пачке 450 листов",
+                },
+            ],
+        }
+    ]
+    mismatched = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=payload,
+    ).json()
+    assert mismatched["status"] == "not_viable"
+    assert mismatched["result"]["product_compliance"]["product_match"] == "rejected"
+    assert "product_compliance:paper.sheets:mismatch" in mismatched["result"][
+        "hard_stops"
+    ]
+    assert mismatched["participation_review_task_id"] is None

@@ -14,12 +14,13 @@ from .models import BusinessRecord, TenderAssessmentSnapshot, TenderDocument
 from .schemas import (
     TenderDecisionSnapshotCreate,
     TenderEvidenceRef,
+    TenderProductComplianceParameter,
     TenderQualificationFact,
     TenderRequirementFact,
 )
 
 
-RULES_VERSION = "tender-decision-v2"
+RULES_VERSION = "tender-decision-v3"
 MONEY_QUANTUM = Decimal("0.01")
 PERCENT_QUANTUM = Decimal("0.01")
 
@@ -70,8 +71,36 @@ def _fact_view(fact: TenderRequirementFact | TenderQualificationFact) -> dict[st
     return result
 
 
+def _product_compliance_view(
+    fact: TenderProductComplianceParameter,
+) -> dict[str, Any]:
+    return {
+        "code": fact.code,
+        "parameter": fact.parameter.strip(),
+        "required": fact.required_value.strip(),
+        "offered": fact.offered_value.strip(),
+        "mandatory": fact.mandatory,
+        "match": fact.match_status,
+        "confidence": format(fact.confidence.quantize(Decimal("0.0001")), "f"),
+        "evidence": sorted(
+            (_evidence_view(ref) for ref in fact.evidence),
+            key=lambda item: (item["document_id"], item["locator"], item["excerpt"]),
+        ),
+    }
+
+
+def _has_product_evidence_pair(
+    fact: TenderProductComplianceParameter,
+) -> bool:
+    return len({ref.document_id for ref in fact.evidence}) >= 2
+
+
 def _validate_unique_codes(
-    facts: Iterable[TenderRequirementFact | TenderQualificationFact],
+    facts: Iterable[
+        TenderRequirementFact
+        | TenderQualificationFact
+        | TenderProductComplianceParameter
+    ],
     *,
     group: str,
 ) -> None:
@@ -149,6 +178,13 @@ def _canonical_input(
             (_fact_view(fact) for fact in payload.qualification_checks),
             key=lambda item: item["code"],
         ),
+        "product_compliance": {
+            "required": payload.product_compliance_required,
+            "parameters": sorted(
+                (_product_compliance_view(fact) for fact in payload.product_compliance),
+                key=lambda item: item["code"],
+            ),
+        },
         "supplier_quote": {
             "supplier_name": payload.supplier_quote.supplier_name.strip(),
             "quote_reference": payload.supplier_quote.quote_reference.strip(),
@@ -212,8 +248,11 @@ def build_tender_assessment(
 
     _validate_unique_codes(payload.requirements, group="requirement")
     _validate_unique_codes(payload.qualification_checks, group="qualification")
+    _validate_unique_codes(payload.product_compliance, group="product compliance")
     document_map = {document.id: document for document in documents}
     for fact in [*payload.requirements, *payload.qualification_checks]:
+        _validate_evidence(fact.evidence, document_map)
+    for fact in payload.product_compliance:
         _validate_evidence(fact.evidence, document_map)
     _validate_evidence(payload.supplier_quote.evidence, document_map)
 
@@ -254,6 +293,50 @@ def build_tender_assessment(
             verification_gaps.append(f"qualification:{fact.code}:unknown")
         elif not fact.evidence:
             verification_gaps.append(f"qualification:{fact.code}:evidence_missing")
+
+    product_compliance_applicable = (
+        payload.product_compliance_required or bool(payload.product_compliance)
+    )
+    if payload.product_compliance_required and not payload.product_compliance:
+        verification_gaps.append("product_compliance:parameters_missing")
+    for fact in payload.product_compliance:
+        if fact.mandatory and fact.match_status == "mismatch":
+            hard_stops.append(f"product_compliance:{fact.code}:mismatch")
+        elif fact.mandatory and fact.match_status == "unknown":
+            verification_gaps.append(f"product_compliance:{fact.code}:unknown")
+        elif not fact.mandatory and fact.match_status != "match":
+            risk_factors.append(
+                f"optional_product_compliance:{fact.code}:{fact.match_status}"
+            )
+        if fact.match_status == "match" and not _has_product_evidence_pair(fact):
+            verification_gaps.append(
+                f"product_compliance:{fact.code}:evidence_incomplete"
+            )
+
+    if not product_compliance_applicable:
+        product_match = "not_applicable"
+    elif any(
+        fact.mandatory and fact.match_status == "mismatch"
+        for fact in payload.product_compliance
+    ):
+        product_match = "rejected"
+    elif (
+        not payload.product_compliance
+        or any(
+            fact.mandatory
+            and (
+                fact.match_status == "unknown"
+                or (
+                    fact.match_status == "match"
+                    and not _has_product_evidence_pair(fact)
+                )
+            )
+            for fact in payload.product_compliance
+        )
+    ):
+        product_match = "unverified"
+    else:
+        product_match = "verified"
 
     quote = payload.supplier_quote
     quote_valid_until = _utc(quote.valid_until)
@@ -355,6 +438,11 @@ def build_tender_assessment(
         100,
         10
         + sum(5 for factor in risk_factors if factor.startswith("optional_requirement:"))
+        + sum(
+            5
+            for factor in risk_factors
+            if factor.startswith("optional_product_compliance:")
+        )
         + (15 if "submission_deadline_under_72h" in risk_factors else 0)
         + (10 if "supplier_quote_expires_under_72h" in risk_factors else 0),
     )
@@ -405,6 +493,23 @@ def build_tender_assessment(
             "not_satisfied": sum(
                 fact.status == "not_satisfied" for fact in payload.qualification_checks
             ),
+        },
+        "product_compliance": {
+            "required": payload.product_compliance_required,
+            "applicable": product_compliance_applicable,
+            "product_match": product_match,
+            "total": len(payload.product_compliance),
+            "matched": sum(
+                fact.match_status == "match" for fact in payload.product_compliance
+            ),
+            "unknown": sum(
+                fact.match_status == "unknown" for fact in payload.product_compliance
+            ),
+            "mismatched": sum(
+                fact.match_status == "mismatch" for fact in payload.product_compliance
+            ),
+            "matrix": canonical["product_compliance"]["parameters"],
+            "confidence_is_advisory_only": True,
         },
         "supplier": {
             "name": quote.supplier_name,

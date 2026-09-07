@@ -7,7 +7,9 @@
 - `TenderDocument` — зарегистрированный оригинал/версия с source URL, storage path,
   MIME, checksum и analysis metadata.
 - `TenderAssessmentSnapshot` — append-only паспорт решения: canonical inputs,
-  exact hashes, rules version, result и actor.
+  exact hashes, rules version, result и actor. Внутри snapshot хранится
+  evidence-bound product compliance matrix; confidence остаётся только
+  advisory и не заменяет evidence.
 - `Task` + `TaskTransition` — durable workflow и его неизменяемая история.
 - `ApprovalRequest` + `ApprovalDecisionRecord` — отдельное разрешение защищённого
   действия и terminal receipt решения.

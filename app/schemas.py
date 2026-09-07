@@ -257,6 +257,17 @@ class TenderQualificationFact(BaseModel):
     evidence: list[TenderEvidenceRef] = Field(default_factory=list, max_length=20)
 
 
+class TenderProductComplianceParameter(BaseModel):
+    code: str = Field(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_.-]*$")
+    parameter: str = Field(min_length=1, max_length=255)
+    required_value: str = Field(min_length=1, max_length=1000)
+    offered_value: str = Field(default="", max_length=1000)
+    mandatory: bool = True
+    match_status: str = Field(pattern="^(match|mismatch|unknown)$")
+    confidence: Decimal = Field(default=Decimal("0"), ge=0, le=1, max_digits=5, decimal_places=4)
+    evidence: list[TenderEvidenceRef] = Field(default_factory=list, max_length=20)
+
+
 class TenderSupplierQuoteInput(BaseModel):
     supplier_name: str = Field(min_length=2, max_length=255)
     quote_reference: str = Field(min_length=1, max_length=255)
@@ -271,6 +282,11 @@ class TenderSupplierQuoteInput(BaseModel):
 class TenderDecisionSnapshotCreate(BaseModel):
     requirements: list[TenderRequirementFact] = Field(min_length=1, max_length=500)
     qualification_checks: list[TenderQualificationFact] = Field(min_length=1, max_length=200)
+    product_compliance_required: bool = False
+    product_compliance: list[TenderProductComplianceParameter] = Field(
+        default_factory=list,
+        max_length=500,
+    )
     supplier_quote: TenderSupplierQuoteInput
     contract_value: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
     contract_months: int = Field(gt=0, le=1200)

@@ -21,13 +21,19 @@ PostgreSQL, Task workflow, transactional outbox, audit и Approval Engine. Эт�
 `POST /api/tenders/{record_id}/decision-snapshots` принимает типизированные:
 
 - требования и qualification checks;
+- evidence-bound product compliance matrix с required/offered/match по каждому
+  параметру;
 - ссылки на конкретные документы, checksum и locator;
 - подтверждённую котировку поставщика и срок её действия;
 - денежные входы и policy-пороги.
 
-Сервис повторно связывает evidence с документами данного тендера, рассчитывает
+Для подтверждённого совпадения параметра нужны evidence-ссылки как минимум на
+два разных документа: требование заказчика и характеристику предложения. Сервис повторно
+связывает evidence с документами данного тендера, рассчитывает
 base/conservative economics через `Decimal`, working capital и stop price,
-применяет fail-closed правила и сохраняет неизменяемый decision passport. Только
+запрещает обязательное product mismatch, оставляет UNKNOWN как
+`needs_verification`, применяет остальные fail-closed правила и сохраняет
+неизменяемый decision passport. Только
 snapshot со статусом `ready_for_owner_review` создаёт существующую задачу
 `tender_participation`; автоматическая подача всегда запрещена.
 

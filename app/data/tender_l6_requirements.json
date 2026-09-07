@@ -183,9 +183,14 @@
       "id": 19,
       "title": "НЕ ПУТАТЬ «ПОХОЖИЙ ТОВАР» И «СООТВЕТСТВУЮЩИЙ ТОВАР»",
       "priority": "P1",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/schemas.py",
+        "app/tender_autopilot.py",
+        "tests/test_tender_autopilot.py",
+        "docs/tender-autopilot/DOMAIN_MODEL.md"
+      ],
+      "notes": "Decision snapshots persist an evidence-bound parameter matrix and fail closed for mandatory UNKNOWN/mismatch. Automated supplier specification extraction remains missing."
     },
     {
       "id": 20,
@@ -2678,7 +2683,7 @@
         "docs/tender-autopilot/README.md",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The decision pipeline now includes an assumption-bound auction forecast, but supplier discovery/quote acquisition and product compliance are not end-to-end."
+      "notes": "The decision pipeline now includes an assumption-bound auction forecast and manual evidence-bound product matching, but supplier discovery/quote acquisition and automated specification extraction are not end-to-end."
     },
     {
       "id": 298,
@@ -2829,7 +2834,7 @@
         "app/tender_document_intelligence.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Auction forecast and hard stop are persisted; real tender/provider adapters, supplier acquisition, broader document controls and A4 E2E remain incomplete."
+      "notes": "Auction forecast, stop price and evidence-bound product matching are persisted; real tender/provider adapters, supplier acquisition, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2867,7 +2872,7 @@
         "app/tender_document_intelligence.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Fixture-to-approval-card path includes deterministic auction forecast. Real provider ingest and supplier quote acquisition remain open."
+      "notes": "Fixture-to-approval-card path includes deterministic auction forecast and product compliance gates. Real provider ingest, automated specification extraction and supplier quote acquisition remain open."
     },
     {
       "id": 318,
