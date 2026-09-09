@@ -243,6 +243,97 @@ def test_system_admin_resolves_historical_notification_failure_after_success(mon
         ) == 1
 
 
+def test_system_admin_refreshes_notification_incident_classification(monkeypatch):
+    from app import system_admin
+
+    session_factory = _session_factory()
+    now = datetime(2040, 1, 1, 12, 0)
+    monkeypatch.setattr(
+        system_admin,
+        "retry_workspace_handoff",
+        lambda row: {"status": "credentials_required"},
+    )
+    with session_factory() as db:
+        notification = OwnerNotification(
+            idempotency_key="transient-telegram-timeout",
+            channel="telegram",
+            recipient="owner",
+            status="dead_letter",
+            last_error=(
+                "Server error '502 Bad Gateway' for url "
+                "'https://api.telegram.org/bot[TELEGRAM_TOKEN_REDACTED]/sendMediaGroup'"
+            ),
+            dead_lettered_at=now,
+            created_at=now,
+        )
+        db.add(notification)
+        db.commit()
+
+        system_admin.run_system_admin_audit(db, now=now)
+        db.commit()
+        improvement = db.scalar(select(ImprovementRequest))
+        assert improvement is not None
+        assert improvement.classification == "execution_gap"
+        assert improvement.missing_capabilities == ["verified_runtime_recovery"]
+        assert "502 Bad Gateway" in improvement.request_text
+
+        notification.last_error = "401 Unauthorized"
+        db.commit()
+        changed = system_admin.run_system_admin_audit(
+            db,
+            now=now + timedelta(minutes=5),
+        )
+        db.commit()
+
+        assert changed["summary"]["changed"] == 1
+        assert improvement.classification == "configuration_required"
+        assert improvement.missing_capabilities == ["external_credentials"]
+        assert "401 Unauthorized" in improvement.request_text
+        assert "401 Unauthorized" in improvement.codex_prompt
+
+
+def test_owner_notification_uses_extended_bounded_retry_window(monkeypatch):
+    from app import notifications
+    from app.config import settings
+
+    session_factory = _session_factory()
+    now = datetime(2040, 1, 1, 12, 0)
+    monkeypatch.setattr(notifications, "now_utc", lambda: now)
+    monkeypatch.setattr(settings, "owner_notification_max_attempts", 6)
+    monkeypatch.setattr(settings, "owner_notification_retry_max_seconds", 30)
+    monkeypatch.setattr(
+        notifications,
+        "_send_telegram",
+        lambda db, row: (_ for _ in ()).throw(TimeoutError("timed out")),
+    )
+
+    with session_factory() as db:
+        notification = OwnerNotification(
+            idempotency_key="bounded-retry-window",
+            channel="telegram",
+            recipient="owner",
+            status="queued",
+            available_at=now,
+        )
+        db.add(notification)
+        db.commit()
+
+        for attempt in range(1, 6):
+            notification.available_at = now
+            db.commit()
+            assert notifications.send_next_owner_notification(db) is True
+            assert notification.attempts == attempt
+            assert notification.status == "retry"
+            assert notification.available_at <= now + timedelta(seconds=30)
+
+        notification.available_at = now
+        db.commit()
+        assert notifications.send_next_owner_notification(db) is True
+        assert notification.attempts == 6
+        assert notification.status == "dead_letter"
+        assert notification.dead_lettered_at == now
+
+
 def test_system_admin_ignores_obsolete_approval_notification(monkeypatch):
     from app import system_admin
 

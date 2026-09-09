@@ -595,9 +595,16 @@ def send_next_owner_notification(db: Session) -> bool:
     except Exception as exc:
         row.attempts += 1
         row.last_error = _safe_delivery_error(exc)
-        row.status = "dead_letter" if row.attempts >= 5 else "retry"
+        max_attempts = max(1, min(settings.owner_notification_max_attempts, 100))
+        retry_cap_seconds = max(
+            1,
+            min(settings.owner_notification_retry_max_seconds, 24 * 60 * 60),
+        )
+        row.status = "dead_letter" if row.attempts >= max_attempts else "retry"
         row.dead_lettered_at = now if row.status == "dead_letter" else None
-        row.available_at = now + timedelta(seconds=min(300, 2 ** row.attempts))
+        row.available_at = now + timedelta(
+            seconds=min(retry_cap_seconds, 2 ** min(row.attempts, 20))
+        )
         log.warning("owner notification %s failed: %s", row.id, type(exc).__name__)
     db.commit()
     return True

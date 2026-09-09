@@ -93,8 +93,11 @@ approval callbacks are rejected.
 Selected high/critical domain events are projected from the transactional outbox by
 the separate `critical_alerts` consumer. Each alert carries severity, recipient and
 event/correlation identifiers behind one idempotency key. The owner-notification
-worker retries transport failures with exponential backoff and moves exhausted
-delivery to `dead_letter`. High/critical Telegram alerts include a separate signed
+worker retries transport failures with configurable bounded exponential backoff
+(ten attempts across a longer transient-outage window by default) and moves exhausted
+delivery to `dead_letter`. System Admin distinguishes transient transport failures
+from missing credentials and refreshes an existing incident when its failure signature
+changes. High/critical Telegram alerts include a separate signed
 acknowledgement callback. Acknowledgement is an idempotent server-side record with an
 audit entry and domain event; it never performs the underlying business action.
 The notification API exposes delivery and acknowledgement metrics without secrets.

@@ -38,6 +38,14 @@ COMMAND_CATALOG = [
 TECHNICAL_TASK_STATUSES = {"blocked", "failed"}
 NOTIFICATION_FAILURE_STATUSES = {"retry", "dead_letter", "waiting_configuration"}
 OUTREACH_FAILURE_STATUSES = {"failed", "waiting_configuration"}
+NOTIFICATION_CREDENTIAL_MARKERS = (
+    "401",
+    "403",
+    "credential",
+    "forbidden",
+    "not configured",
+    "unauthorized",
+)
 
 
 def now_utc() -> datetime:
@@ -108,6 +116,16 @@ def _notification_failure_is_active(
         return True
     failed_at = row.dead_lettered_at or row.created_at
     return latest_sent_at <= failed_at
+
+
+def _notification_credentials_required(
+    statuses: set[str],
+    errors: set[str],
+) -> bool:
+    if "waiting_configuration" in statuses:
+        return True
+    normalized = " ".join(errors).lower()
+    return any(marker in normalized for marker in NOTIFICATION_CREDENTIAL_MARKERS)
 
 
 def _incident(
@@ -283,6 +301,10 @@ def collect_incidents(
             group["errors"].add(_safe_text(row.last_error, 500))
     for channel, group in channel_groups.items():
         errors = sorted(group["errors"])
+        credentials_required = _notification_credentials_required(
+            group["statuses"],
+            group["errors"],
+        )
         incidents.append(
             _incident(
                 kind="owner_notification_unavailable",
@@ -291,7 +313,7 @@ def collect_incidents(
                 reason="; ".join(errors[:3]) or f"Канал {channel} не настроен",
                 severity="critical",
                 count=group["count"],
-                credentials_required=True,
+                credentials_required=credentials_required,
                 data={"statuses": sorted(group["statuses"]), "notification_count": group["count"]},
             )
         )
@@ -398,6 +420,10 @@ def _upsert_incident_improvement(
         should_handoff = True
     else:
         previous_signature = str((row.intent or {}).get("failure_signature") or "")
+        request_text = (
+            f"System administrator incident: {incident['kind']} in "
+            f"{incident['resource_type']} #{incident['resource_id']}. Reason: {incident['reason']}"
+        )
         if row.status == "implemented":
             row.status = "queued"
             row.handoff_status = "pending"
@@ -412,7 +438,18 @@ def _upsert_incident_improvement(
             "failure_signature": signature,
             "last_detected_at": now.isoformat(),
         }
+        row.request_text = request_text
+        row.classification = (
+            "configuration_required"
+            if incident["credentials_required"]
+            else "execution_gap"
+        )
         row.reason = incident["reason"]
+        row.missing_capabilities = assessment["missing_capabilities"]
+        row.suggested_function = assessment["suggested_function"]
+        row.codex_prompt = build_codex_prompt(request_text, assessment, row.id)
+        row.acceptance_criteria = assessment["acceptance_criteria"]
+        row.test_plan = assessment["test_plan"]
         row.updated_at = now
     if should_handoff:
         retry_workspace_handoff(row)

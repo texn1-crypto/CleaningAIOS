@@ -272,6 +272,7 @@ def test_critical_alert_retries_then_enters_dead_letter(monkeypatch):
 
     monkeypatch.setattr(settings, "owner_telegram_id", "70002")
     monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token")
+    monkeypatch.setattr(settings, "owner_notification_max_attempts", 5)
     sessions = _isolated_session()
 
     def fail_delivery(db, row):

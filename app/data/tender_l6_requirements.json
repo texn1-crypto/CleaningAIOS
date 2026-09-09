@@ -2425,9 +2425,11 @@
       "status": "partial",
       "evidence": [
         "app/models.py:DomainEvent",
-        "app/system_admin.py"
+        "app/system_admin.py",
+        "app/notifications.py",
+        "tests/test_system_admin.py"
       ],
-      "notes": ""
+      "notes": "Event and owner-notification dead letters are persisted and diagnosed; automatic redrive and provider-side idempotency remain incomplete."
     },
     {
       "id": 271,
@@ -2447,9 +2449,11 @@
       "status": "partial",
       "evidence": [
         "app/orchestrator.py",
-        "app/worker.py"
+        "app/worker.py",
+        "app/notifications.py",
+        "tests/test_system_admin.py"
       ],
-      "notes": ""
+      "notes": "Tasks and owner notifications use bounded backoff with configurable caps; a unified distributed retry budget remains incomplete."
     },
     {
       "id": 273,

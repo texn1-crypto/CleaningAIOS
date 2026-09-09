@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     telegram_startup_max_attempts: int = 4
     telegram_startup_retry_seconds: float = 5.0
     telegram_callback_secret: str = ""
+    owner_notification_max_attempts: int = 10
+    owner_notification_retry_max_seconds: int = 15 * 60
     approval_ttl_hours: int = 24
     public_base_url: str = "http://localhost:8000"
     internal_api_url: str = ""
