@@ -35,6 +35,10 @@ build and is not stored in the runtime environment.
 
 The Telegram bot and worker services support `TELEGRAM_API_IP` as a routing
 override for cloud providers that cannot reach Telegram's DNS-selected address.
+The bot also retries a transient startup network error inside the same container
+with bounded exponential backoff (`TELEGRAM_STARTUP_MAX_ATTEMPTS` and
+`TELEGRAM_STARTUP_RETRY_SECONDS`). Each attempt builds a fresh Telegram application;
+configuration and other programming errors still fail immediately.
 The example default is a TLS-verified Telegram API endpoint. The worker needs the
 same route because it delivers persisted owner notifications. If startup or
 notification logs show `Network is unreachable`, verify a replacement without

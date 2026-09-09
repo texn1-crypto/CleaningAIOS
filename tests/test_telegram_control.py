@@ -394,7 +394,81 @@ def test_telegram_runtime_uses_polling_not_an_unverified_webhook():
 
     from app import bot
 
-    source = inspect.getsource(bot.main)
+    source = inspect.getsource(bot.run_polling_with_startup_retry)
     assert "run_polling" in source
     assert "run_webhook" not in source
     assert "drop_pending_updates=True" in source
+
+
+def test_telegram_startup_retries_transient_network_failure(monkeypatch):
+    from telegram.error import TimedOut
+
+    from app import bot
+
+    outcomes = [TimedOut("temporary timeout"), None]
+    applications = []
+    sleeps = []
+
+    class FakeApplication:
+        def run_polling(self, *, drop_pending_updates):
+            assert drop_pending_updates is True
+            outcome = outcomes.pop(0)
+            if outcome is not None:
+                raise outcome
+
+    def build():
+        application = FakeApplication()
+        applications.append(application)
+        return application
+
+    monkeypatch.setattr(bot, "build_application", build)
+    monkeypatch.setattr(bot.time, "sleep", sleeps.append)
+    monkeypatch.setattr(bot.settings, "telegram_startup_max_attempts", 3)
+    monkeypatch.setattr(bot.settings, "telegram_startup_retry_seconds", 2.0)
+
+    bot.run_polling_with_startup_retry()
+
+    assert len(applications) == 2
+    assert sleeps == [2.0]
+
+
+def test_telegram_startup_retry_is_bounded(monkeypatch):
+    import pytest
+    from telegram.error import TimedOut
+
+    from app import bot
+
+    attempts = []
+    sleeps = []
+
+    class FailingApplication:
+        def run_polling(self, *, drop_pending_updates):
+            attempts.append(drop_pending_updates)
+            raise TimedOut("temporary timeout")
+
+    monkeypatch.setattr(bot, "build_application", FailingApplication)
+    monkeypatch.setattr(bot.time, "sleep", sleeps.append)
+    monkeypatch.setattr(bot.settings, "telegram_startup_max_attempts", 3)
+    monkeypatch.setattr(bot.settings, "telegram_startup_retry_seconds", 1.0)
+
+    with pytest.raises(TimedOut):
+        bot.run_polling_with_startup_retry()
+
+    assert attempts == [True, True, True]
+    assert sleeps == [1.0, 2.0]
+
+
+def test_telegram_startup_does_not_retry_programming_errors(monkeypatch):
+    import pytest
+
+    from app import bot
+
+    class InvalidApplication:
+        def run_polling(self, *, drop_pending_updates):
+            raise RuntimeError("invalid configuration")
+
+    monkeypatch.setattr(bot, "build_application", InvalidApplication)
+    monkeypatch.setattr(bot.time, "sleep", lambda _: pytest.fail("must not sleep"))
+
+    with pytest.raises(RuntimeError, match="invalid configuration"):
+        bot.run_polling_with_startup_retry()

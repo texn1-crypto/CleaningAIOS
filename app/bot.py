@@ -10,6 +10,7 @@ import logging
 import re
 import secrets
 import tempfile
+import time
 from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
@@ -17,7 +18,7 @@ from urllib.parse import unquote
 
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import TelegramError
+from telegram.error import NetworkError, TelegramError
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .chat import understand_russian_message
@@ -31,6 +32,7 @@ configure_logging("bot")
 # URLs, so INFO-level HTTP logs would leak a production credential.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+log = logging.getLogger("cleaningai.bot")
 BASE = (settings.internal_api_url or settings.public_base_url or "http://web:8000").rstrip("/")
 HEADERS = {"X-API-Key": settings.api_key, "X-Actor": "telegram-owner", "X-Role": "owner"}
 MAILING_MAX_RECIPIENTS = 1000
@@ -2081,8 +2083,36 @@ def build_application() -> Application:
     return application
 
 
-def main():
-    build_application().run_polling(drop_pending_updates=True)
+def run_polling_with_startup_retry() -> None:
+    """Keep a transient Telegram startup failure inside one container lifecycle."""
+    max_attempts = max(1, settings.telegram_startup_max_attempts)
+    retry_seconds = max(0.0, settings.telegram_startup_retry_seconds)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            build_application().run_polling(drop_pending_updates=True)
+            return
+        except NetworkError as exc:
+            if attempt >= max_attempts:
+                log.error(
+                    "telegram_startup_retry_exhausted",
+                    extra={"attempt": attempt, "error_type": type(exc).__name__},
+                )
+                raise
+            delay = retry_seconds * (2 ** (attempt - 1))
+            log.warning(
+                "telegram_startup_retry",
+                extra={
+                    "attempt": attempt,
+                    "next_attempt": attempt + 1,
+                    "delay_seconds": delay,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            time.sleep(delay)
+
+
+def main() -> None:
+    run_polling_with_startup_retry()
 
 
 if __name__ == "__main__": main()
