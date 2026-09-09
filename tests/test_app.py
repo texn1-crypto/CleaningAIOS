@@ -3146,13 +3146,18 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         assert evolution_research[0].agent_type == "evolution_researcher"
         assert evolution_research[0].payload["advisory_only"] is True
         assert evolution_research[0].payload["notify_owner"] is True
-        assert len(development) == 4
-        assert {row.payload["scope"] for row in development} == {
-            "website",
-            "sales",
-            "marketing",
-            "system",
-        }
+        from app.agents import AGENTS
+
+        assert {row.agent_type for row in development} == set(AGENTS)
+        assert all(row.payload["strategy_version"] == "2026.09" for row in development)
+        assert all(row.payload["action"] == "ceo_strategic_checkpoint" for row in development)
+        assert all(row.payload["success_metric"] for row in development)
+        strategy_reviews = [
+            row for row in all_tasks if row.payload.get("action") == "review_strategic_portfolio"
+        ]
+        assert len(strategy_reviews) == 1
+        assert strategy_reviews[0].agent_type == "ceo"
+        assert strategy_reviews[0].run_after > development[0].run_after
         assert reports[0].payload["period_minutes"] == 30
         assert reports[0].payload["notify_owner"] is True
         assert reports[0].payload["notification_idempotency_key"].startswith(
@@ -3193,16 +3198,18 @@ def test_ceo_keeps_safe_deduplicated_development_backlog():
         duplicate = maintain_ceo_development_backlog(db, now=now, cadence_hours=24)
         db.commit()
 
-        assert len(first) == 4
+        from app.agents import AGENTS
+        from app.operations import CEO_DEVELOPMENT_BACKLOG
+
+        assert len(first) == len(CEO_DEVELOPMENT_BACKLOG)
         assert duplicate == []
-        assert {row.payload["scope"] for row in first} == {
-            "website",
-            "sales",
-            "marketing",
-            "system",
-        }
+        assert {row.agent_type for row in first} == set(AGENTS)
         assert all(row.payload["advisory_only"] is True for row in first)
         assert all(row.payload["external_actions_require_owner_approval"] is True for row in first)
+        assert all(row.payload["failure_handoff"] == "system_admin" for row in first)
+        assert all(row.payload["horizon"] for row in first)
+        assert all(row.payload["deliverable"] for row in first)
+        assert all(row.payload["success_metric"] for row in first)
 
         for row in first:
             transition_task(db, row, "running", actor=row.agent_type, reason="test_execution")
@@ -3210,10 +3217,10 @@ def test_ceo_keeps_safe_deduplicated_development_backlog():
         second = maintain_ceo_development_backlog(db, now=now, cadence_hours=24)
         db.commit()
 
-        assert len(second) == 4
+        assert len(second) == len(CEO_DEVELOPMENT_BACKLOG)
         assert all(row.status == "queued" for row in second)
         assert all(row.run_after == now + timedelta(hours=24) for row in second)
-        assert len(db.scalars(select(Task)).all()) == 8
+        assert len(db.scalars(select(Task)).all()) == len(CEO_DEVELOPMENT_BACKLOG) * 2
 
 
 def test_russian_chat_routes_business_requests_to_agents():

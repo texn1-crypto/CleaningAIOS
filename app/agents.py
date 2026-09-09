@@ -495,6 +495,13 @@ class FinanceAgent:
 class CEOAgent:
     name = "ceo"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "review_strategic_portfolio":
+            from .operations import review_ceo_strategy_portfolio
+
+            return review_ceo_strategy_portfolio(
+                db,
+                cycle_key=str(payload.get("cycle_key") or "unspecified"),
+            )
         if payload.get("action") == "agent_incident_report":
             return {
                 "outcome": "completed",

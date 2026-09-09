@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -133,32 +134,364 @@ def create_ceo_actions(db: Session) -> list[Task]:
     return unique
 
 
+CEO_STRATEGY_VERSION = "2026.09"
+
+
 CEO_DEVELOPMENT_BACKLOG = (
     {
         "title": "CEO · Развитие сайта: аудит конверсии и контента",
         "agent_type": "marketing",
-        "action": "website_growth_review",
         "scope": "website",
+        "horizon": "growth_12_months",
+        "objective": "Превратить сайт в измеримый источник квалифицированных заявок.",
+        "deliverable": "Аудит воронки сайта, контент-гипотезы и следующий безопасный эксперимент.",
+        "success_metric": "qualified_website_leads",
     },
     {
         "title": "CEO · Продажи: анализ воронки и следующих действий",
         "agent_type": "sales",
-        "action": "sales_pipeline_review",
         "scope": "sales",
+        "horizon": "revenue_36_months",
+        "objective": "Расти через прибыльные повторяемые продажи клининга.",
+        "deliverable": "Проверенная воронка, причины потерь и следующие действия без автоматической рассылки.",
+        "success_metric": "profitable_contract_pipeline_rub",
     },
     {
         "title": "CEO · Реклама: анализ каналов и маркетинговых гипотез",
         "agent_type": "marketing",
-        "action": "marketing_channel_review",
         "scope": "marketing",
+        "horizon": "growth_12_months",
+        "objective": "Находить масштабируемые каналы с положительной экономикой.",
+        "deliverable": "Ранжированный список каналов и один измеримый эксперимент; расходы только после approval.",
+        "success_metric": "qualified_leads_per_ruble",
     },
     {
         "title": "CEO · Система: анализ качества агентов и процессов",
         "agent_type": "meta_brain",
-        "action": "agent_quality_review",
         "scope": "system",
+        "horizon": "platform_36_months",
+        "objective": "Повышать доказуемое качество решений агентов.",
+        "deliverable": "Анализ evals, ошибок, использования ролей и одна проверяемая рекомендация.",
+        "success_metric": "verified_agent_outcome_rate_percent",
+    },
+    {
+        "title": "CEO · Оркестратор: надёжность сквозных процессов",
+        "agent_type": "orchestrator",
+        "scope": "workflow",
+        "horizon": "platform_12_months",
+        "objective": "Сделать сквозные процессы воспроизводимыми и наблюдаемыми.",
+        "deliverable": "Проверка очереди, времени выполнения, идемпотентности и handoff между ролями.",
+        "success_metric": "workflow_success_rate_percent",
+    },
+    {
+        "title": "CEO · Исследования: источники тендеров и рынка",
+        "agent_type": "research",
+        "scope": "market_research",
+        "horizon": "revenue_36_months",
+        "objective": "Расширять подтверждённое знание о рынке и спросе.",
+        "deliverable": "Проверка подключённых источников, качества данных и пробелов покрытия.",
+        "success_metric": "verified_sources_and_opportunities",
+    },
+    {
+        "title": "CEO · Тендеры: готовность Tender Autopilot",
+        "agent_type": "tender",
+        "scope": "tender_autopilot",
+        "horizon": "revenue_36_months",
+        "objective": "Сокращать время до безопасного решения об участии в прибыльном тендере.",
+        "deliverable": "Проверка decision passport, документов, рисков и следующего пробела vertical slice.",
+        "success_metric": "verified_profitable_tender_decisions",
+    },
+    {
+        "title": "CEO · HR: готовность ресурсов к новым контрактам",
+        "agent_type": "hr",
+        "scope": "workforce",
+        "horizon": "operations_24_months",
+        "objective": "Обеспечивать рост без дефицита смен и снижения качества.",
+        "deliverable": "Разрыв потребности и доступности персонала с планом подготовки; найм остаётся под approval.",
+        "success_metric": "staffing_readiness_percent",
+    },
+    {
+        "title": "CEO · Финансы: прибыльность и оборотный капитал",
+        "agent_type": "finance",
+        "scope": "finance",
+        "horizon": "revenue_36_months",
+        "objective": "Защищать маржу и денежный поток при масштабировании.",
+        "deliverable": "Проверка маржи объектов, дебиторки и потребности в капитале без платежей.",
+        "success_metric": "risk_adjusted_net_profit_rub",
+    },
+    {
+        "title": "CEO · Стратегия: контроль портфеля развития",
+        "agent_type": "ceo",
+        "scope": "strategy",
+        "horizon": "company_60_months",
+        "objective": "Связывать работу всех ролей с прибыльными контрактами и устойчивостью системы.",
+        "deliverable": "Проверка покрытия ролей, результатов, рисков и приоритетов следующего цикла.",
+        "success_metric": "portfolio_verified_outcome_rate_percent",
+    },
+    {
+        "title": "CEO · Рост: маршрут к целевой выручке",
+        "agent_type": "growth_officer",
+        "scope": "growth",
+        "horizon": "company_60_months",
+        "objective": "Построить поэтапный рост по регионам, сегментам и продуктам.",
+        "deliverable": "Разрыв до целей, главные ограничения и следующий безопасный рычаг роста.",
+        "success_metric": "annual_revenue_run_rate_rub",
+    },
+    {
+        "title": "CEO · Эволюция: проверенные инженерные практики",
+        "agent_type": "evolution_researcher",
+        "scope": "product_evolution",
+        "horizon": "platform_36_months",
+        "objective": "Развивать систему по проверяемым первичным источникам без слепого копирования.",
+        "deliverable": "Одна приоритизированная рекомендация с источником, риском и тест-планом.",
+        "success_metric": "implemented_evidence_backed_improvements",
+    },
+    {
+        "title": "CEO · Лиды: качество публично найденных компаний",
+        "agent_type": "lead_scout",
+        "scope": "lead_discovery",
+        "horizon": "growth_12_months",
+        "objective": "Находить релевантные организации из разрешённых публичных источников.",
+        "deliverable": "Проверка качества, источников и регионального покрытия без автоматического контакта.",
+        "success_metric": "verified_new_organization_leads",
+    },
+    {
+        "title": "CEO · Координатор лидов: единая база и дедупликация",
+        "agent_type": "lead_coordinator",
+        "scope": "lead_coordination",
+        "horizon": "growth_12_months",
+        "objective": "Объединять результаты разведки в одну достоверную воронку.",
+        "deliverable": "Контроль покрытия сегментов, дублей, provenance и доставки отчётов.",
+        "success_metric": "deduplicated_verified_leads",
+    },
+    {
+        "title": "CEO · УК и ТСЖ: разведка организаций",
+        "agent_type": "management_lead_scout",
+        "scope": "management_companies",
+        "horizon": "growth_12_months",
+        "objective": "Расширять базу УК и ТСЖ в целевых регионах.",
+        "deliverable": "Проверка покрытия источников и качества организационных контактов.",
+        "success_metric": "verified_management_company_leads",
+    },
+    {
+        "title": "CEO · Коммерческая недвижимость: разведка объектов",
+        "agent_type": "commercial_lead_scout",
+        "scope": "commercial_property",
+        "horizon": "growth_12_months",
+        "objective": "Находить организации с регулярной потребностью в клининге.",
+        "deliverable": "Проверка сегментов БЦ, складов, ритейла и публичных источников.",
+        "success_metric": "verified_commercial_property_leads",
+    },
+    {
+        "title": "CEO · Тендерные лиды: разведка спроса",
+        "agent_type": "tender_lead_scout",
+        "scope": "tender_leads",
+        "horizon": "growth_12_months",
+        "objective": "Выявлять проверяемый спрос на клининг до подготовки заявки.",
+        "deliverable": "Проверка тендерных сигналов, источников и соответствия географии.",
+        "success_metric": "verified_tender_leads",
+    },
+    {
+        "title": "CEO · Социальные сигналы: разведка спроса",
+        "agent_type": "social_lead_scout",
+        "scope": "social_leads",
+        "horizon": "growth_12_months",
+        "objective": "Находить публичные сигналы потребности без сбора частных данных.",
+        "deliverable": "Проверка разрешённых каналов, качества сигналов и источников.",
+        "success_metric": "verified_public_demand_signals",
+    },
+    {
+        "title": "CEO · Системный администратор: надёжность 24/7",
+        "agent_type": "system_admin",
+        "scope": "reliability",
+        "horizon": "platform_12_months",
+        "objective": "Сокращать время обнаружения, передачи и подтверждения исправления сбоев.",
+        "deliverable": "Проверка health, зависших задач, ошибок доставки и improvement handoff.",
+        "success_metric": "mean_time_to_verified_recovery_minutes",
+    },
+    {
+        "title": "CEO · Аналитик запросов: невыполненные намерения владельца",
+        "agent_type": "request_analyst",
+        "scope": "request_quality",
+        "horizon": "platform_12_months",
+        "objective": "Снижать долю запросов, выполненных не полностью.",
+        "deliverable": "Проверка классификаций, execution gaps и дедупликации улучшений.",
+        "success_metric": "fully_completed_owner_requests_percent",
+    },
+    {
+        "title": "CEO · Копирайтер: библиотека конверсионных материалов",
+        "agent_type": "copywriter",
+        "scope": "copy",
+        "horizon": "growth_12_months",
+        "objective": "Повышать качество коммерческих материалов без несанкционированной отправки.",
+        "deliverable": "Проверка полноты шаблонов, доказательств и потребности в следующем материале.",
+        "success_metric": "approved_content_conversion_rate_percent",
+    },
+    {
+        "title": "CEO · Creative: масштабируемая визуальная система",
+        "agent_type": "creative",
+        "scope": "creative",
+        "horizon": "growth_12_months",
+        "objective": "Создавать единый визуальный стандарт для сайта, КП и соцсетей.",
+        "deliverable": "Проверка готовности шаблонов, ассетов, хешей и visual-review evidence.",
+        "success_metric": "approved_reusable_visual_assets",
     },
 )
+
+
+def execute_ceo_strategy_checkpoint(
+    db: Session,
+    *,
+    task: Task,
+) -> dict[str, Any]:
+    """Produce a deterministic, evidence-backed checkpoint for any agent lane."""
+    previous = db.scalars(
+        select(Task)
+        .where(Task.agent_type == task.agent_type, Task.id != task.id)
+        .order_by(Task.id.desc())
+        .limit(100)
+    ).all()
+    terminal = [row for row in previous if row.status in {"done", "failed", "blocked"}]
+    failed = [row.id for row in terminal if row.status == "failed"]
+    blocked = [row.id for row in terminal if row.status == "blocked"]
+    completed = [row.id for row in terminal if row.status == "done"]
+    state = "at_risk" if failed or blocked else "operating" if completed else "baseline"
+    payload = task.payload or {}
+    return {
+        "status": state,
+        "strategy_version": payload.get("strategy_version"),
+        "scope": payload.get("scope"),
+        "horizon": payload.get("horizon"),
+        "objective": payload.get("objective"),
+        "deliverable": payload.get("deliverable"),
+        "success_metric": payload.get("success_metric"),
+        "completed_task_count": len(completed),
+        "failed_task_count": len(failed),
+        "blocked_task_count": len(blocked),
+        "next_action": (
+            "Передать подтверждённые сбои системному администратору и дождаться повторной проверки."
+            if state == "at_risk"
+            else str(payload.get("deliverable") or "Выполнить следующий проверяемый шаг.")
+        ),
+        "external_actions_executed": False,
+        "evidence": [{
+            "type": "ceo_strategy_checkpoint",
+            "agent_type": task.agent_type,
+            "inspected_task_ids": [row.id for row in terminal[:20]],
+            "completed": len(completed),
+            "failed": len(failed),
+            "blocked": len(blocked),
+        }],
+    }
+
+
+def review_ceo_strategy_portfolio(
+    db: Session,
+    *,
+    cycle_key: str,
+) -> dict[str, Any]:
+    """Verify portfolio coverage and hand technical risks to system administration."""
+    expected_agents = sorted({str(item["agent_type"]) for item in CEO_DEVELOPMENT_BACKLOG})
+    expected_titles = {str(item["title"]): str(item["agent_type"]) for item in CEO_DEVELOPMENT_BACKLOG}
+    portfolio_tasks = [
+        row
+        for row in db.scalars(select(Task).order_by(Task.id.desc())).all()
+        if (row.payload or {}).get("origin") == "ceo_continuous_backlog"
+        and (row.payload or {}).get("strategy_version") == CEO_STRATEGY_VERSION
+    ]
+    latest_by_title: dict[str, Task] = {}
+    for row in portfolio_tasks:
+        latest_by_title.setdefault(row.title, row)
+    missing_titles = sorted(set(expected_titles) - set(latest_by_title))
+    missing = sorted({expected_titles[title] for title in missing_titles})
+    at_risk_rows = [
+        row
+        for title, row in latest_by_title.items()
+        if title in expected_titles
+        and (
+            row.status in {"failed", "blocked"}
+            or (row.status == "done" and not bool((row.result or {}).get("evidence")))
+        )
+    ]
+    at_risk = sorted({row.agent_type for row in at_risk_rows})
+    pending = sorted({
+        row.agent_type
+        for title, row in latest_by_title.items()
+        if title in expected_titles and row.status in {"open", "queued", "running"}
+    })
+    completed = sorted({
+        agent
+        for agent in expected_agents
+        if all(
+            latest_by_title[title].status == "done"
+            and bool((latest_by_title[title].result or {}).get("evidence"))
+            for title, expected_agent in expected_titles.items()
+            if expected_agent == agent and title in latest_by_title
+        )
+        and agent not in missing
+    })
+    sysadmin_task: Task | None = None
+    if missing or at_risk:
+        risk_material = "|".join(
+            [*missing_titles, *[str(row.id) for row in sorted(at_risk_rows, key=lambda item: item.id)]]
+        )
+        risk_key = hashlib.sha256(risk_material.encode()).hexdigest()[:16]
+        title = f"CEO → System Admin · Стратегический портфель · {risk_key}"
+        sysadmin_task = db.scalar(select(Task).where(Task.title == title))
+        if sysadmin_task is None:
+            sysadmin_task = Task(
+                title=title,
+                agent_type="system_admin",
+                status="queued",
+                priority="critical",
+                max_attempts=3,
+                payload={
+                    "action": "system_admin_audit",
+                    "source": "ceo_strategy_supervision",
+                    "notify_owner": True,
+                    "strategy_version": CEO_STRATEGY_VERSION,
+                    "missing_agent_types": missing,
+                    "at_risk_agent_types": at_risk,
+                    "notification_idempotency_key": f"ceo-strategy-risk:{risk_key}:telegram",
+                },
+            )
+            db.add(sysadmin_task)
+            db.flush()
+            record_task_created(
+                db,
+                sysadmin_task,
+                actor="ceo",
+                reason="strategy_risk_handoff",
+            )
+    return {
+        "status": (
+            "at_risk"
+            if missing or at_risk
+            else "pending"
+            if pending
+            else "verified"
+        ),
+        "strategy_version": CEO_STRATEGY_VERSION,
+        "expected_agent_types": expected_agents,
+        "covered_agent_types": sorted({row.agent_type for row in latest_by_title.values()}),
+        "missing_agent_types": missing,
+        "at_risk_agent_types": at_risk,
+        "pending_agent_types": pending,
+        "verified_completed_agent_types": completed,
+        "system_admin_task_id": sysadmin_task.id if sysadmin_task else None,
+        "external_actions_executed": False,
+        "evidence": [{
+            "type": "ceo_portfolio_verification",
+            "cycle_key": cycle_key,
+            "covered_agent_types": len({row.agent_type for row in latest_by_title.values()}),
+            "expected_agent_types": len(expected_agents),
+            "covered_lanes": len(set(expected_titles) & set(latest_by_title)),
+            "expected_lanes": len(expected_titles),
+            "at_risk": len(at_risk),
+            "missing": len(missing),
+            "pending": len(pending),
+        }],
+    }
 
 
 def maintain_ceo_development_backlog(
@@ -182,17 +515,24 @@ def maintain_ceo_development_backlog(
             run_after = max(current_time, latest.run_after + timedelta(hours=cadence))
         task = Task(
             title=template["title"],
+            description=str(template["objective"]),
             agent_type=template["agent_type"],
             status="queued",
             priority="normal",
             run_after=run_after,
             max_attempts=3,
             payload={
-                "action": template["action"],
+                "action": "ceo_strategic_checkpoint",
                 "scope": template["scope"],
+                "strategy_version": CEO_STRATEGY_VERSION,
+                "horizon": template["horizon"],
+                "objective": template["objective"],
+                "deliverable": template["deliverable"],
+                "success_metric": template["success_metric"],
                 "origin": "ceo_continuous_backlog",
                 "advisory_only": True,
                 "external_actions_require_owner_approval": True,
+                "failure_handoff": "system_admin",
             },
         )
         db.add(task)

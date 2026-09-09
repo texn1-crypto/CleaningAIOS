@@ -29,11 +29,37 @@ def owner_report_window(now: datetime, interval_minutes: int) -> datetime:
 def schedule_cycle() -> None:
     with SessionLocal() as db:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        maintain_ceo_development_backlog(
+        strategy_tasks = maintain_ceo_development_backlog(
             db,
             now=now,
             cadence_hours=settings.ceo_development_cadence_hours,
         )
+        strategy_cycle = owner_report_window(now, 60)
+        strategy_review_title = f"CEO · Проверка стратегического портфеля · {strategy_cycle.isoformat()}"
+        if not db.scalar(select(Task.id).where(Task.title == strategy_review_title)):
+            review_task = Task(
+                title=strategy_review_title,
+                agent_type="ceo",
+                status="queued",
+                priority="high",
+                run_after=now + timedelta(minutes=15),
+                max_attempts=3,
+                payload={
+                    "action": "review_strategic_portfolio",
+                    "source": "scheduler",
+                    "cycle_key": strategy_cycle.isoformat(),
+                    "strategy_task_ids": [task.id for task in strategy_tasks],
+                    "external_actions_require_owner_approval": True,
+                },
+            )
+            db.add(review_task)
+            db.flush()
+            record_task_created(
+                db,
+                review_task,
+                actor="scheduler",
+                reason="ceo_strategy_portfolio_review",
+            )
         queue_missing_approval_notifications(db)
         social_day = now.date().isoformat()
         social_title = f"Daily cleaning news social plan · {social_day}"
@@ -264,6 +290,7 @@ def schedule_cycle() -> None:
             select(Task.id).where(
                 Task.agent_type == "evolution_researcher",
                 Task.status.in_(["open", "queued", "running"]),
+                Task.title.like("AI evolution research · %"),
             )
         )
         if (

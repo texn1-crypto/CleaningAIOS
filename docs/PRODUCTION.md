@@ -124,10 +124,13 @@ after five attempts. The acknowledgement button records receipt only; it does no
 approve or execute the underlying action. Monitor
 `GET /api/owner-notifications/metrics` and investigate any dead-letter count.
 
-`CEO_DEVELOPMENT_CADENCE_HOURS=24` keeps a finite, deduplicated backlog for
-website growth, sales, marketing channels and system quality. These recurring
-tasks only analyse data and prepare recommendations. Publication, outreach,
-spending and contractual actions still require the existing owner approvals.
+`CEO_DEVELOPMENT_CADENCE_HOURS=24` keeps a finite, deduplicated strategy portfolio
+covering every registered agent role. Each lane has a horizon, objective, deliverable
+and success metric; a delayed CEO task verifies coverage and execution evidence.
+Missing, failed or technically blocked lanes are handed once per cycle to System
+Admin. These recurring tasks only analyse data and prepare recommendations.
+Publication, outreach, spending and contractual actions still require the existing
+owner approvals. See `docs/AI_AGENT_STRATEGY.md`.
 
 Telegram's cloud Bot API cannot download files larger than 20 MB. For larger
 commercial-proposal attachments, operate the official local Bot API server

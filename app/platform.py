@@ -292,7 +292,12 @@ class AgentRuntime:
                     **task.payload,
                     "read_only_tool_results": tool_results,
                 }
-            raw_result = agent.execute(db, execution_payload)
+            if execution_payload.get("action") == "ceo_strategic_checkpoint":
+                from .operations import execute_ceo_strategy_checkpoint
+
+                raw_result = execute_ceo_strategy_checkpoint(db, task=task)
+            else:
+                raw_result = agent.execute(db, execution_payload)
             result = jsonable_encoder(raw_result)
             if not isinstance(result, dict):
                 raise TypeError("Agent result must be a JSON object")

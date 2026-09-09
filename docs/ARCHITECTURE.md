@@ -129,6 +129,15 @@ Managers can inspect the records through `GET /api/orchestrator-decisions`; task
 titles, payloads, customer data and credentials are never copied into this view or
 its audit events.
 
+The deterministic CEO strategy portfolio covers every registered agent type with a
+bounded recurring checkpoint containing a horizon, objective, deliverable and
+success metric. Agent Runtime handles the exact checkpoint action consistently and
+stores its evidence through the normal Task/AgentRun workflow. An hourly delayed CEO review
+checks role coverage and completion evidence. Missing, failed or technically blocked
+lanes create one deduplicated critical System Admin task for the review cycle; no
+external action or protected approval is inferred. The operating strategy and
+multi-year horizons are documented in `docs/AI_AGENT_STRATEGY.md`.
+
 `GET /api/ceo/brief` is a read-only primary-database snapshot with one freshness
 timestamp and explicit source endpoints/record IDs. Facts and deterministic
 recommendations are separate fields; facts are never attributed to an LLM. Telegram
