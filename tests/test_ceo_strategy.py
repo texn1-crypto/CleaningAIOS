@@ -6,7 +6,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.agents import AGENTS
 from app.db import Base
-from app.models import Task
+from app.models import AuditLog, Task
 from app.operations import (
     CEO_DEVELOPMENT_BACKLOG,
     maintain_ceo_development_backlog,
@@ -43,6 +43,45 @@ def test_every_registered_agent_executes_an_evidence_backed_strategy_checkpoint(
             assert result["success_metric"]
             assert result["evidence"][0]["type"] == "ceo_strategy_checkpoint"
         db.commit()
+
+
+def test_legacy_future_strategy_task_is_upgraded_in_place_with_audit():
+    session_factory = _session_factory()
+    now = datetime(2026, 9, 9, 9, 0)
+    template = CEO_DEVELOPMENT_BACKLOG[0]
+    with session_factory() as db:
+        legacy = Task(
+            title=template["title"],
+            agent_type=template["agent_type"],
+            status="queued",
+            run_after=datetime(2026, 9, 10, 9, 0),
+            payload={
+                "action": "website_growth_review",
+                "origin": "ceo_continuous_backlog",
+            },
+        )
+        db.add(legacy)
+        db.flush()
+        legacy_id = legacy.id
+
+        maintained = maintain_ceo_development_backlog(db, now=now, cadence_hours=24)
+        db.commit()
+
+        upgraded = db.get(Task, legacy_id)
+        assert upgraded is not None
+        assert upgraded.payload["strategy_version"] == "2026.09"
+        assert upgraded.payload["action"] == "ceo_strategic_checkpoint"
+        assert upgraded.run_after == now
+        assert sum(task.title == template["title"] for task in db.scalars(select(Task)).all()) == 1
+        assert upgraded in maintained
+        audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "strategy.task_upgraded",
+                AuditLog.resource_id == str(legacy_id),
+            )
+        )
+        assert audit is not None
+        assert audit.details == {"from_version": "legacy", "to_version": "2026.09"}
 
 
 def test_ceo_review_deduplicates_system_admin_handoff_for_failed_lane():

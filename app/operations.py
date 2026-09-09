@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import BusinessGoal, BusinessRecord, OperatingEntity, Task
+from .models import AuditLog, BusinessGoal, BusinessRecord, OperatingEntity, Task
 from .task_state import record_task_created
 
 
@@ -508,7 +508,44 @@ def maintain_ceo_development_backlog(
         latest = db.scalar(
             select(Task).where(Task.title == template["title"]).order_by(Task.id.desc())
         )
-        if latest and latest.status in {"open", "queued", "running", "blocked", "failed"}:
+        payload = {
+            "action": "ceo_strategic_checkpoint",
+            "scope": template["scope"],
+            "strategy_version": CEO_STRATEGY_VERSION,
+            "horizon": template["horizon"],
+            "objective": template["objective"],
+            "deliverable": template["deliverable"],
+            "success_metric": template["success_metric"],
+            "origin": "ceo_continuous_backlog",
+            "advisory_only": True,
+            "external_actions_require_owner_approval": True,
+            "failure_handoff": "system_admin",
+        }
+        if latest and latest.status in {"open", "queued"}:
+            previous_payload = latest.payload or {}
+            if (
+                previous_payload.get("origin") == "ceo_continuous_backlog"
+                and previous_payload.get("strategy_version") != CEO_STRATEGY_VERSION
+            ):
+                previous_version = str(previous_payload.get("strategy_version") or "legacy")
+                latest.description = str(template["objective"])
+                latest.payload = payload
+                latest.run_after = min(latest.run_after, current_time)
+                db.add(
+                    AuditLog(
+                        actor="ceo",
+                        action="strategy.task_upgraded",
+                        resource_type="task",
+                        resource_id=str(latest.id),
+                        details={
+                            "from_version": previous_version,
+                            "to_version": CEO_STRATEGY_VERSION,
+                        },
+                    )
+                )
+                created.append(latest)
+            continue
+        if latest and latest.status in {"running", "blocked", "failed"}:
             continue
         run_after = current_time
         if latest:
@@ -521,19 +558,7 @@ def maintain_ceo_development_backlog(
             priority="normal",
             run_after=run_after,
             max_attempts=3,
-            payload={
-                "action": "ceo_strategic_checkpoint",
-                "scope": template["scope"],
-                "strategy_version": CEO_STRATEGY_VERSION,
-                "horizon": template["horizon"],
-                "objective": template["objective"],
-                "deliverable": template["deliverable"],
-                "success_metric": template["success_metric"],
-                "origin": "ceo_continuous_backlog",
-                "advisory_only": True,
-                "external_actions_require_owner_approval": True,
-                "failure_handoff": "system_admin",
-            },
+            payload=payload,
         )
         db.add(task)
         db.flush()
