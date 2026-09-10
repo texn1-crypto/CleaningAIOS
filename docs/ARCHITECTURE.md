@@ -172,8 +172,13 @@ rows link back to their source resource. Navigation never infers task state loca
   request-header-only. Accepted items are canonicalized into append-only PostgreSQL
   feed versions; exact replays are reported
   as `unchanged` without another event, while changed items retain the previous
-  snapshot and append the provider revision. Portal-specific authentication,
-  cursors/receipts and non-JSON formats still require a legal provider adapter. No
+  snapshot and append the provider revision. Every configured source attempt also
+  persists a final `TenderSourceRun` receipt with timing, HTTP status and outcome
+  counters and emits a transactional outbox event. The manager-only
+  `GET /api/tender-sources/runs` view exposes a query/userinfo-free source label and
+  bounded error type, never the raw exception or source credentials. Portal-specific
+  authentication, cursors, provider acknowledgements and non-JSON formats still
+  require a legal provider adapter. No
   fabricated tenders are used and the generic contract is not an official ЕИС/ЭТП
   integration. Tender identity in the generic contract is provider-scoped: the same
   external ID from two source URLs creates two records, while non-tender external-ID

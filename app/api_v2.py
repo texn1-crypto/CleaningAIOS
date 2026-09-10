@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument
+from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderSourceRun
 from .integrations import collect_tenders, download_tender_document
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -1074,6 +1074,52 @@ def run_tender_collection(db: Session = Depends(get_db), actor: Principal = Depe
     audit(db, actor.subject, "tenders.collected", "tender_feed", "", result)
     db.commit()
     return result
+
+
+@router.get("/tender-sources/runs")
+def list_tender_source_runs(
+    limit: int = Query(default=50, ge=1, le=100),
+    source_ref: Optional[str] = Query(
+        default=None,
+        min_length=32,
+        max_length=32,
+        pattern=r"^[0-9a-f]{32}$",
+    ),
+    status: Optional[str] = Query(
+        default=None,
+        pattern=r"^(completed|failed)$",
+    ),
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    statement = select(TenderSourceRun)
+    if source_ref:
+        statement = statement.where(
+            TenderSourceRun.source_hash.like(f"{source_ref}%")
+        )
+    if status:
+        statement = statement.where(TenderSourceRun.status == status)
+    rows = db.scalars(
+        statement.order_by(TenderSourceRun.id.desc()).limit(limit)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "source_ref": row.source_hash[:32],
+            "source_label": row.source_label,
+            "status": row.status,
+            "http_status": row.http_status,
+            "items_seen": row.items_seen,
+            "created": row.created_count,
+            "updated": row.updated_count,
+            "unchanged": row.unchanged_count,
+            "error_type": row.error_type,
+            "started_at": row.started_at,
+            "finished_at": row.finished_at,
+        }
+        for row in rows
+    ]
 
 
 @router.post("/tender-documents/{document_id}/download")

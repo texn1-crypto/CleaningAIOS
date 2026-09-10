@@ -28,7 +28,8 @@ Official sources / imports / operator
 
 ## Три плоскости
 
-1. **Evidence plane** — оригиналы, hashes, extracts, source timestamps, conflicts.
+1. **Evidence plane** — оригиналы, hashes, extracts, durable source-run receipts,
+   source timestamps, conflicts.
 2. **Decision plane** — deterministic rules, economics, risk, frozen snapshots.
 3. **Execution plane** — scoped adapters. Любое внешнее write-действие требует
    idempotency key, актуальный approval token и receipt.

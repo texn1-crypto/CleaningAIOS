@@ -33,6 +33,15 @@ event payload. Это общий проверяемый feed contract, а не �
 остальных типов `BusinessRecord` не ослаблена. URL пока является provider key только
 для общего контракта; официальный adapter должен предоставить стабильный provider ID.
 
+Каждая попытка по настроенному источнику завершается отдельной PostgreSQL-записью
+`TenderSourceRun`: начало/окончание, HTTP status, количество увиденных, созданных,
+изменённых и неизменных карточек, итог и только класс ошибки. Ошибка источника
+откатывает его незавершённые изменения через savepoint. Транзакционный outbox получает
+`tender.source_collection_completed`, а manager-only
+`GET /api/tender-sources/runs` возвращает журнал без query, userinfo, fragment и текста
+исключения. Это внутренний receipt запуска, а не подтверждение ЕИС/ЭТП о внешнем
+действии и не реализация cursor/freshness SLO.
+
 `POST /api/tender-documents/{document_id}/download` сохраняет каждый новый набор
 байтов по checksum-addressed пути и добавляет его в append-only историю загрузок
 документа. Повтор тех же байтов возвращает существующую версию и не создаёт второе

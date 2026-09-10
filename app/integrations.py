@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import BusinessRecord, TenderDocument
+from .models import BusinessRecord, TenderDocument, TenderSourceRun
 from .platform import event_bus
 from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, evaluate_tender_viability, screening_record_status
 
@@ -24,6 +24,21 @@ from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 BLOCKED_HOST_SUFFIXES = (".internal", ".invalid", ".lan", ".local", ".localhost", ".test")
 TENDER_FEED_CONTRACT_VERSION = "tender-feed-v1"
+
+
+def _safe_source_label(source: str) -> str:
+    """Return a query/userinfo-free label suitable for receipts and errors."""
+
+    parsed = urlparse(source)
+    hostname = (parsed.hostname or "invalid-host").rstrip(".").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    default_port = 443 if parsed.scheme == "https" else 80
+    port_suffix = f":{port}" if port and port != default_port else ""
+    path = parsed.path or "/"
+    return f"{parsed.scheme.lower()}://{hostname}{port_suffix}{path}"[:1024]
 
 
 def _safe_url(url: str) -> None:
@@ -162,6 +177,15 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
     errors = []
     with httpx.Client(timeout=settings.tender_request_timeout_seconds, follow_redirects=False, headers=headers) as client:
         for source in sources:
+            source_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            created_before = created
+            updated_before = updated
+            unchanged_before = unchanged
+            items_seen = 0
+            http_status: int | None = None
+            receipt_status = "completed"
+            error_type = ""
+            source_savepoint = db.begin_nested()
             try:
                 _safe_url(source)
                 response = _safe_get(
@@ -169,9 +193,11 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                     source,
                     require_https=bool(headers),
                 )
+                http_status = int(getattr(response, "status_code", 200))
                 response.raise_for_status()
                 body = response.json(); items = body.get("items", []) if isinstance(body, dict) else body
                 if not isinstance(items, list): raise ValueError("feed must return a list or {items: [...]} object")
+                items_seen = len(items)
                 for item in items:
                     if not isinstance(item, dict): continue
                     external_id = str(item.get("external_id") or item.get("id") or "").strip()
@@ -289,11 +315,51 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                         ),
                     )
             except Exception as exc:
+                source_savepoint.rollback()
+                created = created_before
+                updated = updated_before
+                unchanged = unchanged_before
+                receipt_status = "failed"
+                error_type = type(exc).__name__[:128]
                 errors.append({
-                    "source": source,
+                    "source": _safe_source_label(source),
                     "error": "Tender source collection failed",
-                    "error_type": type(exc).__name__[:128],
+                    "error_type": error_type,
                 })
+            else:
+                source_savepoint.commit()
+            receipt = TenderSourceRun(
+                source_hash=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                source_label=_safe_source_label(source),
+                status=receipt_status,
+                http_status=http_status,
+                items_seen=items_seen,
+                created_count=created - created_before,
+                updated_count=updated - updated_before,
+                unchanged_count=unchanged - unchanged_before,
+                error_type=error_type,
+                started_at=source_started_at,
+                finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+            db.add(receipt)
+            db.flush()
+            event_bus.publish(
+                db,
+                "tender.source_collection_completed",
+                "tender_source_run",
+                str(receipt.id),
+                {
+                    "source_ref": receipt.source_hash[:32],
+                    "status": receipt.status,
+                    "http_status": receipt.http_status,
+                    "items_seen": receipt.items_seen,
+                    "created": receipt.created_count,
+                    "updated": receipt.updated_count,
+                    "unchanged": receipt.unchanged_count,
+                    "error_type": receipt.error_type,
+                },
+                idempotency_key=f"tender-source-run:{receipt.id}",
+            )
     return {
         "status": "completed_with_errors" if errors else "completed",
         "created": created,

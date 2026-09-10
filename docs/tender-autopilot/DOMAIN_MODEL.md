@@ -14,6 +14,9 @@
   требований и предложения собираются в persisted draft-историю внутри
   `BusinessRecord.data`, связанную с checksum и review hash каждого документа;
   draft остаётся `needs_verification` и не заменяет decision snapshot.
+- `TenderSourceRun` — final receipt каждой настроенной попытки collection: безопасная
+  метка и hash источника, timing, HTTP status, outcome counters и bounded error type.
+  Raw exception, query/userinfo и provider secret в публичный контракт не входят.
 - `TenderAssessmentSnapshot` — append-only паспорт решения: canonical inputs,
   exact hashes, rules version, result и actor. Внутри snapshot хранится
   evidence-bound product compliance matrix; confidence остаётся только

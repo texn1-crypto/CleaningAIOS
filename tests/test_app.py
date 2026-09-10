@@ -1427,13 +1427,16 @@ def test_tender_feed_persists_canonical_amendments_and_ignores_replays(
 
 
 def test_tender_feed_identity_is_scoped_to_provider_source(client, monkeypatch):
+    import hashlib
+    import json
+
     from sqlalchemy import func, select
     from sqlalchemy.exc import IntegrityError
 
     from app import integrations
     from app.config import settings
     from app.db import SessionLocal
-    from app.models import BusinessRecord, DomainEvent
+    from app.models import BusinessRecord, DomainEvent, TenderSourceRun
 
     sources = (
         "https://provider-a.example/tenders",
@@ -1546,6 +1549,66 @@ def test_tender_feed_identity_is_scoped_to_provider_source(client, monkeypatch):
         )
         assert event_count == 2
 
+        source_hashes = [
+            hashlib.sha256(source.encode("utf-8")).hexdigest()
+            for source in sources
+        ]
+        receipts = list(
+            db.scalars(
+                select(TenderSourceRun)
+                .where(TenderSourceRun.source_hash.in_(source_hashes))
+                .order_by(TenderSourceRun.id)
+            ).all()
+        )
+        assert [row.status for row in receipts] == ["completed"] * 4
+        assert [row.items_seen for row in receipts] == [1, 1, 1, 1]
+        assert [row.created_count for row in receipts] == [1, 1, 0, 0]
+        assert [row.unchanged_count for row in receipts] == [0, 0, 1, 1]
+        receipt_events = list(
+            db.scalars(
+                select(DomainEvent)
+                .where(
+                    DomainEvent.event_type == "tender.source_collection_completed",
+                    DomainEvent.aggregate_type == "tender_source_run",
+                    DomainEvent.aggregate_id.in_([str(row.id) for row in receipts]),
+                )
+                .order_by(DomainEvent.id)
+            ).all()
+        )
+        assert len(receipt_events) == 4
+        assert all("source_ref" in event.payload for event in receipt_events)
+        assert all("source_label" not in event.payload for event in receipt_events)
+        assert all(
+            event.idempotency_key == f"tender-source-run:{event.aggregate_id}"
+            for event in receipt_events
+        )
+
+    runs = client.get(
+        "/api/tender-sources/runs?limit=100",
+        headers={"X-Role": "manager"},
+    )
+    assert runs.status_code == 200
+    matching_runs = [
+        row
+        for row in runs.json()
+        if row["source_ref"] in {value[:32] for value in source_hashes}
+    ]
+    assert len(matching_runs) == 4
+    assert all(row["source_label"] in sources for row in matching_runs)
+    filtered_runs = client.get(
+        f"/api/tender-sources/runs?source_ref={source_hashes[0][:32]}&status=completed",
+        headers={"X-Role": "manager"},
+    )
+    assert filtered_runs.status_code == 200
+    assert len(filtered_runs.json()) == 2
+    assert all(row["source_label"] == sources[0] for row in filtered_runs.json())
+    assert client.get(
+        "/api/tender-sources/runs",
+        headers={"X-Role": "viewer"},
+    ).status_code == 403
+    serialized_runs = json.dumps(matching_runs, ensure_ascii=False)
+    assert "Authorization" not in serialized_runs
+
     with SessionLocal() as db:
         db.add(
             BusinessRecord(
@@ -1569,10 +1632,19 @@ def test_tender_feed_identity_is_scoped_to_provider_source(client, monkeypatch):
 
 
 def test_tender_collection_does_not_expose_source_exception(client, monkeypatch):
+    import hashlib
+    import json
+
+    from sqlalchemy import select
+
     from app import integrations
     from app.config import settings
+    from app.db import SessionLocal
+    from app.models import DomainEvent, TenderSourceRun
 
     secret = "feed-authorization-must-not-leak"
+    source_secret = "source-query-secret"
+    source = f"https://feed.example/tenders?api_key={source_secret}"
 
     class Client:
         def __init__(self, *args, **kwargs): pass
@@ -1587,7 +1659,7 @@ def test_tender_collection_does_not_expose_source_exception(client, monkeypatch)
         "getaddrinfo",
         lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
     )
-    monkeypatch.setattr(settings, "tender_sources", "https://feed.example/tenders")
+    monkeypatch.setattr(settings, "tender_sources", source)
     response = client.post("/api/tender-sources/collect", headers={"X-Role": "manager"})
     assert response.status_code == 200
     assert response.json()["errors"] == [{
@@ -1596,6 +1668,52 @@ def test_tender_collection_does_not_expose_source_exception(client, monkeypatch)
         "error_type": "RuntimeError",
     }]
     assert secret not in response.text
+    assert source_secret not in response.text
+
+    source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    with SessionLocal() as db:
+        receipt = db.scalar(
+            select(TenderSourceRun)
+            .where(TenderSourceRun.source_hash == source_hash)
+            .order_by(TenderSourceRun.id.desc())
+        )
+        assert receipt is not None
+        assert receipt.source_label == "https://feed.example/tenders"
+        assert receipt.status == "failed"
+        assert receipt.error_type == "RuntimeError"
+        assert receipt.items_seen == 0
+        assert receipt.created_count == 0
+        assert receipt.updated_count == 0
+        assert receipt.unchanged_count == 0
+        event = db.scalar(
+            select(DomainEvent).where(
+                DomainEvent.event_type == "tender.source_collection_completed",
+                DomainEvent.aggregate_type == "tender_source_run",
+                DomainEvent.aggregate_id == str(receipt.id),
+            )
+        )
+        assert event is not None
+        persisted = json.dumps(
+            {
+                "source_label": receipt.source_label,
+                "error_type": receipt.error_type,
+                "event_payload": event.payload,
+            },
+            ensure_ascii=False,
+        )
+        receipt_id = receipt.id
+
+    runs = client.get(
+        "/api/tender-sources/runs?limit=100",
+        headers={"X-Role": "manager"},
+    )
+    assert runs.status_code == 200
+    public_receipt = next(row for row in runs.json() if row["id"] == receipt_id)
+    assert public_receipt["source_label"] == "https://feed.example/tenders"
+    assert public_receipt["source_ref"] == source_hash[:32]
+    serialized = persisted + json.dumps(public_receipt, ensure_ascii=False)
+    assert secret not in serialized
+    assert source_secret not in serialized
 
 
 def test_delivery_event_suppresses_bounced_recipient(client):

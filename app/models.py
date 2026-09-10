@@ -565,6 +565,33 @@ class TenderDocument(Base):
     analyzed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class TenderSourceRun(Base):
+    __tablename__ = "tender_source_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('completed', 'failed')",
+            name="ck_tender_source_run_status",
+        ),
+        CheckConstraint(
+            "items_seen >= 0 AND created_count >= 0 AND updated_count >= 0 "
+            "AND unchanged_count >= 0",
+            name="ck_tender_source_run_counts",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_hash: Mapped[str] = mapped_column(String(64), index=True)
+    source_label: Mapped[str] = mapped_column(String(1024))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    http_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    items_seen: Mapped[int] = mapped_column(Integer, default=0)
+    created_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    unchanged_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_type: Mapped[str] = mapped_column(String(128), default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime)
+    finished_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
 class TenderAssessmentSnapshot(Base):
     """Append-only, evidence-bound tender decision passport."""
 
