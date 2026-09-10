@@ -17,6 +17,9 @@ Official sources / imports / operator
                 +-> legal/operational risk rules
                 |
                 v
+ Immutable TenderPrequalificationSnapshot
+        |
+        v
  Immutable TenderAssessmentSnapshot
                 |
                 v
@@ -42,6 +45,8 @@ agents не получают shell или право изменять production
 - `UNKNOWN -> needs_verification`; неизвестное не подменяется нулём.
 - Critical money считается `Decimal`, результаты хранятся как точные строки.
 - Snapshot связывает source, facts, document checksums, quote, policy и rules version.
+- Supplier work разрешается только полным evidence-bound prequalification snapshot
+  со статусом `eligible`; missing/UNKNOWN не проходят guard.
 - Изменение документа, quote или economics создаёт новый hash и новый approval.
 - Participation approval не разрешает submission, signing, bid или payment.
 - LLM может предложить факт, но не активирует его без evidence policy.

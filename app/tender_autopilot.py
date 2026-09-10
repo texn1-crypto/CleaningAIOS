@@ -10,7 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .models import BusinessRecord, TenderAssessmentSnapshot, TenderDocument
+from .models import (
+    BusinessRecord,
+    TenderAssessmentSnapshot,
+    TenderDocument,
+    TenderPrequalificationSnapshot,
+)
 from .schemas import (
     TenderDecisionSnapshotCreate,
     TenderEvidenceRef,
@@ -173,6 +178,15 @@ def _canonical_input(
         )
     return {
         "rules_version": RULES_VERSION,
+        **(
+            {
+                "prequalification_snapshot_hash": (
+                    payload.prequalification_snapshot_hash
+                )
+            }
+            if payload.prequalification_snapshot_hash
+            else {}
+        ),
         "source": {
             "record_id": tender.id,
             "platform": str(tender_data.get("platform") or tender.source or ""),
@@ -521,6 +535,14 @@ def build_tender_assessment(
             "not_satisfied": sum(
                 fact.status == "not_satisfied" for fact in payload.qualification_checks
             ),
+            **(
+                {
+                    "source": "immutable_prequalification_snapshot",
+                    "snapshot_hash": payload.prequalification_snapshot_hash,
+                }
+                if payload.prequalification_snapshot_hash
+                else {}
+            ),
         },
         "product_compliance": {
             "required": payload.product_compliance_required,
@@ -647,6 +669,29 @@ def persist_tender_assessment(
         .order_by(TenderDocument.id)
     ).all())
     effective_payload = payload
+    if payload.prequalification_snapshot_hash:
+        prequalification = db.scalar(
+            select(TenderPrequalificationSnapshot).where(
+                TenderPrequalificationSnapshot.record_id == tender.id,
+                TenderPrequalificationSnapshot.input_hash
+                == payload.prequalification_snapshot_hash,
+            )
+        )
+        if prequalification is None:
+            raise ValueError("Prequalification snapshot is unavailable")
+        if prequalification.status != "eligible":
+            raise ValueError(
+                "Prequalification must be eligible before supplier quote and economics"
+            )
+        submitted_checks = sorted(
+            (_fact_view(fact) for fact in payload.qualification_checks),
+            key=lambda item: item["code"],
+        )
+        stored_checks = prequalification.input_snapshot.get("checks")
+        if submitted_checks != stored_checks:
+            raise ValueError(
+                "Qualification checks do not match the cited prequalification snapshot"
+            )
     if payload.product_comparison_review_hash:
         if payload.product_compliance:
             raise ValueError(

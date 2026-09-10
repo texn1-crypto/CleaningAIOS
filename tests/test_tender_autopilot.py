@@ -12,7 +12,9 @@ from app.models import (
     DomainEvent,
     TenderAssessmentSnapshot,
     TenderDocument,
+    TenderPrequalificationSnapshot,
 )
+from app.tender_prequalification import REQUIRED_CHECKS
 
 
 MANAGER = {"X-Role": "manager"}
@@ -121,6 +123,235 @@ def _assessment_payload(specification_id: int, quote_id: int) -> dict:
         "conservative_cost_increase_percent": "15.00",
         "maximum_risk_score": 35,
     }
+
+
+def _prequalification_checks(
+    specification_id: int,
+    *,
+    overrides: dict[str, str] | None = None,
+) -> list[dict]:
+    statuses = overrides or {}
+    return [
+        {
+            "code": code,
+            "description": description,
+            "status": statuses.get(code, "satisfied"),
+            "evidence": [
+                {
+                    "document_id": specification_id,
+                    "document_checksum": "a" * 64,
+                    "locator": f"prequalification:{code}",
+                    "excerpt": f"Evidence for {code}",
+                }
+            ],
+        }
+        for code, description in REQUIRED_CHECKS.items()
+    ]
+
+
+def test_prequalification_snapshot_is_fail_closed_idempotent_and_binds_decision(
+    client,
+):
+    tender_id, specification_id, quote_id = _create_tender_with_evidence(
+        client,
+        "prequalification-ready",
+    )
+    checks = _prequalification_checks(specification_id)
+
+    forbidden = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers={"X-Role": "operator"},
+        json={"checks": checks},
+    )
+    assert forbidden.status_code == 403
+
+    first = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": checks},
+    )
+    assert first.status_code == 201
+    snapshot = first.json()
+    assert snapshot["created"] is True
+    assert snapshot["status"] == "eligible"
+    assert len(snapshot["checks"]) == len(REQUIRED_CHECKS)
+    assert snapshot["result"]["supplier_discovery_allowed"] is True
+    assert snapshot["result"]["hard_stops"] == []
+    assert snapshot["result"]["verification_gaps"] == []
+
+    replay = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": checks},
+    )
+    assert replay.status_code == 201
+    assert replay.json()["created"] is False
+    assert replay.json()["id"] == snapshot["id"]
+
+    listed = client.get(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers={"X-Role": "viewer"},
+    )
+    assert listed.status_code == 200
+    assert [row["id"] for row in listed.json()] == [snapshot["id"]]
+
+    decision_payload = _assessment_payload(specification_id, quote_id)
+    decision_payload["qualification_checks"] = checks
+    decision_payload["prequalification_snapshot_hash"] = snapshot["input_hash"]
+    decision = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=decision_payload,
+    )
+    assert decision.status_code == 201
+    assert decision.json()["result"]["qualification"] == {
+        "total": len(REQUIRED_CHECKS),
+        "satisfied": len(REQUIRED_CHECKS),
+        "unknown": 0,
+        "not_satisfied": 0,
+        "source": "immutable_prequalification_snapshot",
+        "snapshot_hash": snapshot["input_hash"],
+    }
+
+    mismatched = deepcopy(decision_payload)
+    mismatched["qualification_checks"][0]["description"] = "Changed assertion"
+    mismatch_response = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=mismatched,
+    )
+    assert mismatch_response.status_code == 422
+    assert "do not match" in mismatch_response.json()["detail"]
+
+    unavailable = deepcopy(decision_payload)
+    unavailable["prequalification_snapshot_hash"] = "f" * 64
+    unavailable_response = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=unavailable,
+    )
+    assert unavailable_response.status_code == 422
+    assert "is unavailable" in unavailable_response.json()["detail"]
+
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(func.count()).select_from(TenderPrequalificationSnapshot)
+        ) == 1
+        assert db.scalar(
+            select(func.count()).select_from(DomainEvent).where(
+                DomainEvent.event_type == "tender.prequalification_evaluated"
+            )
+        ) == 1
+
+
+def test_prequalification_explains_hard_stops_and_rejects_invalid_evidence(client):
+    tender_id, specification_id, quote_id = _create_tender_with_evidence(
+        client,
+        "prequalification-blocked",
+    )
+    missing = _prequalification_checks(specification_id)[:-1]
+    incomplete = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": missing},
+    )
+    assert incomplete.status_code == 201
+    assert incomplete.json()["status"] == "needs_verification"
+    assert incomplete.json()["result"]["supplier_discovery_allowed"] is False
+    assert incomplete.json()["result"]["missing_check_codes"] == [
+        "conflict_of_interest"
+    ]
+
+    unknown_checks = _prequalification_checks(
+        specification_id,
+        overrides={"required_license": "unknown"},
+    )
+    unknown = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": unknown_checks},
+    )
+    assert unknown.status_code == 201
+    assert unknown.json()["status"] == "needs_verification"
+    assert unknown.json()["result"]["unknown_check_codes"] == [
+        "required_license"
+    ]
+
+    unsupported_checks = _prequalification_checks(specification_id)
+    unsupported_checks.append(
+        {
+            "code": "invented_constraint",
+            "description": "Unregistered constraint",
+            "status": "satisfied",
+            "evidence": [],
+        }
+    )
+    unsupported = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": unsupported_checks},
+    )
+    assert unsupported.status_code == 422
+    assert "Unsupported prequalification codes" in unsupported.json()["detail"]
+
+    failed_checks = _prequalification_checks(
+        specification_id,
+        overrides={"conflict_of_interest": "not_satisfied"},
+    )
+    failed = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": failed_checks},
+    )
+    assert failed.status_code == 201
+    failed_snapshot = failed.json()
+    assert failed_snapshot["status"] == "ineligible"
+    assert failed_snapshot["result"]["hard_stops"] == [
+        "qualification:conflict_of_interest:not_satisfied"
+    ]
+    assert failed_snapshot["result"]["explainable_reasons"] == [
+        {
+            "code": "conflict_of_interest",
+            "description": REQUIRED_CHECKS["conflict_of_interest"],
+            "evidence_document_ids": [specification_id],
+        }
+    ]
+
+    decision_payload = _assessment_payload(specification_id, quote_id)
+    decision_payload["qualification_checks"] = failed_checks
+    decision_payload["prequalification_snapshot_hash"] = failed_snapshot[
+        "input_hash"
+    ]
+    blocked = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=decision_payload,
+    )
+    assert blocked.status_code == 422
+    assert "must be eligible" in blocked.json()["detail"]
+
+    wrong_checksum = _prequalification_checks(specification_id)
+    wrong_checksum[0]["evidence"][0]["document_checksum"] = "c" * 64
+    invalid = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": wrong_checksum},
+    )
+    assert invalid.status_code == 422
+    assert "Checksum mismatch" in invalid.json()["detail"]
+
+    _, other_specification_id, _ = _create_tender_with_evidence(
+        client,
+        "prequalification-other-tender",
+    )
+    cross_tender = _prequalification_checks(other_specification_id)
+    cross_tender_response = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": cross_tender},
+    )
+    assert cross_tender_response.status_code == 422
+    assert "does not belong" in cross_tender_response.json()["detail"]
 
 
 def test_tender_decision_snapshot_is_decimal_evidence_bound_and_idempotent(client):

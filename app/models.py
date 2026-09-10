@@ -592,6 +592,36 @@ class TenderSourceRun(Base):
     finished_at: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 
+class TenderPrequalificationSnapshot(Base):
+    """Append-only, evidence-bound fast-disqualification result."""
+
+    __tablename__ = "tender_prequalification_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "record_id",
+            "input_hash",
+            name="uq_tender_prequalification_input",
+        ),
+        CheckConstraint(
+            "status IN ('needs_verification', 'ineligible', 'eligible')",
+            name="ck_tender_prequalification_status",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    record_id: Mapped[int] = mapped_column(
+        ForeignKey("business_records.id", ondelete="RESTRICT"), index=True
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), index=True)
+    rules_version: Mapped[str] = mapped_column(
+        String(64), default="tender-prequalification-v1"
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    result_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_by: Mapped[str] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class TenderAssessmentSnapshot(Base):
     """Append-only, evidence-bound tender decision passport."""
 

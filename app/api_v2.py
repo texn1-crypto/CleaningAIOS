@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderSourceRun
+from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderPrequalificationSnapshot, TenderSourceRun
 from .integrations import collect_tenders, download_tender_document, tender_source_freshness
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -25,7 +25,7 @@ from .reports import build_ceo_brief
 from .orchestrator import audit, dispatch
 from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, validate_attachments, verified_recipients
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest, TenderProductComparisonReviewCreate, TenderProductSpecificationReviewCreate
+from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest, TenderPrequalificationCreate, TenderProductComparisonReviewCreate, TenderProductSpecificationReviewCreate
 from .security import Principal, principal, require_role
 from .chat import redact_sensitive_text
 from .approval_service import (
@@ -62,6 +62,10 @@ from .tender_autopilot import (
     EvidenceBindingError,
     persist_tender_assessment,
     tender_assessment_view,
+)
+from .tender_prequalification import (
+    persist_tender_prequalification,
+    tender_prequalification_view,
 )
 from .tender_document_intelligence import (
     TenderDocumentExtractionError,
@@ -945,6 +949,91 @@ def evaluate_tender(
         "participation_review_task_id": participation_task.id if participation_task else None,
         "participation_review_task_status": participation_task.status if participation_task else None,
     }
+
+
+@router.get("/tenders/{record_id}/prequalification-snapshots")
+def list_tender_prequalification_snapshots(
+    record_id: int,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "viewer")
+    tender = db.get(BusinessRecord, record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(404, "Tender not found")
+    rows = db.scalars(
+        select(TenderPrequalificationSnapshot)
+        .where(TenderPrequalificationSnapshot.record_id == record_id)
+        .order_by(TenderPrequalificationSnapshot.id.desc())
+    ).all()
+    return [tender_prequalification_view(row) for row in rows]
+
+
+@router.post(
+    "/tenders/{record_id}/prequalification-snapshots",
+    status_code=201,
+)
+def create_tender_prequalification_snapshot(
+    record_id: int,
+    payload: TenderPrequalificationCreate,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    tender = db.get(BusinessRecord, record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(404, "Tender not found")
+    if tender.status in TERMINAL_TENDER_STATUSES:
+        raise HTTPException(409, f"Tender is in terminal status: {tender.status}")
+    try:
+        snapshot, created = persist_tender_prequalification(
+            db,
+            tender,
+            payload,
+            actor=actor.subject,
+        )
+    except (EvidenceBindingError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    result = snapshot.result_snapshot
+    tender.data = {
+        **(tender.data or {}),
+        "latest_prequalification_snapshot_id": snapshot.id,
+        "latest_prequalification_snapshot_hash": snapshot.input_hash,
+        "latest_prequalification_status": snapshot.status,
+    }
+    event_bus.publish(
+        db,
+        "tender.prequalification_evaluated",
+        "tender",
+        str(record_id),
+        {
+            "snapshot_id": snapshot.id,
+            "input_hash": snapshot.input_hash,
+            "status": snapshot.status,
+            "hard_stops": result["hard_stops"],
+            "verification_gaps": result["verification_gaps"],
+            "supplier_discovery_allowed": result["supplier_discovery_allowed"],
+            "created": created,
+        },
+        idempotency_key=f"tender-prequalification:{record_id}:{snapshot.input_hash}",
+        actor=actor.subject,
+    )
+    audit(
+        db,
+        actor.subject,
+        "tender.prequalification_evaluated",
+        "tender_prequalification_snapshot",
+        str(snapshot.id),
+        {
+            "tender_id": record_id,
+            "input_hash": snapshot.input_hash,
+            "status": snapshot.status,
+            "created": created,
+        },
+    )
+    db.commit()
+    return {**tender_prequalification_view(snapshot), "created": created}
 
 
 @router.get("/tenders/{record_id}/decision-snapshots")

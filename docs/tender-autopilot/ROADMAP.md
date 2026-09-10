@@ -3,9 +3,10 @@
 Каждая фаза поставляется маленькими vertical slices и получает production flag
 только после тестов, observability и runbook.
 
-1. **Decision foundation — in progress.** Immutable decision snapshot, Decimal
-   economics, evidence binding, approval card. Далее: move legacy evaluator to the
-   same engine and introduce conflict/freshness records.
+1. **Decision foundation — in progress.** Immutable fast-prequalification and
+   decision snapshots, Decimal economics, evidence binding, approval card. Далее:
+   connect Company Digital Twin evidence, move legacy evaluator to the same engine
+   and introduce conflict records.
 2. **Discovery/normalization — in progress.** Generic HTTP(S) JSON items now have
    canonical append-only observed versions, provider-scoped external identity and
    replay idempotency plus durable per-source attempt receipts and deterministic

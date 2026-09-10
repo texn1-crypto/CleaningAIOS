@@ -17,6 +17,10 @@
 - `TenderSourceRun` — final receipt каждой настроенной попытки collection: безопасная
   метка и hash источника, timing, HTTP status, outcome counters и bounded error type.
   Raw exception, query/userinfo и provider secret в публичный контракт не входят.
+- `TenderPrequalificationSnapshot` — append-only результат FAST DISQUALIFICATION:
+  фиксированная taxonomy hard constraints, exact evidence checksums, explainable
+  hard stops, verification gaps, rules version и actor. Только `eligible` snapshot
+  разрешает переход к supplier discovery; сам snapshot не запускает внешние действия.
 - `TenderAssessmentSnapshot` — append-only паспорт решения: canonical inputs,
   exact hashes, rules version, result и actor. Внутри snapshot хранится
   evidence-bound product compliance matrix; confidence остаётся только

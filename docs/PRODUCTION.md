@@ -101,6 +101,16 @@ status. System Admin treats `unobserved`, `never_succeeded`, `latest_failed` and
 closes the incident. The view and alert strip URL query, userinfo and fragment and
 never contain the raw provider exception.
 
+Before supplier discovery, managers can persist an evidence-bound FAST
+DISQUALIFICATION result with
+`POST /api/tenders/{record_id}/prequalification-snapshots` and inspect history with
+the corresponding `GET` endpoint. Only a complete 14-check snapshot can become
+`eligible`; missing, UNKNOWN, unsupported or known-but-unproven facts fail closed.
+The snapshot is immutable in PostgreSQL and emits audit/outbox evidence. A decision
+snapshot may cite its exact hash; the API rejects another tender, a non-eligible
+snapshot or changed qualification checks. This does not contact suppliers or send
+RFQ messages.
+
 `PERPLEXITY_API_KEY` enables the research-grounded agent coach used by Meta Brain.
 Only aggregate agent telemetry and measured outcome counts are sent. Perplexity may
 return review recommendations, but cannot call application tools, see credentials,
