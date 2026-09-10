@@ -398,6 +398,7 @@ def test_telegram_runtime_uses_polling_not_an_unverified_webhook():
     assert "run_polling" in source
     assert "run_webhook" not in source
     assert "drop_pending_updates=True" in source
+    assert "close_loop=False" in source
 
 
 def test_telegram_startup_retries_transient_network_failure(monkeypatch):
@@ -408,13 +409,20 @@ def test_telegram_startup_retries_transient_network_failure(monkeypatch):
     outcomes = [TimedOut("temporary timeout"), None]
     applications = []
     sleeps = []
+    loop_state = {"closed": False}
 
     class FakeApplication:
-        def run_polling(self, *, drop_pending_updates):
+        def run_polling(self, *, drop_pending_updates, close_loop=True):
             assert drop_pending_updates is True
-            outcome = outcomes.pop(0)
-            if outcome is not None:
-                raise outcome
+            if loop_state["closed"]:
+                raise RuntimeError("Event loop is closed")
+            try:
+                outcome = outcomes.pop(0)
+                if outcome is not None:
+                    raise outcome
+            finally:
+                if close_loop:
+                    loop_state["closed"] = True
 
     def build():
         application = FakeApplication()
@@ -430,6 +438,7 @@ def test_telegram_startup_retries_transient_network_failure(monkeypatch):
 
     assert len(applications) == 2
     assert sleeps == [2.0]
+    assert loop_state == {"closed": False}
 
 
 def test_telegram_startup_retry_is_bounded(monkeypatch):
@@ -442,7 +451,8 @@ def test_telegram_startup_retry_is_bounded(monkeypatch):
     sleeps = []
 
     class FailingApplication:
-        def run_polling(self, *, drop_pending_updates):
+        def run_polling(self, *, drop_pending_updates, close_loop):
+            assert close_loop is False
             attempts.append(drop_pending_updates)
             raise TimedOut("temporary timeout")
 
@@ -464,7 +474,8 @@ def test_telegram_startup_does_not_retry_programming_errors(monkeypatch):
     from app import bot
 
     class InvalidApplication:
-        def run_polling(self, *, drop_pending_updates):
+        def run_polling(self, *, drop_pending_updates, close_loop):
+            assert close_loop is False
             raise RuntimeError("invalid configuration")
 
     monkeypatch.setattr(bot, "build_application", InvalidApplication)

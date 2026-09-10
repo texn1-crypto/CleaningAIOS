@@ -2089,7 +2089,14 @@ def run_polling_with_startup_retry() -> None:
     retry_seconds = max(0.0, settings.telegram_startup_retry_seconds)
     for attempt in range(1, max_attempts + 1):
         try:
-            build_application().run_polling(drop_pending_updates=True)
+            # ``run_polling`` closes the current event loop by default, including
+            # when initialization raises a transient NetworkError.  The next
+            # bounded retry runs in this same process, so it must keep that loop
+            # alive.  Process shutdown still releases it normally.
+            build_application().run_polling(
+                drop_pending_updates=True,
+                close_loop=False,
+            )
             return
         except NetworkError as exc:
             if attempt >= max_attempts:
