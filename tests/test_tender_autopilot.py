@@ -753,6 +753,128 @@ def test_product_comparison_draft_is_review_bound_persisted_and_idempotent(
     repeated = client.post(endpoint, headers=MANAGER).json()
     assert repeated == {**result, "created": False}
 
+    review_endpoint = f"/api/tenders/{tender['id']}/product-comparison/reviews"
+    forbidden_review = client.post(
+        review_endpoint,
+        headers={"X-Role": "operator"},
+        json={
+            "draft_hash": result["draft_hash"],
+            "decisions": [
+                {
+                    "candidate_hash": "0" * 64,
+                    "match_status": "unknown",
+                    "reason": "Недостаточно данных",
+                }
+            ],
+        },
+    )
+    assert forbidden_review.status_code == 403
+
+    decisions = []
+    for comparison in result["comparisons"]:
+        signal = comparison["comparison_signal"]
+        decisions.append(
+            {
+                "candidate_hash": comparison["candidate_hash"],
+                "match_status": (
+                    "match"
+                    if signal == "exact"
+                    else "mismatch"
+                    if signal == "different"
+                    else "unknown"
+                ),
+                "reason": (
+                    "Значения отличаются"
+                    if signal == "different"
+                    else "Недостаточно сопоставимых данных"
+                    if signal in {"missing_required", "missing_offered", "ambiguous"}
+                    else ""
+                ),
+            }
+        )
+
+    incomplete = client.post(
+        review_endpoint,
+        headers=MANAGER,
+        json={"draft_hash": result["draft_hash"], "decisions": decisions[:-1]},
+    )
+    assert incomplete.status_code == 422
+    assert incomplete.json()["detail"] == (
+        "Product comparison review must cover the exact candidate set"
+    )
+
+    unsafe_decisions = [dict(decision) for decision in decisions]
+    unsafe = next(
+        decision
+        for decision in unsafe_decisions
+        if decision["match_status"] == "unknown"
+    )
+    unsafe["match_status"] = "match"
+    unsafe["reason"] = ""
+    fail_closed = client.post(
+        review_endpoint,
+        headers=MANAGER,
+        json={"draft_hash": result["draft_hash"], "decisions": unsafe_decisions},
+    )
+    assert fail_closed.status_code == 422
+    assert fail_closed.json()["detail"] == (
+        "Incomplete or ambiguous comparison evidence must remain unknown"
+    )
+
+    reviewed = client.post(
+        review_endpoint,
+        headers=MANAGER,
+        json={"draft_hash": result["draft_hash"], "decisions": decisions},
+    )
+    assert reviewed.status_code == 200
+    review = reviewed.json()
+    assert review["created"] is True
+    assert review["status"] == "needs_verification"
+    assert review["product_match"] == "rejected"
+    assert review["match_status_counts"] == {
+        "match": 1,
+        "mismatch": 1,
+        "unknown": 1,
+    }
+    assert review["draft_hash"] == result["draft_hash"]
+    assert review["automatic_eligibility_allowed"] is False
+    assert review["automatic_participation_allowed"] is False
+    assert review["automatic_submission_allowed"] is False
+
+    repeated_review = client.post(
+        review_endpoint,
+        headers=MANAGER,
+        json={"draft_hash": result["draft_hash"], "decisions": decisions},
+    ).json()
+    assert repeated_review == {**review, "created": False}
+
+    with SessionLocal() as db:
+        persisted = db.get(BusinessRecord, tender["id"])
+        assert persisted is not None
+        original_data = deepcopy(persisted.data)
+        tampered_data = deepcopy(original_data)
+        tampered_data["product_comparison_drafts"][0]["comparisons"][0][
+            "parameter"
+        ] = "Подменённый параметр"
+        persisted.data = tampered_data
+        db.commit()
+
+    tampered_draft = client.post(
+        review_endpoint,
+        headers=MANAGER,
+        json={"draft_hash": result["draft_hash"], "decisions": decisions},
+    )
+    assert tampered_draft.status_code == 422
+    assert tampered_draft.json()["detail"] == (
+        "Product comparison draft integrity check failed"
+    )
+
+    with SessionLocal() as db:
+        persisted = db.get(BusinessRecord, tender["id"])
+        assert persisted is not None
+        persisted.data = original_data
+        db.commit()
+
     with SessionLocal() as db:
         persisted = db.get(BusinessRecord, tender["id"])
         assert persisted is not None
@@ -763,6 +885,14 @@ def test_product_comparison_draft_is_review_bound_persisted_and_idempotent(
         assert persisted.data["product_comparison_drafts"] == [
             {key: value for key, value in result.items() if key != "created"}
         ]
+        assert persisted.data["latest_product_comparison_review_hash"] == review[
+            "review_hash"
+        ]
+        assert persisted.data["product_comparison_status"] == "needs_verification"
+        assert persisted.data["product_match"] == "rejected"
+        assert persisted.data["product_comparison_reviews"] == [
+            {key: value for key, value in review.items() if key != "created"}
+        ]
         assert db.scalar(
             select(func.count())
             .select_from(DomainEvent)
@@ -772,6 +902,35 @@ def test_product_comparison_draft_is_review_bound_persisted_and_idempotent(
                 DomainEvent.aggregate_id == str(tender["id"]),
             )
         ) == 1
+        assert db.scalar(
+            select(func.count())
+            .select_from(DomainEvent)
+            .where(
+                DomainEvent.event_type == "tender.product_comparison_reviewed",
+                DomainEvent.aggregate_id == str(tender["id"]),
+            )
+        ) == 1
+
+        offered_document = db.get(TenderDocument, document_ids["offered_product"])
+        assert offered_document is not None
+        offered_document.analysis = {
+            **offered_document.analysis,
+            "product_specification_review": {
+                **offered_document.analysis["product_specification_review"],
+                "review_hash": "0" * 64,
+            },
+        }
+        db.commit()
+
+    stale_binding = client.post(
+        review_endpoint,
+        headers=MANAGER,
+        json={"draft_hash": result["draft_hash"], "decisions": decisions},
+    )
+    assert stale_binding.status_code == 422
+    assert stale_binding.json()["detail"] == (
+        "Product comparison source binding is stale"
+    )
 
 
 def test_expired_supplier_quote_cannot_become_ready(client):

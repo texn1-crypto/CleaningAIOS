@@ -285,6 +285,20 @@ class TenderProductSpecificationReviewCreate(BaseModel):
     )
 
 
+class TenderProductComparisonReviewDecision(BaseModel):
+    candidate_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    match_status: str = Field(pattern="^(match|mismatch|unknown)$")
+    reason: str = Field(default="", max_length=1000)
+
+
+class TenderProductComparisonReviewCreate(BaseModel):
+    draft_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    decisions: list[TenderProductComparisonReviewDecision] = Field(
+        min_length=1,
+        max_length=500,
+    )
+
+
 class TenderSupplierQuoteInput(BaseModel):
     supplier_name: str = Field(min_length=2, max_length=255)
     quote_reference: str = Field(min_length=1, max_length=255)

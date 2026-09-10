@@ -2689,7 +2689,7 @@
         "docs/tender-autopilot/README.md",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The decision pipeline includes an assumption-bound auction forecast, evidence-bound product matching, fail-closed local parameter extraction, exact manager review, and a persisted checksum/review-hash-bound cross-document comparison draft. Supplier discovery/quote acquisition and manager-confirmed comparison-to-snapshot remain incomplete."
+      "notes": "The decision pipeline includes an assumption-bound auction forecast, evidence-bound product matching, fail-closed local parameter extraction, exact manager review, a persisted checksum/review-hash-bound cross-document comparison draft and an exact-set manager comparison review. Supplier discovery/quote acquisition and automatic review-to-snapshot conversion remain incomplete."
     },
     {
       "id": 298,
@@ -2841,7 +2841,7 @@
         "app/api_v2.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review and cross-document comparison draft history are persisted; real tender/provider adapters, supplier acquisition, manager-confirmed comparison decisions, broader document controls and A4 E2E remain incomplete."
+      "notes": "Auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review, cross-document comparison drafts and draft-hash-bound comparison decisions are persisted; real tender/provider adapters, supplier acquisition, automatic review-to-snapshot conversion, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2883,7 +2883,7 @@
         "app/api_v2.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Fixture-to-approval-card path includes deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review and a persisted evidence-bound cross-document comparison draft. Real provider ingest, manager-confirmed comparison-to-snapshot and supplier quote acquisition remain open."
+      "notes": "Fixture-to-approval-card path includes deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review, a persisted evidence-bound cross-document comparison draft and draft-hash-bound manager decisions. Real provider ingest, automatic comparison-review-to-snapshot conversion and supplier quote acquisition remain open."
     },
     {
       "id": 318,

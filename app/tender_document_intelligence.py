@@ -18,6 +18,7 @@ from .models import BusinessRecord, TenderDocument
 EXTRACTOR_VERSION = "tender-requirements-v1"
 PRODUCT_SPEC_EXTRACTOR_VERSION = "tender-product-specification-v2"
 PRODUCT_COMPARISON_VERSION = "tender-product-comparison-v1"
+PRODUCT_COMPARISON_REVIEW_VERSION = "tender-product-comparison-review-v1"
 SUPPORTED_SUFFIXES = {".docx", ".md", ".pdf", ".txt"}
 MAX_SEGMENTS = 20_000
 MAX_CANDIDATES = 500
@@ -713,6 +714,198 @@ def build_product_comparison_draft(
         "product_comparison_drafts": history,
         "latest_product_comparison_draft_hash": draft_hash,
         "product_comparison_status": "needs_verification",
+    }
+    return result, True
+
+
+def review_product_comparison_draft(
+    tender: BusinessRecord,
+    documents: list[TenderDocument],
+    *,
+    draft_hash: str,
+    decisions: list[dict[str, Any]],
+    reviewed_by: str,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Persist an exact-set manager review bound to the latest comparison draft."""
+
+    tender_data = tender.data if isinstance(tender.data, dict) else {}
+    if tender_data.get("latest_product_comparison_draft_hash") != draft_hash:
+        raise TenderDocumentReviewError("Product comparison draft is stale")
+    draft_history = tender_data.get("product_comparison_drafts")
+    if not isinstance(draft_history, list):
+        raise TenderDocumentReviewError("Product comparison draft is unavailable")
+    draft = next(
+        (
+            item
+            for item in draft_history
+            if isinstance(item, dict) and item.get("draft_hash") == draft_hash
+        ),
+        None,
+    )
+    if draft is None or draft.get("version") != PRODUCT_COMPARISON_VERSION:
+        raise TenderDocumentReviewError("Product comparison draft is unavailable")
+
+    source_bindings = draft.get("source_bindings")
+    if not isinstance(source_bindings, list) or not source_bindings:
+        raise TenderDocumentReviewError("Product comparison source bindings are unavailable")
+    comparisons = draft.get("comparisons")
+    if not isinstance(comparisons, list) or not comparisons:
+        raise TenderDocumentReviewError("Product comparison candidates are unavailable")
+    draft_canonical = {
+        "version": PRODUCT_COMPARISON_VERSION,
+        "tender_id": tender.id,
+        "source_bindings": source_bindings,
+        "comparisons": comparisons,
+    }
+    expected_draft_hash = hashlib.sha256(
+        json.dumps(
+            draft_canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if draft.get("tender_id") != tender.id or expected_draft_hash != draft_hash:
+        raise TenderDocumentReviewError("Product comparison draft integrity check failed")
+
+    document_map = {document.id: document for document in documents}
+    for binding in source_bindings:
+        if not isinstance(binding, dict):
+            raise TenderDocumentReviewError("Product comparison source binding is invalid")
+        document = document_map.get(binding.get("document_id"))
+        review = (
+            document.analysis.get("product_specification_review")
+            if document is not None and isinstance(document.analysis, dict)
+            else None
+        )
+        if (
+            document is None
+            or str(document.checksum or "").lower()
+            != str(binding.get("document_checksum") or "").lower()
+            or not isinstance(review, dict)
+            or review.get("review_hash") != binding.get("review_hash")
+        ):
+            raise TenderDocumentReviewError("Product comparison source binding is stale")
+
+    candidate_map = {
+        str(candidate.get("candidate_hash")): candidate
+        for candidate in comparisons
+        if isinstance(candidate, dict) and candidate.get("candidate_hash")
+    }
+    if len(candidate_map) != len(comparisons):
+        raise TenderDocumentReviewError("Product comparison candidate identity is invalid")
+    submitted_hashes = [str(decision.get("candidate_hash") or "") for decision in decisions]
+    if len(submitted_hashes) != len(set(submitted_hashes)):
+        raise TenderDocumentReviewError("Product comparison review has duplicate decisions")
+    if set(submitted_hashes) != set(candidate_map):
+        raise TenderDocumentReviewError(
+            "Product comparison review must cover the exact candidate set"
+        )
+
+    canonical_decisions: list[dict[str, Any]] = []
+    reviewed_comparisons: list[dict[str, Any]] = []
+    for decision in sorted(decisions, key=lambda item: str(item["candidate_hash"])):
+        candidate_hash = str(decision["candidate_hash"])
+        candidate = candidate_map[candidate_hash]
+        match_status = str(decision.get("match_status") or "")
+        reason = str(decision.get("reason") or "").strip()
+        signal = str(candidate.get("comparison_signal") or "")
+        if match_status not in {"match", "mismatch", "unknown"}:
+            raise TenderDocumentReviewError("Product comparison decision is unsupported")
+        if signal not in {
+            "exact",
+            "different",
+            "missing_required",
+            "missing_offered",
+            "ambiguous",
+        }:
+            raise TenderDocumentReviewError("Product comparison signal is unsupported")
+        if signal in {"missing_required", "missing_offered", "ambiguous"} and match_status != "unknown":
+            raise TenderDocumentReviewError(
+                "Incomplete or ambiguous comparison evidence must remain unknown"
+            )
+        if match_status in {"mismatch", "unknown"} and not reason:
+            raise TenderDocumentReviewError(
+                "Mismatch and unknown product comparison decisions require a reason"
+            )
+        canonical_decisions.append(
+            {
+                "candidate_hash": candidate_hash,
+                "match_status": match_status,
+                "reason": reason,
+            }
+        )
+        reviewed_comparisons.append(
+            {
+                **candidate,
+                "match_status": match_status,
+                "verification_status": (
+                    "verified" if match_status in {"match", "mismatch"} else "needs_verification"
+                ),
+                "manager_reason": reason,
+                "data_class": "verified" if match_status != "unknown" else "calculated",
+            }
+        )
+
+    canonical = {
+        "version": PRODUCT_COMPARISON_REVIEW_VERSION,
+        "tender_id": tender.id,
+        "draft_hash": draft_hash,
+        "decisions": canonical_decisions,
+    }
+    review_hash = hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    existing_reviews = tender_data.get("product_comparison_reviews")
+    review_history = list(existing_reviews) if isinstance(existing_reviews, list) else []
+    for existing in review_history:
+        if isinstance(existing, dict) and existing.get("review_hash") == review_hash:
+            return existing, False
+
+    status_counts = {
+        status: sum(item["match_status"] == status for item in reviewed_comparisons)
+        for status in ("match", "mismatch", "unknown")
+    }
+    review_status = "needs_verification" if status_counts["unknown"] else "reviewed"
+    product_match = (
+        "rejected"
+        if status_counts["mismatch"]
+        else "unverified"
+        if status_counts["unknown"]
+        else "verified"
+    )
+    reviewed_at = now or datetime.now(timezone.utc)
+    if reviewed_at.tzinfo is None:
+        reviewed_at = reviewed_at.replace(tzinfo=timezone.utc)
+    else:
+        reviewed_at = reviewed_at.astimezone(timezone.utc)
+    result: dict[str, Any] = {
+        **canonical,
+        "review_hash": review_hash,
+        "status": review_status,
+        "product_match": product_match,
+        "comparison_count": len(reviewed_comparisons),
+        "match_status_counts": status_counts,
+        "comparisons": reviewed_comparisons,
+        "reviewed_by": reviewed_by,
+        "reviewed_at": reviewed_at.isoformat(),
+        "automatic_eligibility_allowed": False,
+        "automatic_participation_allowed": False,
+        "automatic_submission_allowed": False,
+    }
+    review_history.append(result)
+    tender.data = {
+        **tender_data,
+        "product_comparison_reviews": review_history,
+        "latest_product_comparison_review_hash": review_hash,
+        "product_comparison_status": review_status,
+        "product_match": product_match,
     }
     return result, True
 

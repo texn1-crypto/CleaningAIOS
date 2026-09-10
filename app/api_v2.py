@@ -25,7 +25,7 @@ from .reports import build_ceo_brief
 from .orchestrator import audit, dispatch
 from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, validate_attachments, verified_recipients
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest, TenderProductSpecificationReviewCreate
+from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest, TenderProductComparisonReviewCreate, TenderProductSpecificationReviewCreate
 from .security import Principal, principal, require_role
 from .chat import redact_sensitive_text
 from .approval_service import (
@@ -69,6 +69,7 @@ from .tender_document_intelligence import (
     build_product_comparison_draft,
     extract_product_specification_candidates,
     extract_requirement_candidates,
+    review_product_comparison_draft,
     review_product_specification_candidates,
 )
 from .tender_requirements import (
@@ -1315,6 +1316,69 @@ def create_tender_product_comparison_draft(
             "status": result["status"],
             "comparison_count": result["comparison_count"],
             "paired_count": result["paired_count"],
+            "created": created,
+        },
+    )
+    db.commit()
+    return {**result, "created": created}
+
+
+@router.post("/tenders/{record_id}/product-comparison/reviews")
+def review_tender_product_comparison(
+    record_id: int,
+    payload: TenderProductComparisonReviewCreate,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    tender = db.get(BusinessRecord, record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(404, "Tender not found")
+    documents = list(
+        db.scalars(
+            select(TenderDocument)
+            .where(TenderDocument.record_id == record_id)
+            .order_by(TenderDocument.id)
+        ).all()
+    )
+    try:
+        result, created = review_product_comparison_draft(
+            tender,
+            documents,
+            draft_hash=payload.draft_hash,
+            decisions=[decision.model_dump() for decision in payload.decisions],
+            reviewed_by=actor.subject,
+        )
+    except TenderDocumentReviewError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event_bus.publish(
+        db,
+        "tender.product_comparison_reviewed",
+        "tender",
+        str(record_id),
+        {
+            "draft_hash": result["draft_hash"],
+            "review_hash": result["review_hash"],
+            "status": result["status"],
+            "product_match": result["product_match"],
+            "comparison_count": result["comparison_count"],
+            "created": created,
+        },
+        idempotency_key=f"tender-product-comparison-review:{record_id}:{result['review_hash']}",
+        actor=actor.subject,
+    )
+    audit(
+        db,
+        actor.subject,
+        "tender.product_comparison_reviewed",
+        "tender",
+        str(record_id),
+        {
+            "draft_hash": result["draft_hash"],
+            "review_hash": result["review_hash"],
+            "status": result["status"],
+            "product_match": result["product_match"],
+            "match_status_counts": result["match_status_counts"],
             "created": created,
         },
     )
