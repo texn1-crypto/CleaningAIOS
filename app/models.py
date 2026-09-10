@@ -636,21 +636,27 @@ class TenderSupplierQuoteSnapshot(Base):
             "status IN ('needs_verification', 'rejected', 'verified')",
             name="ck_tender_supplier_quote_status",
         ),
+        Index(
+            "ix_tender_supplier_quote_prequalification",
+            "prequalification_snapshot_hash",
+        ),
+        Index(
+            "ix_tender_supplier_quote_supplier_identifier",
+            "supplier_identifier",
+        ),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     record_id: Mapped[int] = mapped_column(
         ForeignKey("business_records.id", ondelete="RESTRICT"), index=True
     )
     input_hash: Mapped[str] = mapped_column(String(64), index=True)
-    prequalification_snapshot_hash: Mapped[str] = mapped_column(
-        String(64), index=True
-    )
+    prequalification_snapshot_hash: Mapped[str] = mapped_column(String(64))
     rules_version: Mapped[str] = mapped_column(
         String(64), default="tender-supplier-quote-v1"
     )
     status: Mapped[str] = mapped_column(String(32), index=True)
     supplier_name: Mapped[str] = mapped_column(String(255), index=True)
-    supplier_identifier: Mapped[str] = mapped_column(String(64), index=True)
+    supplier_identifier: Mapped[str] = mapped_column(String(64))
     quote_reference: Mapped[str] = mapped_column(String(255), index=True)
     quoted_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     valid_until: Mapped[datetime] = mapped_column(DateTime, index=True)
