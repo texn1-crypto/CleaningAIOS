@@ -66,6 +66,7 @@ from .tender_autopilot import (
 from .tender_document_intelligence import (
     TenderDocumentExtractionError,
     TenderDocumentReviewError,
+    build_product_comparison_draft,
     extract_product_specification_candidates,
     extract_requirement_candidates,
     review_product_specification_candidates,
@@ -1256,6 +1257,64 @@ def review_document_product_specification(
             "review_hash": result["review_hash"],
             "accepted_count": result["accepted_count"],
             "rejected_count": result["rejected_count"],
+            "created": created,
+        },
+    )
+    db.commit()
+    return {**result, "created": created}
+
+
+@router.post("/tenders/{record_id}/product-comparison/drafts")
+def create_tender_product_comparison_draft(
+    record_id: int,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    tender = db.get(BusinessRecord, record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(404, "Tender not found")
+    documents = list(
+        db.scalars(
+            select(TenderDocument)
+            .where(TenderDocument.record_id == record_id)
+            .order_by(TenderDocument.id)
+        ).all()
+    )
+    try:
+        result, created = build_product_comparison_draft(
+            tender,
+            documents,
+            actor=actor.subject,
+        )
+    except TenderDocumentReviewError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event_bus.publish(
+        db,
+        "tender.product_comparison_draft_created",
+        "tender",
+        str(record_id),
+        {
+            "draft_hash": result["draft_hash"],
+            "status": result["status"],
+            "comparison_count": result["comparison_count"],
+            "paired_count": result["paired_count"],
+            "created": created,
+        },
+        idempotency_key=f"tender-product-comparison-draft:{record_id}:{result['draft_hash']}",
+        actor=actor.subject,
+    )
+    audit(
+        db,
+        actor.subject,
+        "tender.product_comparison_draft_created",
+        "tender",
+        str(record_id),
+        {
+            "draft_hash": result["draft_hash"],
+            "status": result["status"],
+            "comparison_count": result["comparison_count"],
+            "paired_count": result["paired_count"],
             "created": created,
         },
     )

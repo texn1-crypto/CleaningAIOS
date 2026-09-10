@@ -12,11 +12,12 @@ from docx import Document
 from pypdf import PdfReader
 
 from .config import settings
-from .models import TenderDocument
+from .models import BusinessRecord, TenderDocument
 
 
 EXTRACTOR_VERSION = "tender-requirements-v1"
 PRODUCT_SPEC_EXTRACTOR_VERSION = "tender-product-specification-v2"
+PRODUCT_COMPARISON_VERSION = "tender-product-comparison-v1"
 SUPPORTED_SUFFIXES = {".docx", ".md", ".pdf", ".txt"}
 MAX_SEGMENTS = 20_000
 MAX_CANDIDATES = 500
@@ -470,6 +471,249 @@ def review_product_specification_candidates(
     }
     document.status = "analyzed"
     document.analyzed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    return result, True
+
+
+def _reviewed_product_facts(document: TenderDocument) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    analysis = document.analysis if isinstance(document.analysis, dict) else {}
+    review = analysis.get("product_specification_review")
+    if not isinstance(review, dict):
+        return None
+    actual_checksum = str(document.checksum or "").lower()
+    if review.get("status") != "reviewed":
+        raise TenderDocumentReviewError("Product specification review is incomplete")
+    if review.get("document_checksum") != actual_checksum:
+        raise TenderDocumentReviewError("Reviewed product specification checksum is stale")
+    review_hash = str(review.get("review_hash") or "").lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", review_hash):
+        raise TenderDocumentReviewError("Product specification review hash is unavailable")
+    source_role = str(review.get("source_role") or "unknown")
+    if source_role not in {"tender_requirement", "offered_product"}:
+        raise TenderDocumentReviewError(
+            "Reviewed product specification role is unsupported"
+        )
+    candidates = review.get("candidates")
+    if not isinstance(candidates, list):
+        raise TenderDocumentReviewError("Reviewed product specification candidates are unavailable")
+
+    verified: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            raise TenderDocumentReviewError("Reviewed product specification candidate is invalid")
+        if candidate.get("verification_status") != "verified":
+            continue
+        code = str(candidate.get("code") or "")
+        parameter = str(candidate.get("parameter") or "").strip()
+        value = str(candidate.get("value") or "").strip()
+        candidate_hash = str(candidate.get("candidate_hash") or "").lower()
+        if (
+            not re.fullmatch(r"product\.[a-f0-9]{12}", code)
+            or not parameter
+            or not value
+            or not re.fullmatch(r"[a-f0-9]{64}", candidate_hash)
+            or candidate.get("source_role") != source_role
+        ):
+            raise TenderDocumentReviewError(
+                "Reviewed product specification candidate identity is invalid"
+            )
+        evidence = candidate.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            raise TenderDocumentReviewError(
+                "Reviewed product specification evidence is unavailable"
+            )
+        for reference in evidence:
+            if not isinstance(reference, dict):
+                raise TenderDocumentReviewError(
+                    "Reviewed product specification evidence is invalid"
+                )
+            if (
+                reference.get("document_id") != document.id
+                or str(reference.get("document_checksum") or "").lower()
+                != actual_checksum
+                or not str(reference.get("locator") or "").strip()
+                or not str(reference.get("excerpt") or "").strip()
+            ):
+                raise TenderDocumentReviewError(
+                    "Reviewed product specification evidence is stale"
+                )
+        verified.append(
+            {
+                "candidate_hash": candidate_hash,
+                "code": code,
+                "parameter": parameter,
+                "value": value,
+                "document_id": document.id,
+                "document_checksum": actual_checksum,
+                "review_hash": review_hash,
+                "evidence": evidence,
+            }
+        )
+    return (
+        {
+            "document_id": document.id,
+            "document_checksum": actual_checksum,
+            "review_hash": review_hash,
+            "source_role": source_role,
+        },
+        verified,
+    )
+
+
+def build_product_comparison_draft(
+    tender: BusinessRecord,
+    documents: list[TenderDocument],
+    *,
+    actor: str,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Persist a fail-closed draft assembled from checksum-bound reviewed facts."""
+
+    source_bindings: list[dict[str, Any]] = []
+    facts_by_role: dict[str, list[dict[str, Any]]] = {
+        "tender_requirement": [],
+        "offered_product": [],
+    }
+    role_documents: dict[str, int] = {"tender_requirement": 0, "offered_product": 0}
+    for document in sorted(documents, key=lambda item: item.id):
+        reviewed = _reviewed_product_facts(document)
+        if reviewed is None:
+            continue
+        binding, facts = reviewed
+        source_role = str(binding["source_role"])
+        role_documents[source_role] += 1
+        source_bindings.append(binding)
+        facts_by_role[source_role].extend(facts)
+
+    if not role_documents["tender_requirement"]:
+        raise TenderDocumentReviewError(
+            "Reviewed tender requirement product specification is required"
+        )
+    if not role_documents["offered_product"]:
+        raise TenderDocumentReviewError(
+            "Reviewed offered product specification is required"
+        )
+    if not facts_by_role["tender_requirement"]:
+        raise TenderDocumentReviewError(
+            "Reviewed tender requirement has no verified product facts"
+        )
+    if not facts_by_role["offered_product"]:
+        raise TenderDocumentReviewError(
+            "Reviewed offered product has no verified product facts"
+        )
+
+    grouped: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for source_role, facts in facts_by_role.items():
+        for fact in facts:
+            grouped.setdefault(
+                str(fact["code"]),
+                {"tender_requirement": [], "offered_product": []},
+            )[source_role].append(fact)
+
+    comparisons: list[dict[str, Any]] = []
+    for code in sorted(grouped):
+        required = sorted(
+            grouped[code]["tender_requirement"],
+            key=lambda item: (item["document_id"], item["candidate_hash"]),
+        )
+        offered = sorted(
+            grouped[code]["offered_product"],
+            key=lambda item: (item["document_id"], item["candidate_hash"]),
+        )
+        if not required:
+            signal = "missing_required"
+        elif not offered:
+            signal = "missing_offered"
+        elif len(required) != 1 or len(offered) != 1:
+            signal = "ambiguous"
+        else:
+            required_value = _clean_text(str(required[0]["value"])).lower().replace("ё", "е")
+            offered_value = _clean_text(str(offered[0]["value"])).lower().replace("ё", "е")
+            signal = "exact" if required_value == offered_value else "different"
+        canonical_facts = {"required": required, "offered": offered}
+        candidate_hash = hashlib.sha256(
+            json.dumps(
+                {"version": PRODUCT_COMPARISON_VERSION, "code": code, **canonical_facts},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        comparisons.append(
+            {
+                "candidate_hash": candidate_hash,
+                "code": code,
+                "parameter": str((required or offered)[0]["parameter"]),
+                "required_value": str(required[0]["value"]) if len(required) == 1 else "",
+                "offered_value": str(offered[0]["value"]) if len(offered) == 1 else "",
+                "comparison_signal": signal,
+                "match_status": "unknown",
+                "verification_status": "needs_verification",
+                "required_facts": required,
+                "offered_facts": offered,
+                "data_class": "calculated",
+            }
+        )
+
+    canonical = {
+        "version": PRODUCT_COMPARISON_VERSION,
+        "tender_id": tender.id,
+        "source_bindings": source_bindings,
+        "comparisons": comparisons,
+    }
+    draft_hash = hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    tender_data = tender.data if isinstance(tender.data, dict) else {}
+    existing_history = tender_data.get("product_comparison_drafts")
+    history = list(existing_history) if isinstance(existing_history, list) else []
+    for existing in history:
+        if isinstance(existing, dict) and existing.get("draft_hash") == draft_hash:
+            return existing, False
+
+    signal_counts = {
+        signal: sum(item["comparison_signal"] == signal for item in comparisons)
+        for signal in ("exact", "different", "missing_required", "missing_offered", "ambiguous")
+    }
+    warnings = [
+        {
+            "code": f"comparison_{signal}",
+            "count": count,
+            "effect": "manager_verification_required",
+        }
+        for signal, count in signal_counts.items()
+        if count and signal not in {"exact", "different"}
+    ]
+    created_at = now or datetime.now(timezone.utc)
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    else:
+        created_at = created_at.astimezone(timezone.utc)
+    result: dict[str, Any] = {
+        **canonical,
+        "draft_hash": draft_hash,
+        "status": "needs_verification",
+        "comparison_count": len(comparisons),
+        "paired_count": signal_counts["exact"] + signal_counts["different"],
+        "comparison_signal_counts": signal_counts,
+        "warnings": warnings,
+        "created_by": actor,
+        "created_at": created_at.isoformat(),
+        "automatic_matching_allowed": False,
+        "automatic_eligibility_allowed": False,
+        "automatic_submission_allowed": False,
+    }
+    history.append(result)
+    tender.data = {
+        **tender_data,
+        "product_comparison_drafts": history,
+        "latest_product_comparison_draft_hash": draft_hash,
+        "product_comparison_status": "needs_verification",
+    }
     return result, True
 
 

@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import DomainEvent, TenderDocument
+from app.models import BusinessRecord, DomainEvent, TenderDocument
 
 
 MANAGER = {"X-Role": "manager"}
@@ -624,6 +624,151 @@ def test_product_specification_review_is_exact_audited_and_idempotent(
             .select_from(DomainEvent)
             .where(
                 DomainEvent.event_type == "tender.product_specification_reviewed",
+                DomainEvent.aggregate_id == str(tender["id"]),
+            )
+        ) == 1
+
+
+def test_product_comparison_draft_is_review_bound_persisted_and_idempotent(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    requirement_source = tmp_path / "tender-product-requirements.txt"
+    requirement_source.write_text(
+        "Плотность бумаги: 80 г/м²\nКоличество листов: 500\n",
+        encoding="utf-8",
+    )
+    offered_source = tmp_path / "offered-product-specification.txt"
+    offered_source.write_text(
+        "Плотность бумаги: 80 г/м²\n"
+        "Количество листов: 450\n"
+        "Цвет бумаги: белый\n",
+        encoding="utf-8",
+    )
+    tender = client.post(
+        "/api/records",
+        headers=MANAGER,
+        json={
+            "record_type": "tender",
+            "external_id": "product-comparison-draft",
+            "title": "Поставка бумаги",
+            "data": {},
+        },
+    ).json()
+
+    document_ids: dict[str, int] = {}
+    for source_role, source, kind in (
+        ("tender_requirement", requirement_source, "tender_specification"),
+        ("offered_product", offered_source, "supplier_specification"),
+    ):
+        checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+        document = client.post(
+            f"/api/tenders/{tender['id']}/documents",
+            headers=MANAGER,
+            json={
+                "name": source.name,
+                "source_url": f"https://documents.example.invalid/{source.name}",
+                "content_type": "text/plain",
+                "storage_path": str(source),
+                "checksum": checksum,
+                "analysis": {"kind": kind},
+            },
+        ).json()
+        document_ids[source_role] = document["id"]
+        extraction = client.post(
+            f"/api/tender-documents/{document['id']}/product-specification/extract",
+            headers=MANAGER,
+        ).json()
+        review = client.post(
+            f"/api/tender-documents/{document['id']}/product-specification/review",
+            headers=MANAGER,
+            json={
+                "document_checksum": checksum,
+                "extractor_version": extraction["extractor_version"],
+                "decisions": [
+                    {
+                        "candidate_hash": candidate["candidate_hash"],
+                        "accepted": True,
+                    }
+                    for candidate in extraction["candidates"]
+                ],
+            },
+        )
+        assert review.status_code == 200
+        assert review.json()["source_role"] == source_role
+
+        if source_role == "tender_requirement":
+            missing_offer = client.post(
+                f"/api/tenders/{tender['id']}/product-comparison/drafts",
+                headers=MANAGER,
+            )
+            assert missing_offer.status_code == 422
+            assert missing_offer.json()["detail"] == (
+                "Reviewed offered product specification is required"
+            )
+
+    endpoint = f"/api/tenders/{tender['id']}/product-comparison/drafts"
+    forbidden = client.post(endpoint, headers={"X-Role": "operator"})
+    assert forbidden.status_code == 403
+
+    first = client.post(endpoint, headers=MANAGER)
+    assert first.status_code == 200
+    result = first.json()
+    assert result["created"] is True
+    assert result["status"] == "needs_verification"
+    assert result["comparison_count"] == 3
+    assert result["paired_count"] == 2
+    assert result["comparison_signal_counts"] == {
+        "exact": 1,
+        "different": 1,
+        "missing_required": 1,
+        "missing_offered": 0,
+        "ambiguous": 0,
+    }
+    assert {item["comparison_signal"] for item in result["comparisons"]} == {
+        "exact",
+        "different",
+        "missing_required",
+    }
+    assert {item["match_status"] for item in result["comparisons"]} == {
+        "unknown"
+    }
+    assert {item["verification_status"] for item in result["comparisons"]} == {
+        "needs_verification"
+    }
+    assert result["automatic_matching_allowed"] is False
+    assert result["automatic_eligibility_allowed"] is False
+    assert result["automatic_submission_allowed"] is False
+
+    paired = next(
+        item for item in result["comparisons"] if item["comparison_signal"] == "exact"
+    )
+    evidence_document_ids = {
+        reference["document_id"]
+        for fact in [*paired["required_facts"], *paired["offered_facts"]]
+        for reference in fact["evidence"]
+    }
+    assert evidence_document_ids == set(document_ids.values())
+
+    repeated = client.post(endpoint, headers=MANAGER).json()
+    assert repeated == {**result, "created": False}
+
+    with SessionLocal() as db:
+        persisted = db.get(BusinessRecord, tender["id"])
+        assert persisted is not None
+        assert persisted.data["latest_product_comparison_draft_hash"] == result[
+            "draft_hash"
+        ]
+        assert persisted.data["product_comparison_status"] == "needs_verification"
+        assert persisted.data["product_comparison_drafts"] == [
+            {key: value for key, value in result.items() if key != "created"}
+        ]
+        assert db.scalar(
+            select(func.count())
+            .select_from(DomainEvent)
+            .where(
+                DomainEvent.event_type
+                == "tender.product_comparison_draft_created",
                 DomainEvent.aggregate_id == str(tender["id"]),
             )
         ) == 1

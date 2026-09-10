@@ -2685,10 +2685,11 @@
       "evidence": [
         "app/tender_autopilot.py",
         "app/tender_document_intelligence.py",
+        "app/api_v2.py",
         "docs/tender-autopilot/README.md",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The decision pipeline includes an assumption-bound auction forecast, evidence-bound product matching, fail-closed local parameter extraction, and exact manager review. Supplier discovery/quote acquisition and cross-document matching are not end-to-end."
+      "notes": "The decision pipeline includes an assumption-bound auction forecast, evidence-bound product matching, fail-closed local parameter extraction, exact manager review, and a persisted checksum/review-hash-bound cross-document comparison draft. Supplier discovery/quote acquisition and manager-confirmed comparison-to-snapshot remain incomplete."
     },
     {
       "id": 298,
@@ -2837,9 +2838,10 @@
         "docs/tender-autopilot/GAP_ANALYSIS.md",
         "app/tender_autopilot.py",
         "app/tender_document_intelligence.py",
+        "app/api_v2.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Auction forecast, stop price, evidence-bound product matching, fail-closed extraction and manager review are persisted; real tender/provider adapters, supplier acquisition, cross-document matching, broader document controls and A4 E2E remain incomplete."
+      "notes": "Auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review and cross-document comparison draft history are persisted; real tender/provider adapters, supplier acquisition, manager-confirmed comparison decisions, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2863,9 +2865,12 @@
       "priority": "P0",
       "status": "partial",
       "evidence": [
-        "docs/tender-autopilot/"
+        "docs/tender-autopilot/",
+        "app/tender_document_intelligence.py",
+        "app/api_v2.py",
+        "tests/test_tender_autopilot.py"
       ],
-      "notes": ""
+      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox and regression evidence. It remains partial until the first-release DoD is met."
     },
     {
       "id": 317,
@@ -2875,9 +2880,10 @@
       "evidence": [
         "app/tender_autopilot.py",
         "app/tender_document_intelligence.py",
+        "app/api_v2.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Fixture-to-approval-card path includes deterministic auction forecast, product compliance gates, fail-closed local extraction and exact manager review. Real provider ingest, cross-document matching and supplier quote acquisition remain open."
+      "notes": "Fixture-to-approval-card path includes deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review and a persisted evidence-bound cross-document comparison draft. Real provider ingest, manager-confirmed comparison-to-snapshot and supplier quote acquisition remain open."
     },
     {
       "id": 318,
