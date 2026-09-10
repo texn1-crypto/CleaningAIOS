@@ -123,6 +123,10 @@ def build_company_profile_snapshot(
         raise ValueError("Company profile document file_hash values must be unique")
     documents: list[dict[str, Any]] = []
     for document in payload.documents:
+        if not document.issuer.strip():
+            raise ValueError(
+                f"Company document {document.document_type} issuer cannot be blank"
+            )
         if document.expiry_date <= document.issue_date:
             raise ValueError(
                 f"Company document {document.document_type} expiry_date must follow issue_date"
@@ -151,6 +155,8 @@ def build_company_profile_snapshot(
         (_canonical_capability(fact) for fact in payload.capabilities),
         key=lambda item: item["code"],
     )
+    if any(not item["description"] for item in capabilities):
+        raise ValueError("Company capability description cannot be blank")
     for capability in capabilities:
         for file_hash in capability["evidence_file_hashes"]:
             if file_hash not in document_by_hash:
@@ -158,6 +164,8 @@ def build_company_profile_snapshot(
                     f"Capability {capability['code']} cites an unavailable company document"
                 )
 
+    if not payload.taxation_regime.strip():
+        raise ValueError("taxation_regime cannot be blank")
     canonical = {
         "rules_version": RULES_VERSION,
         "verified_at": _iso(verified_at),
