@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import ApprovalRequest, BusinessGoal, BusinessRecord, CompanyProfileSnapshot, CompanyRequisite, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderPrequalificationSnapshot, TenderSourceRun, TenderSupplierQuoteSnapshot
+from .models import ApprovalRequest, BusinessGoal, BusinessRecord, CompanyProfileSnapshot, CompanyRequisite, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderPrequalificationSnapshot, TenderSourceCheckpoint, TenderSourceRun, TenderSupplierQuoteSnapshot
 from .integrations import collect_tenders, download_tender_document, tender_source_freshness
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -1382,8 +1382,45 @@ def list_tender_source_runs(
             "updated": row.updated_count,
             "unchanged": row.unchanged_count,
             "error_type": row.error_type,
+            "request_url_hash": row.request_url_hash,
+            "next_url_hash": row.next_url_hash,
+            "provider_acknowledgement_hash": (
+                row.provider_acknowledgement_hash
+            ),
+            "completeness_status": row.completeness_status,
+            "declared_total": row.declared_total,
+            "page_number": row.page_number,
             "started_at": row.started_at,
             "finished_at": row.finished_at,
+        }
+        for row in rows
+    ]
+
+
+@router.get("/tender-sources/checkpoints")
+def list_tender_source_checkpoints(
+    limit: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    """Expose pagination health without returning an opaque provider cursor."""
+
+    require_role(actor, "manager")
+    rows = db.scalars(
+        select(TenderSourceCheckpoint)
+        .order_by(TenderSourceCheckpoint.updated_at.desc())
+        .limit(limit)
+    ).all()
+    return [
+        {
+            "source_ref": row.source_hash[:32],
+            "source_label": row.source_label,
+            "has_pending_page": bool(row.next_url),
+            "next_url_hash": row.next_url_hash,
+            "version": row.version,
+            "last_acknowledgement_hash": row.last_acknowledgement_hash,
+            "last_completeness_status": row.last_completeness_status,
+            "updated_at": row.updated_at,
         }
         for row in rows
     ]

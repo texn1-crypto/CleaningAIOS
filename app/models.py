@@ -577,6 +577,15 @@ class TenderSourceRun(Base):
             "AND unchanged_count >= 0",
             name="ck_tender_source_run_counts",
         ),
+        CheckConstraint(
+            "completeness_status IN ('unknown', 'partial', 'complete')",
+            name="ck_tender_source_run_completeness",
+        ),
+        CheckConstraint(
+            "(declared_total IS NULL OR declared_total >= 0) AND "
+            "(page_number IS NULL OR page_number >= 1)",
+            name="ck_tender_source_run_page_metadata",
+        ),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     source_hash: Mapped[str] = mapped_column(String(64), index=True)
@@ -588,8 +597,41 @@ class TenderSourceRun(Base):
     updated_count: Mapped[int] = mapped_column(Integer, default=0)
     unchanged_count: Mapped[int] = mapped_column(Integer, default=0)
     error_type: Mapped[str] = mapped_column(String(128), default="")
+    request_url_hash: Mapped[str] = mapped_column(String(64), default="")
+    next_url_hash: Mapped[str] = mapped_column(String(64), default="")
+    provider_acknowledgement_hash: Mapped[str] = mapped_column(
+        String(64), default=""
+    )
+    completeness_status: Mapped[str] = mapped_column(
+        String(32), default="unknown"
+    )
+    declared_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    page_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime)
     finished_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class TenderSourceCheckpoint(Base):
+    """Protected mutable cursor derived from append-only collection receipts."""
+
+    __tablename__ = "tender_source_checkpoints"
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_tender_source_checkpoint_version"),
+        CheckConstraint(
+            "last_completeness_status IN ('partial', 'complete')",
+            name="ck_tender_source_checkpoint_completeness",
+        ),
+    )
+    source_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_label: Mapped[str] = mapped_column(String(1024))
+    # This may contain an opaque provider cursor and is deliberately absent from APIs,
+    # events and logs. Public evidence contains only its SHA-256 digest.
+    next_url: Mapped[str] = mapped_column(String(2048), default="")
+    next_url_hash: Mapped[str] = mapped_column(String(64), default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    last_acknowledgement_hash: Mapped[str] = mapped_column(String(64), default="")
+    last_completeness_status: Mapped[str] = mapped_column(String(32))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class TenderPrequalificationSnapshot(Base):

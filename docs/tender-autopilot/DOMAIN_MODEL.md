@@ -15,8 +15,13 @@
   `BusinessRecord.data`, связанную с checksum и review hash каждого документа;
   draft остаётся `needs_verification` и не заменяет decision snapshot.
 - `TenderSourceRun` — final receipt каждой настроенной попытки collection: безопасная
-  метка и hash источника, timing, HTTP status, outcome counters и bounded error type.
-  Raw exception, query/userinfo и provider secret в публичный контракт не входят.
+  метка и hash источника, timing, HTTP status, outcome counters, completeness,
+  request/next URL hashes, provider acknowledgement hash и bounded error type.
+  Raw exception, raw cursor, query/userinfo и provider secret в публичный контракт
+  не входят.
+- `TenderSourceCheckpoint` — защищённый mutable projection следующей страницы
+  `tender-page-v1`. Он меняется только в одной транзакции с успешно принятой
+  страницей; API/outbox показывают digest и наличие pending page, но не opaque URL.
 - `CompanyProfileSnapshot` — append-only версия Company Digital Twin, связанная с
   существующим профилем реквизитов. Она хранит legal identity, business limits,
   capability facts и metadata документов с file hash/issuer/issue/expiry/status,

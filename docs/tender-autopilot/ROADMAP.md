@@ -11,8 +11,10 @@
 2. **Discovery/normalization — in progress.** Generic HTTP(S) JSON items now have
    canonical append-only observed versions, provider-scoped external identity and
    replay idempotency plus durable per-source attempt receipts and deterministic
-   last-success freshness incidents. Далее: official provider interface with stable
-   provider keys, cursors/provider acknowledgements, completeness monitoring and a
+   last-success freshness incidents. The generic `tender-page-v1` boundary now has
+   transaction-bound protected next-page checkpoints, hashed acknowledgements and
+   explicit `partial/complete/unknown` receipts. Далее: official provider interface
+   with stable provider keys, portal-specific cursor/completeness verification and a
    normalized procurement model.
 3. **Document intelligence — in progress.** Checksum-bound local PDF/DOCX/TXT
    extraction now produces evidence-linked UNKNOWN candidates. Далее: immutable

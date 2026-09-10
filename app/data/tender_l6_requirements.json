@@ -98,9 +98,11 @@
         "app/models.py",
         "migrations/versions/0024_provider_scoped_tender_identity.py",
         "migrations/versions/0025_tender_source_run_receipts.py",
-        "tests/test_app.py"
+        "migrations/versions/0029_tender_source_pagination.py",
+        "tests/test_app.py",
+        "tests/test_tender_provider_pagination.py"
       ],
-      "notes": "A manager-triggered generic HTTP(S) JSON feed contract stores canonical content hashes and append-only observed versions, scopes provider-local IDs to each source, distinguishes unchanged replays and emits one outbox event per real version; bearer authentication is HTTPS-only. Every configured attempt persists a final source-run receipt with timing, HTTP/outcome counters, a secret-safe manager view and transactional outbox event. A deterministic last-success SLO and deduplicated System Admin incident are connected. Official EIS/ETP adapters, legal access agreements, stable provider keys, source cursors/completeness controls and external provider acknowledgements remain missing."
+      "notes": "A manager-triggered generic HTTP(S) JSON feed contract stores canonical content hashes and append-only observed versions, scopes provider-local IDs to each source, distinguishes unchanged replays and emits one outbox event per real version; bearer authentication is HTTPS-only. Every configured attempt persists a final source-run receipt with timing, HTTP/outcome counters, a secret-safe manager view and transactional outbox event. The optional tender-page-v1 contract now persists and resumes same-origin next-page checkpoints only after successful page transactions, hashes provider acknowledgements/cursors in receipts, records partial/complete/unknown and rejects invalid or non-advancing pagination fail-closed. Official EIS/ETP adapters, legal access agreements, stable provider keys and verified portal-specific completeness contracts remain missing."
     },
     {
       "id": 10,
@@ -1040,13 +1042,16 @@
         "app/integrations.py:collect_tenders",
         "app/integrations.py:tender_source_freshness",
         "app/api_v2.py:list_tender_source_runs",
+        "app/api_v2.py:list_tender_source_checkpoints",
         "app/api_v2.py:get_tender_source_freshness",
         "app/system_admin.py:collect_incidents",
         "migrations/versions/0025_tender_source_run_receipts.py",
+        "migrations/versions/0029_tender_source_pagination.py",
         "tests/test_app.py:test_tender_source_freshness_reports_all_states_without_source_secrets",
+        "tests/test_tender_provider_pagination.py",
         "tests/test_system_admin.py:test_system_admin_deduplicates_and_resolves_stale_tender_source"
       ],
-      "notes": "Each configured generic-feed attempt records final success/failure evidence. A configurable deterministic last-success SLO classifies fresh, unobserved, never-succeeded, latest-failed and stale sources; manager API and deduplicated System Admin incident/recovery are connected without exposing source credentials. Provider cursors, completeness guarantees and source-side acknowledgements remain missing, so SOURCE FRESHNESS stays PARTIAL."
+      "notes": "Each configured generic-feed attempt records final success/failure evidence. A configurable deterministic last-success SLO classifies fresh, unobserved, never-succeeded, latest-failed and stale sources; manager API and deduplicated System Admin incident/recovery are connected without exposing source credentials. For tender-page-v1, protected same-origin pagination checkpoints, hashed acknowledgement/cursor evidence and explicit partial/complete/unknown receipts are now persisted. Feeds without the page contract remain unknown, and official portal completeness guarantees are unverified, so SOURCE FRESHNESS stays PARTIAL."
     },
     {
       "id": 111,
@@ -2742,11 +2747,13 @@
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
+        "migrations/versions/0029_tender_source_pagination.py",
         "docs/tender-autopilot/README.md",
         "tests/test_app.py",
+        "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, durable per-source run receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION and the immutable verified supplier quote gate, economics, auction forecast, product matching, review and decision snapshot. Official provider ingest/cursors, automated company/supplier evidence acquisition, quote acquisition and RFQ remain incomplete."
+      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, transaction-bound pagination checkpoints, hashed provider page acknowledgements, completeness receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION and the immutable verified supplier quote gate, economics, auction forecast, product matching, review and decision snapshot. Official provider adapters and portal contracts, automated company/supplier evidence acquisition, quote acquisition and RFQ remain incomplete."
     },
     {
       "id": 298,
@@ -2899,10 +2906,12 @@
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
+        "migrations/versions/0029_tender_source_pagination.py",
         "tests/test_app.py",
+        "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Provider-scoped canonical generic feed amendments, durable source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction, manager review, comparison and decision conversion are persisted. The Company Digital Twin is still partial; official provider adapters/cursors, automated company/supplier evidence acquisition and RFQ, broader document controls and A4 E2E remain incomplete."
+      "notes": "Provider-scoped canonical generic feed amendments, protected transaction-bound page checkpoints, hashed acknowledgements, completeness/source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction, manager review, comparison and decision conversion are persisted. The Company Digital Twin is still partial; official provider adapters and verified portal contracts, automated company/supplier evidence acquisition and RFQ, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2933,10 +2942,12 @@
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
+        "migrations/versions/0029_tender_source_pagination.py",
         "tests/test_app.py",
+        "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, immutable Company Digital Twin, fast-prequalification, verified supplier quote snapshots and regression evidence. It remains partial until the first-release DoD is met."
+      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, transaction-bound provider pagination checkpoints and hashed completeness evidence, immutable Company Digital Twin, fast-prequalification, verified supplier quote snapshots and regression evidence. It remains partial until the first-release DoD is met."
     },
     {
       "id": 317,
@@ -2950,10 +2961,12 @@
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
+        "migrations/versions/0029_tender_source_pagination.py",
         "tests/test_app.py",
+        "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with source-run receipts and freshness incidents, document-byte versions, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact manager review, comparison and hash-bound decision inputs. Extended/automated Company Digital Twin verification, official provider adapters/cursors, automated supplier discovery/quote acquisition and RFQ remain open."
+      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with protected resumable page checkpoints, hashed acknowledgements, explicit completeness/source-run receipts and freshness incidents, document-byte versions, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact manager review, comparison and hash-bound decision inputs. Extended/automated Company Digital Twin verification, official provider adapters/contracts, automated supplier discovery/quote acquisition and RFQ remain open."
     },
     {
       "id": 318,

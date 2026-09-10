@@ -16,7 +16,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import BusinessRecord, TenderDocument, TenderSourceRun
+from .models import (
+    BusinessRecord,
+    TenderDocument,
+    TenderSourceCheckpoint,
+    TenderSourceRun,
+)
 from .platform import event_bus
 from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, evaluate_tender_viability, screening_record_status
 
@@ -24,6 +29,7 @@ from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 BLOCKED_HOST_SUFFIXES = (".internal", ".invalid", ".lan", ".local", ".localhost", ".test")
 TENDER_FEED_CONTRACT_VERSION = "tender-feed-v1"
+TENDER_PAGE_CONTRACT_VERSION = "tender-page-v1"
 
 
 def _safe_source_label(source: str) -> str:
@@ -39,6 +45,97 @@ def _safe_source_label(source: str) -> str:
     port_suffix = f":{port}" if port and port != default_port else ""
     path = parsed.path or "/"
     return f"{parsed.scheme.lower()}://{hostname}{port_suffix}{path}"[:1024]
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _url_origin(value: str) -> tuple[str, str, int]:
+    parsed = urlparse(value)
+    default_port = 443 if parsed.scheme == "https" else 80
+    return (
+        parsed.scheme.lower(),
+        (parsed.hostname or "").rstrip(".").lower(),
+        parsed.port or default_port,
+    )
+
+
+def _tender_page_contract(
+    body: object,
+    *,
+    source: str,
+    request_url: str,
+    items_seen: int,
+) -> dict[str, Any]:
+    """Validate a provider page without persisting its opaque cursor value."""
+
+    unknown = {
+        "contract_version": "",
+        "completeness_status": "unknown",
+        "next_url": "",
+        "next_url_hash": "",
+        "acknowledgement_hash": "",
+        "declared_total": None,
+        "page_number": None,
+    }
+    if not isinstance(body, dict) or "page" not in body:
+        return unknown
+    page = body["page"]
+    if not isinstance(page, dict):
+        raise ValueError("feed page metadata must be an object")
+    contract_version = page.get("contract_version")
+    if contract_version != TENDER_PAGE_CONTRACT_VERSION:
+        raise ValueError("unsupported tender page contract version")
+    acknowledgement = page.get("acknowledgement_id")
+    if not isinstance(acknowledgement, str) or not acknowledgement.strip():
+        raise ValueError("feed page acknowledgement_id is required")
+    if len(acknowledgement) > 512:
+        raise ValueError("feed page acknowledgement_id is too long")
+    has_more = page.get("has_more")
+    if not isinstance(has_more, bool):
+        raise ValueError("feed page has_more must be a boolean")
+    next_url_value = page.get("next_url") or ""
+    if not isinstance(next_url_value, str):
+        raise ValueError("feed page next_url must be a string")
+    next_url = next_url_value.strip()
+    if len(next_url) > 2048:
+        raise ValueError("feed page next_url is too long")
+    if has_more and not next_url:
+        raise ValueError("partial feed page must provide next_url")
+    if not has_more and next_url:
+        raise ValueError("complete feed page cannot provide next_url")
+    if next_url:
+        _safe_url(next_url)
+        if _url_origin(next_url) != _url_origin(source):
+            raise ValueError("feed page next_url must keep the configured origin")
+        if next_url == request_url:
+            raise ValueError("feed page next_url did not advance")
+    declared_total = page.get("declared_total")
+    if declared_total is not None and (
+        isinstance(declared_total, bool)
+        or not isinstance(declared_total, int)
+        or declared_total < items_seen
+    ):
+        raise ValueError("feed page declared_total is invalid")
+    page_number = page.get("page_number")
+    if page_number is not None and (
+        isinstance(page_number, bool)
+        or not isinstance(page_number, int)
+        or page_number < 1
+    ):
+        raise ValueError("feed page page_number is invalid")
+    return {
+        "contract_version": contract_version,
+        "completeness_status": "partial" if has_more else "complete",
+        # Kept in-process and in the protected checkpoint only. Public surfaces use
+        # the digest below so an opaque cursor cannot leak through logs or events.
+        "next_url": next_url,
+        "next_url_hash": _sha256_text(next_url) if next_url else "",
+        "acknowledgement_hash": _sha256_text(acknowledgement),
+        "declared_total": declared_total,
+        "page_number": page_number,
+    }
 
 
 def tender_source_freshness(
@@ -275,6 +372,14 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
     with httpx.Client(timeout=settings.tender_request_timeout_seconds, follow_redirects=False, headers=headers) as client:
         for source in sources:
             source_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            source_hash = _sha256_text(source)
+            checkpoint = db.get(TenderSourceCheckpoint, source_hash)
+            request_url = (
+                checkpoint.next_url
+                if checkpoint is not None and checkpoint.next_url
+                else source
+            )
+            request_url_hash = _sha256_text(request_url)
             created_before = created
             updated_before = updated
             unchanged_before = unchanged
@@ -282,12 +387,20 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
             http_status: int | None = None
             receipt_status = "completed"
             error_type = ""
+            page_metadata: dict[str, Any] = {
+                "completeness_status": "unknown",
+                "next_url": "",
+                "next_url_hash": "",
+                "acknowledgement_hash": "",
+                "declared_total": None,
+                "page_number": None,
+            }
             source_savepoint = db.begin_nested()
             try:
-                _safe_url(source)
+                _safe_url(request_url)
                 response = _safe_get(
                     client,
-                    source,
+                    request_url,
                     require_https=bool(headers),
                 )
                 http_status = int(getattr(response, "status_code", 200))
@@ -295,6 +408,20 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                 body = response.json(); items = body.get("items", []) if isinstance(body, dict) else body
                 if not isinstance(items, list): raise ValueError("feed must return a list or {items: [...]} object")
                 items_seen = len(items)
+                page_metadata = _tender_page_contract(
+                    body,
+                    source=source,
+                    request_url=request_url,
+                    items_seen=items_seen,
+                )
+                if (
+                    checkpoint is not None
+                    and checkpoint.next_url
+                    and page_metadata["completeness_status"] == "unknown"
+                ):
+                    raise ValueError(
+                        "paginated feed response omitted required page metadata"
+                    )
                 for item in items:
                     if not isinstance(item, dict): continue
                     external_id = str(item.get("external_id") or item.get("id") or "").strip()
@@ -411,6 +538,37 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                             f"{version_hash}"
                         ),
                     )
+                if page_metadata["completeness_status"] != "unknown":
+                    if checkpoint is None:
+                        checkpoint = TenderSourceCheckpoint(
+                            source_hash=source_hash,
+                            source_label=_safe_source_label(source),
+                            next_url=page_metadata["next_url"],
+                            next_url_hash=page_metadata["next_url_hash"],
+                            version=1,
+                            last_acknowledgement_hash=page_metadata[
+                                "acknowledgement_hash"
+                            ],
+                            last_completeness_status=page_metadata[
+                                "completeness_status"
+                            ],
+                            updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                        )
+                        db.add(checkpoint)
+                    else:
+                        checkpoint.source_label = _safe_source_label(source)
+                        checkpoint.next_url = page_metadata["next_url"]
+                        checkpoint.next_url_hash = page_metadata["next_url_hash"]
+                        checkpoint.version += 1
+                        checkpoint.last_acknowledgement_hash = page_metadata[
+                            "acknowledgement_hash"
+                        ]
+                        checkpoint.last_completeness_status = page_metadata[
+                            "completeness_status"
+                        ]
+                        checkpoint.updated_at = datetime.now(timezone.utc).replace(
+                            tzinfo=None
+                        )
             except Exception as exc:
                 source_savepoint.rollback()
                 created = created_before
@@ -426,7 +584,7 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
             else:
                 source_savepoint.commit()
             receipt = TenderSourceRun(
-                source_hash=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                source_hash=source_hash,
                 source_label=_safe_source_label(source),
                 status=receipt_status,
                 http_status=http_status,
@@ -435,6 +593,32 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                 updated_count=updated - updated_before,
                 unchanged_count=unchanged - unchanged_before,
                 error_type=error_type,
+                request_url_hash=request_url_hash,
+                next_url_hash=(
+                    page_metadata["next_url_hash"]
+                    if receipt_status == "completed"
+                    else ""
+                ),
+                provider_acknowledgement_hash=(
+                    page_metadata["acknowledgement_hash"]
+                    if receipt_status == "completed"
+                    else ""
+                ),
+                completeness_status=(
+                    page_metadata["completeness_status"]
+                    if receipt_status == "completed"
+                    else "unknown"
+                ),
+                declared_total=(
+                    page_metadata["declared_total"]
+                    if receipt_status == "completed"
+                    else None
+                ),
+                page_number=(
+                    page_metadata["page_number"]
+                    if receipt_status == "completed"
+                    else None
+                ),
                 started_at=source_started_at,
                 finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
             )
@@ -454,6 +638,14 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                     "updated": receipt.updated_count,
                     "unchanged": receipt.unchanged_count,
                     "error_type": receipt.error_type,
+                    "request_url_hash": receipt.request_url_hash,
+                    "next_url_hash": receipt.next_url_hash,
+                    "provider_acknowledgement_hash": (
+                        receipt.provider_acknowledgement_hash
+                    ),
+                    "completeness_status": receipt.completeness_status,
+                    "declared_total": receipt.declared_total,
+                    "page_number": receipt.page_number,
                 },
                 idempotency_key=f"tender-source-run:{receipt.id}",
             )

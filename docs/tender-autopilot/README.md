@@ -39,15 +39,28 @@ event payload. Это общий проверяемый feed contract, а не �
 откатывает его незавершённые изменения через savepoint. Транзакционный outbox получает
 `tender.source_collection_completed`, а manager-only
 `GET /api/tender-sources/runs` возвращает журнал без query, userinfo, fragment и текста
-исключения. Это внутренний receipt запуска, а не подтверждение ЕИС/ЭТП о внешнем
-действии и не реализация provider cursor или контроля полноты выдачи.
+исключения.
+
+Опциональный `tender-page-v1` envelope добавляет реальный generic pagination
+contract: provider возвращает `acknowledgement_id`, `has_more`, same-origin
+`next_url`, `declared_total` и `page_number`. Следующая попытка возобновляется с
+защищённого checkpoint только после успешной транзакции текущей страницы; полный
+ответ очищает pending cursor и начинает следующий цикл с базового URL. Raw
+`next_url` никогда не попадает в API, audit, outbox или run receipt — наружу
+выдаются только SHA-256. Несогласованный contract, не продвинувшийся cursor и
+cross-origin URL отклоняются до сохранения карточек. Append-only run receipt теперь
+фиксирует `partial/complete/unknown`, request/next hashes и hash подтверждения.
+`GET /api/tender-sources/checkpoints` даёт manager-only операционную видимость без
+раскрытия cursor. Это подтверждение страницы общего feed contract, а не
+подтверждение ЕИС/ЭТП о подаче или ином внешнем действии.
 
 `GET /api/tender-sources/freshness` детерминированно сравнивает последний успешный
 receipt каждого настроенного источника с `TENDER_SOURCE_FRESHNESS_SLO_MINUTES`.
 Статусы `unobserved`, `never_succeeded`, `latest_failed` и `stale` попадают в
 существующий System Admin как дедуплицированные технические инциденты и закрываются
-только после актуального успешного receipt. Это внутренний last-success SLO; portal
-cursor, полнота выдачи и внешнее подтверждение provider по-прежнему отсутствуют.
+только после актуального успешного receipt. Для источников без `tender-page-v1`
+полнота честно остаётся `unknown`; официальный portal cursor и source-side
+acknowledgement не заявляются без официального adapter contract.
 
 `POST /api/tender-documents/{document_id}/download` сохраняет каждый новый набор
 байтов по checksum-addressed пути и добавляет его в append-only историю загрузок
@@ -188,7 +201,7 @@ supplier quote snapshot,
 fail-closed
 междокументного черновика, привязанного к нему
 решения менеджера и review-bound decision snapshot. OCR/сложный table extraction,
-официальные ЕИС/ЭТП adapters и provider cursors, автоматическая верификация полного
+официальные ЕИС/ЭТП adapters и их проверенные provider contracts, автоматическая верификация полного
 Company Digital Twin, malware/archive sandbox, supplier discovery/RFQ, подача,
 ЭЦП, autobid, платежи и
 post-win execution ещё не реализованы.
