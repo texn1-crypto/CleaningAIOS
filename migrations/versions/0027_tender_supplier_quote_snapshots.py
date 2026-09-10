@@ -63,21 +63,24 @@ def upgrade() -> None:
                 name="uq_tender_supplier_quote_input",
             ),
         )
-        for column in (
-            "record_id",
-            "input_hash",
-            "prequalification_snapshot_hash",
-            "status",
-            "supplier_name",
-            "supplier_identifier",
-            "quote_reference",
-            "quoted_at",
-            "valid_until",
-            "created_by",
-            "created_at",
-        ):
+        index_names = {
+            "record_id": "ix_tender_supplier_quote_snapshots_record_id",
+            "input_hash": "ix_tender_supplier_quote_snapshots_input_hash",
+            "prequalification_snapshot_hash": (
+                "ix_tender_supplier_quote_prequalification"
+            ),
+            "status": "ix_tender_supplier_quote_snapshots_status",
+            "supplier_name": "ix_tender_supplier_quote_snapshots_supplier_name",
+            "supplier_identifier": "ix_tender_supplier_quote_supplier_identifier",
+            "quote_reference": "ix_tender_supplier_quote_snapshots_quote_reference",
+            "quoted_at": "ix_tender_supplier_quote_snapshots_quoted_at",
+            "valid_until": "ix_tender_supplier_quote_snapshots_valid_until",
+            "created_by": "ix_tender_supplier_quote_snapshots_created_by",
+            "created_at": "ix_tender_supplier_quote_snapshots_created_at",
+        }
+        for column, index_name in index_names.items():
             op.create_index(
-                f"ix_tender_supplier_quote_snapshots_{column}",
+                index_name,
                 "tender_supplier_quote_snapshots",
                 [column],
             )
