@@ -1426,6 +1426,148 @@ def test_tender_feed_persists_canonical_amendments_and_ignores_replays(
     }
 
 
+def test_tender_feed_identity_is_scoped_to_provider_source(client, monkeypatch):
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import IntegrityError
+
+    from app import integrations
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import BusinessRecord, DomainEvent
+
+    sources = (
+        "https://provider-a.example/tenders",
+        "https://provider-b.example/tenders",
+    )
+    feeds = {
+        sources[0]: {
+            "items": [
+                {
+                    "external_id": "provider-local-42",
+                    "title": "Уборка школы",
+                    "data": {"expected_margin": 20, "company_fit": 80},
+                }
+            ]
+        },
+        sources[1]: {
+            "items": [
+                {
+                    "external_id": "provider-local-42",
+                    "title": "Уборка больницы",
+                    "data": {"expected_margin": 30, "company_fit": 85},
+                }
+            ]
+        },
+    }
+
+    class Response:
+        status_code = 200
+        headers = {}
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url):
+            return Response(feeds[url])
+
+    monkeypatch.setattr(integrations.httpx, "Client", Client)
+    monkeypatch.setattr(
+        integrations.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    monkeypatch.setattr(settings, "tender_sources", ",".join(sources))
+    monkeypatch.setattr(settings, "tender_source_token", "")
+
+    first = client.post(
+        "/api/tender-sources/collect",
+        headers={"X-Role": "manager"},
+    ).json()
+    assert first == {
+        "status": "completed",
+        "created": 2,
+        "updated": 0,
+        "unchanged": 0,
+        "errors": [],
+    }
+
+    replay = client.post(
+        "/api/tender-sources/collect",
+        headers={"X-Role": "manager"},
+    ).json()
+    assert replay == {
+        "status": "completed",
+        "created": 0,
+        "updated": 0,
+        "unchanged": 2,
+        "errors": [],
+    }
+
+    with SessionLocal() as db:
+        tenders = list(
+            db.scalars(
+                select(BusinessRecord)
+                .where(
+                    BusinessRecord.record_type == "tender",
+                    BusinessRecord.external_id == "provider-local-42",
+                )
+                .order_by(BusinessRecord.source)
+            ).all()
+        )
+        assert [(row.source, row.title) for row in tenders] == [
+            (sources[0], "Уборка школы"),
+            (sources[1], "Уборка больницы"),
+        ]
+        assert all(len(row.data["feed_versions"]) == 1 for row in tenders)
+        event_count = db.scalar(
+            select(func.count())
+            .select_from(DomainEvent)
+            .where(
+                DomainEvent.aggregate_type == "tender",
+                DomainEvent.aggregate_id.in_([str(row.id) for row in tenders]),
+                DomainEvent.event_type == "tender.discovered",
+            )
+        )
+        assert event_count == 2
+
+    with SessionLocal() as db:
+        db.add(
+            BusinessRecord(
+                record_type="provider_identity_regression",
+                external_id="shared-non-tender-id",
+                title="First",
+                source="source-a",
+            )
+        )
+        db.flush()
+        db.add(
+            BusinessRecord(
+                record_type="provider_identity_regression",
+                external_id="shared-non-tender-id",
+                title="Second",
+                source="source-b",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.flush()
+
+
 def test_tender_collection_does_not_expose_source_exception(client, monkeypatch):
     from app import integrations
     from app.config import settings

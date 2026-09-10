@@ -3,7 +3,10 @@
 ## Текущие canonical objects
 
 - `BusinessRecord(record_type=tender)` — агрегат найденной закупки и mutable
-  projection её текущего состояния.
+  projection её текущего состояния. Для generic feed его external identity задаётся
+  парой `(source, external_id)`; одинаковые provider-local ID разных источников не
+  объединяются. Для остальных типов `BusinessRecord` сохранена уникальность пары
+  `(record_type, external_id)`.
 - `TenderDocument` — зарегистрированный оригинал/версия с source URL, storage path,
   MIME, checksum и analysis metadata. Product specification extraction хранится
   как `extracted/needs_verification`; отдельный review привязан к checksum,

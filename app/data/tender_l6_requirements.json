@@ -95,9 +95,11 @@
       "evidence": [
         "app/integrations.py",
         "app/api_v2.py",
+        "app/models.py",
+        "migrations/versions/0024_provider_scoped_tender_identity.py",
         "tests/test_app.py"
       ],
-      "notes": "A manager-triggered generic HTTP(S) JSON feed contract now stores canonical content hashes and append-only observed versions, distinguishes unchanged replays and emits one outbox event per real version; bearer authentication is HTTPS-only. Official EIS/ETP adapters, legal access agreements, source cursors/SLOs and provider receipts remain missing."
+      "notes": "A manager-triggered generic HTTP(S) JSON feed contract stores canonical content hashes and append-only observed versions, scopes provider-local IDs to each source, distinguishes unchanged replays and emits one outbox event per real version; bearer authentication is HTTPS-only. Official EIS/ETP adapters, legal access agreements, stable provider keys, source cursors/SLOs and provider receipts remain missing."
     },
     {
       "id": 10,
@@ -109,10 +111,11 @@
         "app/models.py:TenderDocument",
         "app/models.py:TenderAssessmentSnapshot",
         "app/integrations.py",
+        "migrations/versions/0024_provider_scoped_tender_identity.py",
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The shared PostgreSQL record, document and immutable assessment models provide a working normalized core with canonical feed-version provenance. A dedicated relational procurement/amendment graph and provider-specific identity model remain missing."
+      "notes": "The shared PostgreSQL record, document and immutable assessment models provide a working normalized core with canonical feed-version provenance. Generic feed identity is enforced by source plus provider-local external ID without weakening non-tender uniqueness. A dedicated relational procurement/amendment graph and stable provider keys from official adapters remain missing."
     },
     {
       "id": 11,
@@ -2704,7 +2707,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The pipeline now starts with canonical, append-only generic feed versions and continues through an assumption-bound auction forecast, evidence-bound product matching, fail-closed local extraction, exact manager review, a persisted cross-document comparison and a review-hash-bound decision snapshot. Official provider ingest and supplier discovery/quote acquisition remain incomplete."
+      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions and continues through an assumption-bound auction forecast, evidence-bound product matching, fail-closed local extraction, exact manager review, a persisted cross-document comparison and a review-hash-bound decision snapshot. Official provider ingest and supplier discovery/quote acquisition remain incomplete."
     },
     {
       "id": 298,
@@ -2858,7 +2861,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Canonical generic feed amendments, checksum-addressed document byte versions, auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review, cross-document comparison and review-to-snapshot conversion are persisted; official provider adapters, supplier acquisition, broader document controls and A4 E2E remain incomplete."
+      "notes": "Provider-scoped canonical generic feed amendments, checksum-addressed document byte versions, auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review, cross-document comparison and review-to-snapshot conversion are persisted; official provider adapters, supplier acquisition, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2904,7 +2907,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Generic-feed-to-approval-card now includes canonical append-only feed and document-byte versions, deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review, an evidence-bound comparison draft, draft-hash-bound decisions and review-hash-bound snapshot inputs. Official provider adapters and supplier quote acquisition remain open."
+      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed and document-byte versions, deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review, an evidence-bound comparison draft, draft-hash-bound decisions and review-hash-bound snapshot inputs. Official provider adapters and supplier quote acquisition remain open."
     },
     {
       "id": 318,

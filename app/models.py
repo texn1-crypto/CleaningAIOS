@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -96,7 +96,28 @@ class AgentState(Base):
 
 class BusinessRecord(Base):
     __tablename__ = "business_records"
-    __table_args__ = (UniqueConstraint("record_type", "external_id", name="uq_record_external"),)
+    __table_args__ = (
+        Index(
+            "uq_record_external_non_tender",
+            "record_type",
+            "external_id",
+            unique=True,
+            postgresql_where=text(
+                "record_type <> 'tender' AND external_id IS NOT NULL"
+            ),
+            sqlite_where=text("record_type <> 'tender' AND external_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_tender_provider_external",
+            "source",
+            "external_id",
+            unique=True,
+            postgresql_where=text(
+                "record_type = 'tender' AND external_id IS NOT NULL"
+            ),
+            sqlite_where=text("record_type = 'tender' AND external_id IS NOT NULL"),
+        ),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     record_type: Mapped[str] = mapped_column(String(64), index=True)
     external_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

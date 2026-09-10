@@ -183,7 +183,13 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                         external_id=external_id,
                         title=title,
                     )
-                    row = db.scalar(select(BusinessRecord).where(BusinessRecord.record_type == "tender", BusinessRecord.external_id == external_id))
+                    row = db.scalar(
+                        select(BusinessRecord).where(
+                            BusinessRecord.record_type == "tender",
+                            BusinessRecord.source == source,
+                            BusinessRecord.external_id == external_id,
+                        )
+                    )
                     is_new = row is None
                     if row is not None and str(
                         (row.data or {}).get("latest_feed_version_hash") or ""
