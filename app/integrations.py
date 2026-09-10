@@ -327,10 +327,106 @@ def download_tender_document(db: Session, document: TenderDocument) -> dict[str,
     except httpx.HTTPError as exc:
         document.status = "download_failed"; db.commit()
         raise HTTPException(502, "Document download failed") from exc
-    storage = Path(settings.document_storage_path); storage.mkdir(parents=True, exist_ok=True)
-    clean_name = re.sub(r"[^A-Za-zА-Яа-я0-9._-]+", "_", document.name).strip("._") or "document"
-    target = storage / f"tender-{document.record_id}-doc-{document.id}-{clean_name}"
-    target.write_bytes(content)
-    document.storage_path = str(target); document.checksum = hashlib.sha256(content).hexdigest(); document.content_type = response_headers.get("content-type", document.content_type); document.status = "downloaded"
-    event_bus.publish(db, "tender.document_downloaded", "tender", str(document.record_id), {"document_id": document.id, "checksum": document.checksum, "bytes": len(content)}, idempotency_key=f"tender-document:{document.id}:{document.checksum}")
-    return {"id": document.id, "status": document.status, "storage_path": document.storage_path, "checksum": document.checksum, "bytes": len(content)}
+    checksum = hashlib.sha256(content).hexdigest()
+    analysis = document.analysis if isinstance(document.analysis, dict) else {}
+    raw_versions = analysis.get("download_versions") or []
+    if not isinstance(raw_versions, list) or any(
+        not isinstance(version, dict) for version in raw_versions
+    ):
+        raise HTTPException(409, "Stored document download history is invalid")
+    versions = list(raw_versions)
+    existing_version = next(
+        (
+            version
+            for version in versions
+            if str(version.get("checksum") or "").lower() == checksum
+        ),
+        None,
+    )
+    version_created = existing_version is None
+    version_number = (
+        len(versions) + 1
+        if existing_version is None
+        else int(existing_version.get("version") or 0)
+    )
+    if version_number < 1:
+        raise HTTPException(409, "Stored document download version is invalid")
+
+    storage = Path(settings.document_storage_path)
+    storage.mkdir(parents=True, exist_ok=True)
+    clean_name = (
+        re.sub(r"[^A-Za-zА-Яа-я0-9._-]+", "_", document.name).strip("._")
+        or "document"
+    )[:120]
+    target = storage / (
+        f"tender-{document.record_id}-doc-{document.id}-{checksum}-{clean_name}"
+    )
+    if existing_version is not None and str(
+        existing_version.get("storage_path") or ""
+    ) != str(target):
+        raise HTTPException(409, "Stored document download path is invalid")
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise HTTPException(409, "Stored document path is not a regular file")
+    try:
+        with target.open("xb") as output:
+            output.write(content)
+    except FileExistsError:
+        if target.is_symlink() or not target.is_file():
+            raise HTTPException(409, "Stored document path is not a regular file")
+        stored_checksum = hashlib.sha256(target.read_bytes()).hexdigest()
+        if stored_checksum != checksum:
+            raise HTTPException(
+                409,
+                "Stored document bytes do not match the expected checksum",
+            )
+
+    content_type = str(
+        response_headers.get("content-type") or document.content_type
+    )[:128]
+    if existing_version is None:
+        versions.append(
+            {
+                "version": version_number,
+                "checksum": checksum,
+                "storage_path": str(target),
+                "bytes": len(content),
+                "content_type": content_type,
+                "source_url": document.source_url,
+                "downloaded_at": datetime.now(timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
+            }
+        )
+    document.analysis = {
+        **analysis,
+        "download_versions": versions,
+        "latest_download_version": version_number,
+        "latest_download_checksum": checksum,
+    }
+    document.storage_path = str(target)
+    document.checksum = checksum
+    document.content_type = content_type
+    document.status = "downloaded"
+    event_bus.publish(
+        db,
+        "tender.document_downloaded",
+        "tender",
+        str(document.record_id),
+        {
+            "document_id": document.id,
+            "checksum": checksum,
+            "bytes": len(content),
+            "version": version_number,
+            "version_created": version_created,
+        },
+        idempotency_key=f"tender-document:{document.id}:{checksum}",
+    )
+    return {
+        "id": document.id,
+        "status": document.status,
+        "storage_path": document.storage_path,
+        "checksum": document.checksum,
+        "bytes": len(content),
+        "version": version_number,
+        "version_created": version_created,
+    }

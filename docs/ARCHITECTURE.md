@@ -175,7 +175,9 @@ rows link back to their source resource. Navigation never infers task state loca
   snapshot and append the provider revision. Portal-specific authentication,
   cursors/receipts and non-JSON formats still require a legal provider adapter. No
   fabricated tenders are used and the generic contract is not an official ЕИС/ЭТП
-  integration.
+  integration. Downloaded tender evidence is stored at checksum-addressed paths with
+  append-only version metadata; exact byte replays reuse the version and a conflicting
+  on-disk checksum is rejected rather than overwritten.
 - The advisory router supports three native contracts. `LLM_BASE_URL` targets the
   OpenAI Responses API and sends `LLM_API_KEY` only in the Authorization header with
   `store=false`. `ANTHROPIC_BASE_URL` targets Claude Messages API and sends

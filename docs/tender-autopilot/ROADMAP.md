@@ -8,11 +8,10 @@
    same engine and introduce conflict/freshness records.
 2. **Discovery/normalization — in progress.** Generic HTTP(S) JSON items now have
    canonical append-only observed versions and replay idempotency. Далее: official
-   provider interface, cursors/receipts, immutable document-byte amendments,
-   normalized procurement model and source SLO.
+   provider interface, cursors/receipts, normalized procurement model and source SLO.
 3. **Document intelligence — in progress.** Checksum-bound local PDF/DOCX/TXT
    extraction now produces evidence-linked UNKNOWN candidates. Далее: immutable
-   object versions, reviewer workflow, MIME/AV/archive sandbox, OCR/table map and
+   reviewer workflow, MIME/AV/archive sandbox, OCR/table map and
    a broader prompt-injection corpus.
 4. **Qualification/suppliers.** Company digital twin, supplier registry, RFQ
    idempotency, quote parsing/freshness, backup/reservation.

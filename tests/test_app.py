@@ -1145,12 +1145,19 @@ def test_tender_feed_and_document_download(client, monkeypatch, tmp_path):
     from app import integrations
 
     feed = {"items": [{"external_id": "feed-1", "title": "Уборка бизнес-центра", "deadline_at": "2030-01-01T12:00:00Z", "data": {"expected_margin": 80, "company_fit": 90}, "documents": [{"name": "contract.pdf", "url": "https://feed.example/contract.pdf", "content_type": "application/pdf"}]}]}
+    document_bytes = {"value": b"PDFDATA"}
 
     class Response:
-        headers = {"content-type": "application/pdf", "content-length": "7"}
+        @property
+        def headers(self):
+            return {
+                "content-type": "application/pdf",
+                "content-length": str(len(document_bytes["value"])),
+            }
+
         def raise_for_status(self): return None
         def json(self): return feed
-        def iter_bytes(self): yield b"PDFDATA"
+        def iter_bytes(self): yield document_bytes["value"]
         def __enter__(self): return self
         def __exit__(self, *args): return False
 
@@ -1175,6 +1182,60 @@ def test_tender_feed_and_document_download(client, monkeypatch, tmp_path):
     downloaded = client.post(f"/api/tender-documents/{document_id}/download").json()
     assert downloaded["status"] == "downloaded"
     assert downloaded["bytes"] == 7
+    assert downloaded["version"] == 1
+    assert downloaded["version_created"] is True
+    first_path = Path(downloaded["storage_path"])
+    assert first_path.read_bytes() == b"PDFDATA"
+    assert downloaded["checksum"] in first_path.name
+
+    replay = client.post(f"/api/tender-documents/{document_id}/download").json()
+    assert replay["version"] == 1
+    assert replay["version_created"] is False
+    assert replay["storage_path"] == str(first_path)
+
+    first_path.write_bytes(b"TAMPERED")
+    conflict = client.post(f"/api/tender-documents/{document_id}/download")
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == (
+        "Stored document bytes do not match the expected checksum"
+    )
+    assert first_path.read_bytes() == b"TAMPERED"
+    first_path.write_bytes(b"PDFDATA")
+
+    document_bytes["value"] = b"PDFDATA-V2"
+    amended = client.post(f"/api/tender-documents/{document_id}/download").json()
+    assert amended["version"] == 2
+    assert amended["version_created"] is True
+    second_path = Path(amended["storage_path"])
+    assert second_path != first_path
+    assert first_path.read_bytes() == b"PDFDATA"
+    assert second_path.read_bytes() == b"PDFDATA-V2"
+
+    from app.models import DomainEvent
+
+    with SessionLocal() as db:
+        document = db.get(TenderDocument, document_id)
+        assert document is not None
+        versions = document.analysis["download_versions"]
+        assert [version["version"] for version in versions] == [1, 2]
+        assert [version["storage_path"] for version in versions] == [
+            str(first_path),
+            str(second_path),
+        ]
+        assert document.analysis["latest_download_version"] == 2
+        assert document.analysis["latest_download_checksum"] == amended["checksum"]
+        events = [
+            event
+            for event in db.scalars(
+                select(DomainEvent).where(
+                    DomainEvent.event_type == "tender.document_downloaded",
+                    DomainEvent.aggregate_id == str(document.record_id),
+                )
+            ).all()
+            if event.payload.get("document_id") == document_id
+        ]
+        assert len(events) == 2
+        assert sorted(event.payload["version"] for event in events) == [1, 2]
 
 
 def test_tender_feed_persists_canonical_amendments_and_ignores_replays(

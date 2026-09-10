@@ -6,9 +6,9 @@
 |---|---|---|
 | PostgreSQL, migrations, RBAC, audit | EXISTS | Общий production-контур CleaningAIOS |
 | Task workflow, retry, outbox, receipts | EXISTS | Нужны procurement-specific compensation и DLQ UI |
-| Tender ingest из HTTP JSON feeds | PARTIAL | Общий HTTP(S) JSON contract сохраняет канонические append-only версии, revision и отличает неизменный replay; нет официальных ЕИС/ЭТП adapters, cursor/SLO и immutable document-byte stream |
+| Tender ingest из HTTP JSON feeds | PARTIAL | Общий HTTP(S) JSON contract сохраняет канонические append-only версии, revision и отличает неизменный replay; нет официальных ЕИС/ЭТП adapters и cursor/SLO |
 | Нормализованная карточка тендера | PARTIAL | Core и feed-version provenance хранятся в `BusinessRecord.data`; нужен отдельный relational procurement/amendment graph и provider-specific identity model |
-| Безопасная загрузка документов | PARTIAL | Есть SSRF/size/hash/storage boundary и MIME guard для локального PDF/DOCX extraction; нет malware scan, archive sandbox и OCR |
+| Безопасная загрузка документов | PARTIAL | Есть SSRF/size/hash/storage boundary, checksum-addressed append-only byte versions, replay/conflict checks и MIME guard для локального PDF/DOCX extraction; нет malware scan, archive sandbox и OCR |
 | Requirement extraction | PARTIAL | Локальный deterministic extractor сохраняет evidence-bound кандидаты как UNKNOWN/NEEDS_VERIFICATION; reviewer workflow, OCR и полный typed graph не подключены |
 | Company qualification | PARTIAL | Typed checks входят в snapshot; company digital twin неполон |
 | Supplier quotes | PARTIAL | Typed current quote и evidence есть; RFQ, reservations и backup suppliers отсутствуют |

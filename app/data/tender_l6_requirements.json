@@ -122,9 +122,10 @@
       "evidence": [
         "app/integrations.py",
         "app/tender_document_intelligence.py",
+        "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Secure download, checksum binding and local PDF/DOCX/TXT/Markdown text extraction exist. Malware scanning, archive sandbox, OCR, tables and amendment diffing remain incomplete."
+      "notes": "Secure download now keeps checksum-addressed byte files and append-only version metadata, reuses exact replays, rejects on-disk checksum conflicts and feeds checksum-bound local PDF/DOCX/TXT/Markdown extraction. Malware scanning, archive sandbox, OCR, tables and semantic amendment diffing remain incomplete."
     },
     {
       "id": 12,
@@ -2857,7 +2858,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Canonical generic feed amendment history, auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review, cross-document comparison and review-to-snapshot conversion are persisted; official tender/provider adapters, supplier acquisition, broader document controls and A4 E2E remain incomplete."
+      "notes": "Canonical generic feed amendments, checksum-addressed document byte versions, auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review, cross-document comparison and review-to-snapshot conversion are persisted; official provider adapters, supplier acquisition, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2903,7 +2904,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Generic-feed-to-approval-card now includes canonical append-only amendment versions, deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review, an evidence-bound comparison draft, draft-hash-bound decisions and review-hash-bound snapshot inputs. Official provider adapters and supplier quote acquisition remain open."
+      "notes": "Generic-feed-to-approval-card now includes canonical append-only feed and document-byte versions, deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review, an evidence-bound comparison draft, draft-hash-bound decisions and review-hash-bound snapshot inputs. Official provider adapters and supplier quote acquisition remain open."
     },
     {
       "id": 318,

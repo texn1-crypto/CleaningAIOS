@@ -27,6 +27,13 @@ snapshot. Bearer token остаётся только HTTP-заголовком �
 event payload. Это общий проверяемый feed contract, а не заявление о наличии
 официального адаптера ЕИС/ЭТП.
 
+`POST /api/tender-documents/{document_id}/download` сохраняет каждый новый набор
+байтов по checksum-addressed пути и добавляет его в append-only историю загрузок
+документа. Повтор тех же байтов возвращает существующую версию и не создаёт второе
+outbox-событие; изменённые байты получают новую версию, а предыдущий файл остаётся
+доступен для проверки старых evidence. Если уже существующий файл по ожидаемому пути
+не совпадает с SHA-256, загрузка завершается fail-closed без перезаписи.
+
 `POST /api/tenders/{record_id}/decision-snapshots` принимает типизированные:
 
 - требования и qualification checks;
@@ -106,8 +113,8 @@ extractor не объявляет товары соответствующими 
 локального выделения кандидатов требований и характеристик товара, проверки
 исходных фактов, fail-closed междокументного черновика, привязанного к нему
 решения менеджера и review-bound decision snapshot. OCR/сложный table extraction,
-официальные ЕИС/ЭТП adapters и provider cursors, immutable document-byte versions,
-supplier RFQ, подача, ЭЦП, autobid, платежи и
+официальные ЕИС/ЭТП adapters и provider cursors, malware/archive sandbox, supplier
+RFQ, подача, ЭЦП, autobid, платежи и
 post-win execution ещё не реализованы.
 Интерфейс не должен называть их подключёнными или завершёнными.
 
