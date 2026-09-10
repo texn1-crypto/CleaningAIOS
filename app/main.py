@@ -65,6 +65,7 @@ from .company_brain_retrieval import (
     list_documents,
     search_documents,
 )
+from .capability_flags import ensure_capability_flags
 
 
 configure_logging("web")
@@ -76,6 +77,9 @@ async def lifespan(_: FastAPI):
     validate_production_security()
     if not settings.production:
         Base.metadata.create_all(engine)
+        with SessionLocal() as db:
+            ensure_capability_flags(db)
+            db.commit()
     yield
 
 

@@ -10,8 +10,9 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .agents import AGENTS, heartbeat
+from .capability_flags import PROTECTED_CAPABILITY_SET
 from .config import settings
-from .models import AgentRun, ApprovalRequest, CompanyKnowledge, DomainEvent, EventConsumerReceipt, SafetyControl, Task
+from .models import AgentRun, ApprovalRequest, CapabilityFlag, CompanyKnowledge, DomainEvent, EventConsumerReceipt, SafetyControl, Task
 from .task_state import record_task_created, transition_task
 
 
@@ -192,7 +193,7 @@ class CompanyBrain:
 
 
 class ApprovalEngine:
-    protected_actions = {"financial", "legal", "contract", "hr_final", "tender_participation", "tender_submission", "bulk_outreach", "social_publication", "agent_replay"}
+    protected_actions = set(PROTECTED_CAPABILITY_SET)
 
     def request(self, db: Session, action_kind: str, resource_type: str, resource_id: str, requested_by: str, payload: dict[str, Any], rationale: str = "") -> ApprovalRequest:
         now = now_utc()
@@ -241,6 +242,23 @@ class DecisionEngine:
                         "key": kill_switch.key,
                         "version": kill_switch.version,
                         "reason": kill_switch.reason,
+                    },
+                }
+            capability_flag = db.get(CapabilityFlag, str(action_kind))
+            if capability_flag is None or not capability_flag.enabled:
+                return {
+                    "allowed": False,
+                    "reason": "capability_disabled",
+                    "approval_id": None,
+                    "capability_flag": {
+                        "key": str(action_kind),
+                        "enabled": False,
+                        "version": capability_flag.version if capability_flag else 0,
+                        "reason": (
+                            capability_flag.reason
+                            if capability_flag
+                            else "capability_flag_missing"
+                        ),
                     },
                 }
             supplied_id = task.payload.get("approval_id")

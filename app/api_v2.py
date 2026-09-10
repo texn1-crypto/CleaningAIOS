@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import ApprovalRequest, BusinessGoal, BusinessRecord, CompanyProfileSnapshot, CompanyRequisite, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderPrequalificationSnapshot, TenderSourceCheckpoint, TenderSourceRun, TenderSupplierQuoteSnapshot
+from .models import ApprovalRequest, BusinessGoal, BusinessRecord, CapabilityFlag, CompanyProfileSnapshot, CompanyRequisite, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderPrequalificationSnapshot, TenderSourceCheckpoint, TenderSourceRun, TenderSupplierQuoteSnapshot
 from .integrations import collect_tenders, download_tender_document, tender_source_freshness
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -25,7 +25,7 @@ from .reports import build_ceo_brief
 from .orchestrator import audit, dispatch
 from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, validate_attachments, verified_recipients
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, CompanyProfileSnapshotCreate, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest, TenderPrequalificationCreate, TenderProductComparisonReviewCreate, TenderProductSpecificationReviewCreate, TenderSupplierQuoteCreate
+from .schemas import CampaignLaunch, CapabilityFlagUpdate, CompanyProfileSnapshotCreate, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest, TenderPrequalificationCreate, TenderProductComparisonReviewCreate, TenderProductSpecificationReviewCreate, TenderSupplierQuoteCreate
 from .security import Principal, principal, require_role
 from .chat import redact_sensitive_text
 from .approval_service import (
@@ -45,6 +45,10 @@ from .telegram_control import (
     bind_identity,
     parse_alert_ack_token,
     parse_callback_token,
+)
+from .capability_flags import (
+    PROTECTED_CAPABILITY_SET,
+    capability_flag_view,
 )
 from .notifications import (
     NotificationNotDelivered,
@@ -188,6 +192,76 @@ def update_external_actions_kill_switch(
     db.commit()
     db.refresh(row)
     return {**_kill_switch_view(row), "changed": changed}
+
+
+@router.get("/safety/capability-flags")
+def list_capability_flags(
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    rows = db.scalars(select(CapabilityFlag).order_by(CapabilityFlag.key)).all()
+    return [capability_flag_view(row) for row in rows]
+
+
+@router.put("/safety/capability-flags/{capability_key}")
+def update_capability_flag(
+    capability_key: str,
+    payload: CapabilityFlagUpdate,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "owner")
+    if capability_key not in PROTECTED_CAPABILITY_SET:
+        raise HTTPException(404, "Unknown protected capability")
+    reason = redact_sensitive_text(payload.reason).strip()
+    if len(reason) < 3:
+        raise HTTPException(422, "A reason is required for a capability change")
+    row = db.get(CapabilityFlag, capability_key)
+    changed = row is None or row.enabled != payload.enabled or row.reason != reason
+    if row is None:
+        row = CapabilityFlag(
+            key=capability_key,
+            enabled=payload.enabled,
+            reason=reason,
+            version=1,
+            updated_by=actor.subject,
+        )
+        db.add(row)
+        db.flush()
+    elif changed:
+        row.enabled = payload.enabled
+        row.reason = reason
+        row.version += 1
+        row.updated_by = actor.subject
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.flush()
+    if changed:
+        details = {
+            "enabled": row.enabled,
+            "version": row.version,
+            "reason": row.reason,
+        }
+        audit(
+            db,
+            actor.subject,
+            "safety.capability_flag_updated",
+            "capability_flag",
+            row.key,
+            details,
+        )
+        event_bus.publish(
+            db,
+            "safety.capability_flag_updated",
+            "capability_flag",
+            row.key,
+            details,
+            idempotency_key=f"capability-flag:{row.key}:version:{row.version}",
+            actor=actor.subject,
+        )
+    db.commit()
+    db.refresh(row)
+    return {**capability_flag_view(row), "changed": changed}
 
 
 @router.get("/tender-autopilot/master-requirements/summary")

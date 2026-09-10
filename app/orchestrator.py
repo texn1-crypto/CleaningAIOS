@@ -117,6 +117,25 @@ def dispatch(db: Session, task: Task) -> dict:
     policy = decision_engine.evaluate(db, task)
     if not policy["allowed"]:
         block_reason = str(policy.get("reason") or "policy_blocked")
+        safety_block = block_reason in {
+            "global_kill_switch_active",
+            "capability_disabled",
+        }
+        if block_reason == "global_kill_switch_active":
+            safety_version = policy.get("kill_switch", {}).get("version", 0)
+            safety_transition_key = (
+                f"task:{task.id}:kill-switch:{safety_version}:blocked"
+            )
+            safety_event_key = f"task:{task.id}:kill-switch:{safety_version}"
+        else:
+            safety_version = policy.get("capability_flag", {}).get("version", 0)
+            safety_transition_key = (
+                f"task:{task.id}:capability:{block_reason}:"
+                f"{safety_version}:blocked"
+            )
+            safety_event_key = (
+                f"task:{task.id}:capability:{block_reason}:{safety_version}"
+            )
         transition_task(
             db,
             task,
@@ -125,23 +144,22 @@ def dispatch(db: Session, task: Task) -> dict:
             reason=block_reason,
             correlation_id=_event_trace(task, "decision_engine")["correlation_id"],
             transition_key=(
-                f"task:{task.id}:kill-switch:{policy.get('kill_switch', {}).get('version')}:blocked"
-                if block_reason == "global_kill_switch_active"
+                safety_transition_key
+                if safety_block
                 else f"task:{task.id}:approval:{policy['approval_id']}:blocked"
             ),
         )
         result = {"blocked": True, **policy}
         task.result = result
         audit(db, "decision_engine", "task.blocked", "task", str(task.id), result)
-        if block_reason == "global_kill_switch_active":
-            switch_version = policy.get("kill_switch", {}).get("version", 0)
+        if safety_block:
             event_bus.publish(
                 db,
                 "policy.execution_blocked",
                 "task",
                 str(task.id),
                 result,
-                idempotency_key=f"task:{task.id}:kill-switch:{switch_version}",
+                idempotency_key=safety_event_key,
                 **_event_trace(task, "decision_engine"),
             )
         else:

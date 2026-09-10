@@ -26,8 +26,10 @@
    supplier discovery, RFQ idempotency, external quote parsing, backup/reservation.
 5. **Application readiness.** Requirement graph, templates, package hash,
    four-eyes review and explicit missing-item remediation.
-6. **Assisted submission.** Capability registry and mock adapters first; external
-   receipt required. CAPTCHA/MFA always human takeover.
+6. **Assisted submission.** The persisted protected-action capability registry now
+   gates Task/Orchestrator execution before approval. Next: central enforcement at
+   every direct protected entry point and mock adapters; external receipt required.
+   CAPTCHA/MFA always human takeover.
 7. **Auction safety.** Simulator, property/replay/failure tests and hard-stop
    invariant before controlled autobid can be proposed.
 8. **Post-win.** Contract obligations, purchase orders, delivery/acceptance,

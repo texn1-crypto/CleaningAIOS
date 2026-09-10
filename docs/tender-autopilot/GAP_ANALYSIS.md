@@ -27,7 +27,7 @@
 | Contract execution/actual profit | PARTIAL | Общие operations/finance records есть; procurement lifecycle не связан end-to-end |
 | Learning/backtest/champion-challenger | PARTIAL | Общий replay/evals есть; procurement golden dataset и calibration отсутствуют |
 | Multi-provider AI router | PARTIAL | OpenAI/Claude/Gemini contracts есть; procurement benchmark отсутствует |
-| Kill switches/capability flags | PARTIAL | Persisted owner-only global external-actions kill switch exists; per-capability and per-tender controls remain open |
+| Kill switches/capability flags | PARTIAL | Persisted owner-only global external-actions kill switch exists. Every protected Task/Orchestrator action now has an explicit persisted capability flag; missing/disabled fails closed before approval, manager visibility and idempotent owner-only audited changes are implemented. Direct non-Task protected entry points and per-tender controls still need centralized enforcement evidence |
 | Evidence freshness/conflicts | PARTIAL | Quote/deadline freshness и checksum binding есть; общий conflict registry отсутствует |
 | Security corpus | PARTIAL | SSRF, approval and path tests есть; ZIP bomb/malware/document prompt injection corpus отсутствует |
 

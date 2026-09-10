@@ -275,6 +275,24 @@ class SafetyControl(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class CapabilityFlag(Base):
+    """Persisted production gate for one protected action capability."""
+
+    __tablename__ = "capability_flags"
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_capability_flag_version"),
+    )
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_by: Mapped[str] = mapped_column(String(128), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
+
+
 class CompanyKnowledge(Base):
     __tablename__ = "company_knowledge"
     __table_args__ = (UniqueConstraint("namespace", "key", name="uq_knowledge_key"),)

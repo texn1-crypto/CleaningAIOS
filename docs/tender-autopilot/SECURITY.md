@@ -33,3 +33,21 @@ transactional event bus as `policy.execution_blocked`. Read-only tasks continue.
 Repeated writes of the same state are idempotent and do not create duplicate audit
 or event records. Deactivating the switch never approves or resumes an old task:
 the operator must create a fresh task, and all normal owner approvals still apply.
+
+## Protected capability flags
+
+`CapabilityFlag` adds a separate persisted gate for every action kind known to the
+Approval Engine. A missing or disabled flag blocks Orchestrator dispatch before an
+approval is created or accepted. The global kill switch is evaluated first and
+remains the final emergency stop; an enabled capability still requires its normal,
+resource-bound owner approval.
+
+Managers can inspect the complete registry at `GET /api/safety/capability-flags`.
+Only the owner may change a known flag with
+`PUT /api/safety/capability-flags/{capability_key}` and a reason. Every real change
+increments the version and writes audit/outbox evidence; identical retries do not.
+Initial flags are explicitly persisted as enabled to preserve existing approval-only
+workflows. New/unknown protected capabilities have no implicit allow state and must
+be added to the code-owned registry before use. Coverage of protected actions that
+bypass Task/Orchestrator must be verified before the feature-flag requirement can be
+called complete.

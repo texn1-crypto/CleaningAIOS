@@ -605,6 +605,11 @@ class ExternalActionsKillSwitchUpdate(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
+class CapabilityFlagUpdate(BaseModel):
+    enabled: bool
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class DeliveryEventCreate(BaseModel):
     event_type: str = Field(pattern="^(delivered|bounce|complaint|unsubscribe)$")
     recipient: EmailStr
