@@ -8,9 +8,10 @@
    same engine and introduce conflict/freshness records.
 2. **Discovery/normalization — in progress.** Generic HTTP(S) JSON items now have
    canonical append-only observed versions, provider-scoped external identity and
-   replay idempotency plus durable per-source attempt receipts. Далее: official
-   provider interface with stable provider keys, cursors/provider acknowledgements,
-   normalized procurement model and source freshness SLO.
+   replay idempotency plus durable per-source attempt receipts and deterministic
+   last-success freshness incidents. Далее: official provider interface with stable
+   provider keys, cursors/provider acknowledgements, completeness monitoring and a
+   normalized procurement model.
 3. **Document intelligence — in progress.** Checksum-bound local PDF/DOCX/TXT
    extraction now produces evidence-linked UNKNOWN candidates. Далее: immutable
    reviewer workflow, MIME/AV/archive sandbox, OCR/table map and

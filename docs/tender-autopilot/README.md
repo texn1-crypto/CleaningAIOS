@@ -40,7 +40,14 @@ event payload. Это общий проверяемый feed contract, а не �
 `tender.source_collection_completed`, а manager-only
 `GET /api/tender-sources/runs` возвращает журнал без query, userinfo, fragment и текста
 исключения. Это внутренний receipt запуска, а не подтверждение ЕИС/ЭТП о внешнем
-действии и не реализация cursor/freshness SLO.
+действии и не реализация provider cursor или контроля полноты выдачи.
+
+`GET /api/tender-sources/freshness` детерминированно сравнивает последний успешный
+receipt каждого настроенного источника с `TENDER_SOURCE_FRESHNESS_SLO_MINUTES`.
+Статусы `unobserved`, `never_succeeded`, `latest_failed` и `stale` попадают в
+существующий System Admin как дедуплицированные технические инциденты и закрываются
+только после актуального успешного receipt. Это внутренний last-success SLO; portal
+cursor, полнота выдачи и внешнее подтверждение provider по-прежнему отсутствуют.
 
 `POST /api/tender-documents/{document_id}/download` сохраняет каждый новый набор
 байтов по checksum-addressed пути и добавляет его в append-only историю загрузок

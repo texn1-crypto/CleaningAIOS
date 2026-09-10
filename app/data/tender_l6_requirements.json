@@ -100,7 +100,7 @@
         "migrations/versions/0025_tender_source_run_receipts.py",
         "tests/test_app.py"
       ],
-      "notes": "A manager-triggered generic HTTP(S) JSON feed contract stores canonical content hashes and append-only observed versions, scopes provider-local IDs to each source, distinguishes unchanged replays and emits one outbox event per real version; bearer authentication is HTTPS-only. Every configured attempt persists a final source-run receipt with timing, HTTP/outcome counters, a secret-safe manager view and transactional outbox event. Official EIS/ETP adapters, legal access agreements, stable provider keys, source cursors/freshness SLOs and external provider acknowledgements remain missing."
+      "notes": "A manager-triggered generic HTTP(S) JSON feed contract stores canonical content hashes and append-only observed versions, scopes provider-local IDs to each source, distinguishes unchanged replays and emits one outbox event per real version; bearer authentication is HTTPS-only. Every configured attempt persists a final source-run receipt with timing, HTTP/outcome counters, a secret-safe manager view and transactional outbox event. A deterministic last-success SLO and deduplicated System Admin incident are connected. Official EIS/ETP adapters, legal access agreements, stable provider keys, source cursors/completeness controls and external provider acknowledgements remain missing."
     },
     {
       "id": 10,
@@ -1010,11 +1010,15 @@
       "evidence": [
         "app/models.py:TenderSourceRun",
         "app/integrations.py:collect_tenders",
+        "app/integrations.py:tender_source_freshness",
         "app/api_v2.py:list_tender_source_runs",
+        "app/api_v2.py:get_tender_source_freshness",
+        "app/system_admin.py:collect_incidents",
         "migrations/versions/0025_tender_source_run_receipts.py",
-        "tests/test_app.py:test_tender_collection_does_not_expose_source_exception"
+        "tests/test_app.py:test_tender_source_freshness_reports_all_states_without_source_secrets",
+        "tests/test_system_admin.py:test_system_admin_deduplicates_and_resolves_stale_tender_source"
       ],
-      "notes": "Each configured generic-feed attempt records start/finish timestamps and final success/failure evidence with HTTP/outcome counters. No scheduler-driven cursor, last-success watermark, staleness threshold/SLO or alert exists yet, so source freshness remains PARTIAL."
+      "notes": "Each configured generic-feed attempt records final success/failure evidence. A configurable deterministic last-success SLO classifies fresh, unobserved, never-succeeded, latest-failed and stale sources; manager API and deduplicated System Admin incident/recovery are connected without exposing source credentials. Provider cursors, completeness guarantees and source-side acknowledgements remain missing, so SOURCE FRESHNESS stays PARTIAL."
     },
     {
       "id": 111,
@@ -2712,7 +2716,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions and durable per-source run receipts, then continues through an assumption-bound auction forecast, evidence-bound product matching, fail-closed local extraction, exact manager review, a persisted cross-document comparison and a review-hash-bound decision snapshot. Official provider ingest/cursors and supplier discovery/quote acquisition remain incomplete."
+      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, durable per-source run receipts and deterministic freshness incidents, then continues through an assumption-bound auction forecast, evidence-bound product matching, fail-closed local extraction, exact manager review, a persisted cross-document comparison and a review-hash-bound decision snapshot. Official provider ingest/cursors and supplier discovery/quote acquisition remain incomplete."
     },
     {
       "id": 298,
@@ -2866,7 +2870,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Provider-scoped canonical generic feed amendments, durable source-run receipts, checksum-addressed document byte versions, auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review, cross-document comparison and review-to-snapshot conversion are persisted; official provider adapters/cursors, supplier acquisition, broader document controls and A4 E2E remain incomplete."
+      "notes": "Provider-scoped canonical generic feed amendments, durable source-run receipts with freshness incidents, checksum-addressed document byte versions, auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review, cross-document comparison and review-to-snapshot conversion are persisted; official provider adapters/cursors, supplier acquisition, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2912,7 +2916,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with source-run receipts, document-byte versions, deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review, an evidence-bound comparison draft, draft-hash-bound decisions and review-hash-bound snapshot inputs. Official provider adapters/cursors and supplier quote acquisition remain open."
+      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with source-run receipts and freshness incidents, document-byte versions, deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review, an evidence-bound comparison draft, draft-hash-bound decisions and review-hash-bound snapshot inputs. Official provider adapters/cursors and supplier quote acquisition remain open."
     },
     {
       "id": 318,

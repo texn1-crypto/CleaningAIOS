@@ -93,6 +93,14 @@ never replays an outreach campaign or another protected business action. Use
 `SYSTEM_ADMIN_STALE_TASK_MINUTES=15` to define when a running task becomes an
 incident, and `/sysadmin` in Telegram to request the latest live check.
 
+When `TENDER_SOURCES` is configured, `TENDER_SOURCE_FRESHNESS_SLO_MINUTES=120`
+sets the maximum age of the latest successful source receipt. The manager-only
+`GET /api/tender-sources/freshness` endpoint reports deterministic per-source
+status. System Admin treats `unobserved`, `never_succeeded`, `latest_failed` and
+`stale` as deduplicated technical incidents; a later current successful receipt
+closes the incident. The view and alert strip URL query, userinfo and fragment and
+never contain the raw provider exception.
+
 `PERPLEXITY_API_KEY` enables the research-grounded agent coach used by Meta Brain.
 Only aggregate agent telemetry and measured outcome counts are sent. Perplexity may
 return review recommendations, but cannot call application tools, see credentials,

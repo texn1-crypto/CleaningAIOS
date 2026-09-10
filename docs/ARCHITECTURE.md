@@ -176,7 +176,11 @@ rows link back to their source resource. Navigation never infers task state loca
   persists a final `TenderSourceRun` receipt with timing, HTTP status and outcome
   counters and emits a transactional outbox event. The manager-only
   `GET /api/tender-sources/runs` view exposes a query/userinfo-free source label and
-  bounded error type, never the raw exception or source credentials. Portal-specific
+  bounded error type, never the raw exception or source credentials. A deterministic
+  freshness view compares each configured source's latest successful receipt with
+  `TENDER_SOURCE_FRESHNESS_SLO_MINUTES`; System Admin creates one deduplicated incident
+  for unobserved, never-successful, latest-failed or stale sources and resolves it after
+  a current successful receipt. Portal-specific
   authentication, cursors, provider acknowledgements and non-JSON formats still
   require a legal provider adapter. No
   fabricated tenders are used and the generic contract is not an official ЕИС/ЭТП

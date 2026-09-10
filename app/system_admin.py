@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from .chat import redact_sensitive_text
 from .improvements import build_codex_prompt, retry_workspace_handoff
+from .integrations import tender_source_freshness
 from .models import (
     AgentRun,
     AgentState,
@@ -334,6 +335,53 @@ def collect_incidents(
                 reason=state.last_error or f"component status: {state.status}",
                 severity="critical",
                 data={"component": state.agent_type, "status": state.status},
+            )
+        )
+
+    source_freshness = tender_source_freshness(db, now=now)
+    source_reasons = {
+        "unobserved": "Для настроенного источника ещё нет подтверждённого запуска",
+        "never_succeeded": "Настроенный источник ещё ни разу не был успешно собран",
+        "latest_failed": "Последняя попытка сбора настроенного источника завершилась ошибкой",
+        "stale": "Последний успешный сбор источника вышел за freshness SLO",
+    }
+    for source in source_freshness["sources"]:
+        source_status = str(source["status"])
+        if source_status == "fresh":
+            continue
+        incidents.append(
+            _incident(
+                kind=f"tender_source_{source_status}",
+                resource_type="tender_source",
+                resource_id=str(source["source_ref"]),
+                reason=(
+                    f"{source_reasons[source_status]}: {source['source_label']}"
+                ),
+                severity=(
+                    "critical"
+                    if source_status in {"never_succeeded", "latest_failed"}
+                    else "high"
+                ),
+                data={
+                    "source_ref": source["source_ref"],
+                    "source_label": source["source_label"],
+                    "freshness_status": source_status,
+                    "last_attempt_status": source["last_attempt_status"],
+                    "last_attempt_at": (
+                        source["last_attempt_at"].isoformat()
+                        if source["last_attempt_at"]
+                        else None
+                    ),
+                    "last_success_at": (
+                        source["last_success_at"].isoformat()
+                        if source["last_success_at"]
+                        else None
+                    ),
+                    "last_success_age_minutes": source[
+                        "last_success_age_minutes"
+                    ],
+                    "slo_minutes": source_freshness["slo_minutes"],
+                },
             )
         )
     return sorted(

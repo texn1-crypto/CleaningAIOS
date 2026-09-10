@@ -5,7 +5,7 @@ import ipaddress
 import json
 import re
 import socket
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -39,6 +39,103 @@ def _safe_source_label(source: str) -> str:
     port_suffix = f":{port}" if port and port != default_port else ""
     path = parsed.path or "/"
     return f"{parsed.scheme.lower()}://{hostname}{port_suffix}{path}"[:1024]
+
+
+def tender_source_freshness(
+    db: Session,
+    *,
+    sources: list[str] | None = None,
+    now: datetime | None = None,
+    slo_minutes: int | None = None,
+) -> dict[str, Any]:
+    """Evaluate configured feed freshness only from durable source-run receipts."""
+
+    configured_sources = sources if sources is not None else [
+        value.strip()
+        for value in settings.tender_sources.split(",")
+        if value.strip()
+    ]
+    configured_sources = list(dict.fromkeys(configured_sources))
+    threshold_minutes = max(
+        5,
+        min(
+            int(
+                slo_minutes
+                if slo_minutes is not None
+                else settings.tender_source_freshness_slo_minutes
+            ),
+            7 * 24 * 60,
+        ),
+    )
+    current = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    if current.tzinfo is not None:
+        current = current.astimezone(timezone.utc).replace(tzinfo=None)
+    if not configured_sources:
+        return {
+            "status": "source_configuration_required",
+            "slo_minutes": threshold_minutes,
+            "configured_sources": 0,
+            "fresh_sources": 0,
+            "missed_sources": 0,
+            "sources": [],
+        }
+
+    source_rows: list[dict[str, Any]] = []
+    for source in configured_sources:
+        source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        latest = db.scalar(
+            select(TenderSourceRun)
+            .where(TenderSourceRun.source_hash == source_hash)
+            .order_by(TenderSourceRun.id.desc())
+        )
+        latest_success = db.scalar(
+            select(TenderSourceRun)
+            .where(
+                TenderSourceRun.source_hash == source_hash,
+                TenderSourceRun.status == "completed",
+            )
+            .order_by(TenderSourceRun.id.desc())
+        )
+        if latest is None:
+            source_status = "unobserved"
+        elif latest_success is None:
+            source_status = "never_succeeded"
+        elif latest.status == "failed" and latest.id > latest_success.id:
+            source_status = "latest_failed"
+        elif latest_success.finished_at < current - timedelta(minutes=threshold_minutes):
+            source_status = "stale"
+        else:
+            source_status = "fresh"
+        success_age_minutes = (
+            max(
+                0,
+                int((current - latest_success.finished_at).total_seconds() // 60),
+            )
+            if latest_success is not None
+            else None
+        )
+        source_rows.append(
+            {
+                "source_ref": source_hash[:32],
+                "source_label": _safe_source_label(source),
+                "status": source_status,
+                "last_attempt_status": latest.status if latest else None,
+                "last_attempt_at": latest.finished_at if latest else None,
+                "last_success_at": (
+                    latest_success.finished_at if latest_success else None
+                ),
+                "last_success_age_minutes": success_age_minutes,
+            }
+        )
+    fresh_count = sum(row["status"] == "fresh" for row in source_rows)
+    return {
+        "status": "fresh" if fresh_count == len(source_rows) else "missed",
+        "slo_minutes": threshold_minutes,
+        "configured_sources": len(source_rows),
+        "fresh_sources": fresh_count,
+        "missed_sources": len(source_rows) - fresh_count,
+        "sources": source_rows,
+    }
 
 
 def _safe_url(url: str) -> None:

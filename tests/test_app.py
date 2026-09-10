@@ -1716,6 +1716,114 @@ def test_tender_collection_does_not_expose_source_exception(client, monkeypatch)
     assert source_secret not in serialized
 
 
+def test_tender_source_freshness_reports_all_states_without_source_secrets(
+    client,
+    monkeypatch,
+):
+    import hashlib
+    import json
+    from datetime import datetime, timedelta
+
+    from app import integrations
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import TenderSourceRun
+
+    now = datetime.now().replace(microsecond=0)
+    query_secret = "freshness-query-secret"
+    sources = {
+        "fresh": f"https://freshness.example/fresh?token={query_secret}",
+        "stale": "https://freshness.example/stale",
+        "latest_failed": "https://freshness.example/latest-failed",
+        "never_succeeded": "https://freshness.example/never-succeeded",
+        "unobserved": "https://freshness.example/unobserved",
+    }
+
+    def receipt(source: str, status: str, finished_at: datetime) -> TenderSourceRun:
+        return TenderSourceRun(
+            source_hash=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            source_label=integrations._safe_source_label(source),
+            status=status,
+            http_status=200 if status == "completed" else 503,
+            items_seen=1 if status == "completed" else 0,
+            created_count=0,
+            updated_count=0,
+            unchanged_count=1 if status == "completed" else 0,
+            error_type="" if status == "completed" else "HTTPStatusError",
+            started_at=finished_at - timedelta(seconds=2),
+            finished_at=finished_at,
+        )
+
+    with SessionLocal() as db:
+        db.add(receipt(sources["fresh"], "completed", now - timedelta(minutes=10)))
+        db.add(receipt(sources["stale"], "completed", now - timedelta(minutes=61)))
+        db.add(
+            receipt(
+                sources["latest_failed"],
+                "completed",
+                now - timedelta(minutes=10),
+            )
+        )
+        db.flush()
+        db.add(
+            receipt(
+                sources["latest_failed"],
+                "failed",
+                now - timedelta(minutes=5),
+            )
+        )
+        db.add(
+            receipt(
+                sources["never_succeeded"],
+                "failed",
+                now - timedelta(minutes=5),
+            )
+        )
+        db.commit()
+        result = integrations.tender_source_freshness(
+            db,
+            sources=list(sources.values()),
+            now=now,
+            slo_minutes=60,
+        )
+
+    assert result["status"] == "missed"
+    assert result["slo_minutes"] == 60
+    assert result["configured_sources"] == 5
+    assert result["fresh_sources"] == 1
+    assert result["missed_sources"] == 4
+    by_label = {row["source_label"]: row for row in result["sources"]}
+    assert by_label["https://freshness.example/fresh"]["status"] == "fresh"
+    assert by_label["https://freshness.example/stale"]["status"] == "stale"
+    assert (
+        by_label["https://freshness.example/latest-failed"]["status"]
+        == "latest_failed"
+    )
+    assert (
+        by_label["https://freshness.example/never-succeeded"]["status"]
+        == "never_succeeded"
+    )
+    assert (
+        by_label["https://freshness.example/unobserved"]["status"]
+        == "unobserved"
+    )
+    assert query_secret not in json.dumps(result, default=str)
+
+    monkeypatch.setattr(settings, "tender_sources", ",".join(sources.values()))
+    monkeypatch.setattr(settings, "tender_source_freshness_slo_minutes", 60)
+    response = client.get(
+        "/api/tender-sources/freshness",
+        headers={"X-Role": "manager"},
+    )
+    assert response.status_code == 200
+    assert response.json()["configured_sources"] == 5
+    assert query_secret not in response.text
+    assert client.get(
+        "/api/tender-sources/freshness",
+        headers={"X-Role": "viewer"},
+    ).status_code == 403
+
+
 def test_delivery_event_suppresses_bounced_recipient(client):
     queued = client.post("/api/outreach/messages", json={"campaign_key": "bounce-test", "recipient": "bounce@example.com", "subject": "Test", "body": "Body"}).json()
     event = client.post("/api/outreach/delivery-events", json={"event_type": "bounce", "recipient": "bounce@example.com", "message_id": queued["id"], "reason": "mailbox unavailable"})

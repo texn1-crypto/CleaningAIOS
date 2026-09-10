@@ -14,6 +14,7 @@ from app.models import (
     OwnerNotification,
     SenderMailbox,
     Task,
+    TenderSourceRun,
 )
 
 
@@ -155,6 +156,103 @@ def test_system_admin_deduplicates_incidents_and_verifies_recovery(monkeypatch):
                 AuditLog.action == "system.incident_resolved"
             )
         ) == 3
+
+
+def test_system_admin_deduplicates_and_resolves_stale_tender_source(monkeypatch):
+    import hashlib
+
+    from app import integrations, system_admin
+
+    session_factory = _session_factory()
+    now = datetime(2040, 1, 1, 12, 0)
+    query_secret = "system-admin-source-secret"
+    source = f"https://source.example/tenders?token={query_secret}"
+    source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+    def fake_handoff(row):
+        row.handoff_status = "not_needed"
+        return {"status": "not_needed"}
+
+    monkeypatch.setattr(system_admin, "retry_workspace_handoff", fake_handoff)
+    monkeypatch.setattr(integrations.settings, "tender_sources", source)
+    monkeypatch.setattr(
+        integrations.settings,
+        "tender_source_freshness_slo_minutes",
+        60,
+    )
+
+    with session_factory() as db:
+        stale_at = now - timedelta(minutes=61)
+        db.add(
+            TenderSourceRun(
+                source_hash=source_hash,
+                source_label="https://source.example/tenders",
+                status="completed",
+                http_status=200,
+                items_seen=1,
+                created_count=1,
+                updated_count=0,
+                unchanged_count=0,
+                error_type="",
+                started_at=stale_at - timedelta(seconds=1),
+                finished_at=stale_at,
+            )
+        )
+        db.commit()
+
+        first = system_admin.run_system_admin_audit(db, now=now)
+        db.commit()
+        assert first["summary"]["active"] == 1
+        assert first["summary"]["new"] == 1
+        incident = first["incidents"][0]
+        assert incident["kind"] == "tender_source_stale"
+        assert incident["resource_type"] == "tender_source"
+        assert incident["resource_id"] == source_hash[:32]
+        assert incident["data"]["slo_minutes"] == 60
+        assert query_secret not in str(first)
+        assert db.scalar(select(func.count()).select_from(ImprovementRequest)) == 1
+
+        repeated = system_admin.run_system_admin_audit(
+            db,
+            now=now + timedelta(minutes=1),
+        )
+        db.commit()
+        assert repeated["summary"]["active"] == 1
+        assert repeated["summary"]["new"] == 0
+        assert db.scalar(select(func.count()).select_from(ImprovementRequest)) == 1
+
+        db.add(
+            TenderSourceRun(
+                source_hash=source_hash,
+                source_label="https://source.example/tenders",
+                status="completed",
+                http_status=200,
+                items_seen=1,
+                created_count=0,
+                updated_count=0,
+                unchanged_count=1,
+                error_type="",
+                started_at=now + timedelta(minutes=1, seconds=59),
+                finished_at=now + timedelta(minutes=2),
+            )
+        )
+        db.commit()
+
+        recovered = system_admin.run_system_admin_audit(
+            db,
+            now=now + timedelta(minutes=2),
+        )
+        db.commit()
+        assert recovered["summary"]["active"] == 0
+        assert recovered["summary"]["resolved"] == 1
+        improvement = db.scalar(select(ImprovementRequest))
+        assert improvement is not None
+        assert improvement.status == "implemented"
+        assert db.scalar(
+            select(func.count()).select_from(AuditLog).where(
+                AuditLog.action == "system.incident_resolved"
+            )
+        ) == 1
 
 
 def test_system_admin_does_not_treat_owner_approval_as_technical_failure(monkeypatch):

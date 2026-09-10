@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from .db import SessionLocal
 from .config import settings
 from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderSourceRun
-from .integrations import collect_tenders, download_tender_document
+from .integrations import collect_tenders, download_tender_document, tender_source_freshness
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
 from .operations import business_graph, create_ceo_actions, entity_view, goal_progress, parse_lead_import, score_tender, simulate_site, site_economics, validate_entity
@@ -1120,6 +1120,15 @@ def list_tender_source_runs(
         }
         for row in rows
     ]
+
+
+@router.get("/tender-sources/freshness")
+def get_tender_source_freshness(
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    return tender_source_freshness(db)
 
 
 @router.post("/tender-documents/{document_id}/download")
