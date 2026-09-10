@@ -168,8 +168,14 @@ rows link back to their source resource. Navigation never infers task state loca
 - `TENDER_SOURCES` declares comma-separated HTTP JSON feeds. A feed returns either a
   list or `{ "items": [...] }`; each item needs `external_id`, `title`, and may include
   `deadline_at`, scoring data and `documents`. `TENDER_SOURCE_TOKEN` supplies an
-  optional bearer token. Portal-specific authentication or non-JSON formats still
-  require a legal provider adapter. No fabricated tenders are used.
+  optional bearer token that is sent only to HTTPS sources and remains
+  request-header-only. Accepted items are canonicalized into append-only PostgreSQL
+  feed versions; exact replays are reported
+  as `unchanged` without another event, while changed items retain the previous
+  snapshot and append the provider revision. Portal-specific authentication,
+  cursors/receipts and non-JSON formats still require a legal provider adapter. No
+  fabricated tenders are used and the generic contract is not an official ЕИС/ЭТП
+  integration.
 - The advisory router supports three native contracts. `LLM_BASE_URL` targets the
   OpenAI Responses API and sends `LLM_API_KEY` only in the Authorization header with
   `store=false`. `ANTHROPIC_BASE_URL` targets Claude Messages API and sends

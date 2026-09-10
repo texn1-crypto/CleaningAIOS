@@ -18,6 +18,15 @@ PostgreSQL, Task workflow, transactional outbox, audit и Approval Engine. Эт�
 
 ## Реализованный вертикальный срез
 
+`POST /api/tender-sources/collect` принимает настроенные HTTP(S) JSON feeds.
+Каждая принятая карточка канонизируется, получает SHA-256 версии и сохраняет в
+PostgreSQL append-only историю наблюдений вместе с заявленным источником и revision.
+Точный повтор учитывается как `unchanged`, не создаёт новую версию и не публикует
+повторное outbox-событие; изменение добавляет следующую версию, сохраняя предыдущий
+snapshot. Bearer token остаётся только HTTP-заголовком и не попадает в карточку или
+event payload. Это общий проверяемый feed contract, а не заявление о наличии
+официального адаптера ЕИС/ЭТП.
+
 `POST /api/tenders/{record_id}/decision-snapshots` принимает типизированные:
 
 - требования и qualification checks;
@@ -93,11 +102,12 @@ extractor не объявляет товары соответствующими 
 
 ## Честная граница готовности
 
-Срез production-quality для ручного/fixture структурированного ввода,
+Срез production-quality для общего HTTP(S) JSON feed и ручного/fixture структурированного ввода,
 локального выделения кандидатов требований и характеристик товара, проверки
 исходных фактов, fail-closed междокументного черновика, привязанного к нему
 решения менеджера и review-bound decision snapshot. OCR/сложный table extraction,
-официальные ЕИС/ЭТП adapters, supplier RFQ, подача, ЭЦП, autobid, платежи и
+официальные ЕИС/ЭТП adapters и provider cursors, immutable document-byte versions,
+supplier RFQ, подача, ЭЦП, autobid, платежи и
 post-win execution ещё не реализованы.
 Интерфейс не должен называть их подключёнными или завершёнными.
 

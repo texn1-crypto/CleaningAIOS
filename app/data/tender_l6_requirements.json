@@ -91,17 +91,28 @@
       "id": 9,
       "title": "PROCUREMENT SOURCE LAYER",
       "priority": "P0",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/integrations.py",
+        "app/api_v2.py",
+        "tests/test_app.py"
+      ],
+      "notes": "A manager-triggered generic HTTP(S) JSON feed contract now stores canonical content hashes and append-only observed versions, distinguishes unchanged replays and emits one outbox event per real version; bearer authentication is HTTPS-only. Official EIS/ETP adapters, legal access agreements, source cursors/SLOs and provider receipts remain missing."
     },
     {
       "id": 10,
       "title": "ЕДИНАЯ НОРМАЛИЗОВАННАЯ МОДЕЛЬ ТЕНДЕРА",
       "priority": "P0",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/models.py:BusinessRecord",
+        "app/models.py:TenderDocument",
+        "app/models.py:TenderAssessmentSnapshot",
+        "app/integrations.py",
+        "tests/test_app.py",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": "The shared PostgreSQL record, document and immutable assessment models provide a working normalized core with canonical feed-version provenance. A dedicated relational procurement/amendment graph and provider-specific identity model remain missing."
     },
     {
       "id": 11,
@@ -133,6 +144,7 @@
       "status": "partial",
       "evidence": [
         "app/tender_document_intelligence.py",
+        "app/integrations.py",
         "app/tender_autopilot.py",
         "app/schemas.py",
         "tests/test_tender_autopilot.py"
@@ -2683,13 +2695,15 @@
       "priority": "P0",
       "status": "partial",
       "evidence": [
+        "app/integrations.py",
         "app/tender_autopilot.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
         "docs/tender-autopilot/README.md",
+        "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The decision pipeline includes an assumption-bound auction forecast, evidence-bound product matching, fail-closed local parameter extraction, exact manager review, a persisted checksum/review-hash-bound cross-document comparison draft, an exact-set manager comparison review and a review-hash-bound decision snapshot input. Supplier discovery/quote acquisition remains incomplete."
+      "notes": "The pipeline now starts with canonical, append-only generic feed versions and continues through an assumption-bound auction forecast, evidence-bound product matching, fail-closed local extraction, exact manager review, a persisted cross-document comparison and a review-hash-bound decision snapshot. Official provider ingest and supplier discovery/quote acquisition remain incomplete."
     },
     {
       "id": 298,
@@ -2836,12 +2850,14 @@
       "status": "partial",
       "evidence": [
         "docs/tender-autopilot/GAP_ANALYSIS.md",
+        "app/integrations.py",
         "app/tender_autopilot.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
+        "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review, cross-document comparison drafts, draft-hash-bound comparison decisions and review-to-snapshot conversion are persisted; real tender/provider adapters, supplier acquisition, broader document controls and A4 E2E remain incomplete."
+      "notes": "Canonical generic feed amendment history, auction forecast, stop price, evidence-bound product matching, fail-closed extraction, manager review, cross-document comparison and review-to-snapshot conversion are persisted; official tender/provider adapters, supplier acquisition, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2866,8 +2882,10 @@
       "status": "partial",
       "evidence": [
         "docs/tender-autopilot/",
+        "app/integrations.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
+        "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
       "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox and regression evidence. It remains partial until the first-release DoD is met."
@@ -2878,12 +2896,14 @@
       "priority": "P0",
       "status": "partial",
       "evidence": [
+        "app/integrations.py",
         "app/tender_autopilot.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
+        "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Fixture-to-approval-card path includes deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review, a persisted evidence-bound cross-document comparison draft, draft-hash-bound manager decisions and review-hash-bound decision snapshot inputs. Real provider ingest and supplier quote acquisition remain open."
+      "notes": "Generic-feed-to-approval-card now includes canonical append-only amendment versions, deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review, an evidence-bound comparison draft, draft-hash-bound decisions and review-hash-bound snapshot inputs. Official provider adapters and supplier quote acquisition remain open."
     },
     {
       "id": 318,

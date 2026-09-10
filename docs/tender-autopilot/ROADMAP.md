@@ -6,8 +6,10 @@
 1. **Decision foundation — in progress.** Immutable decision snapshot, Decimal
    economics, evidence binding, approval card. Далее: move legacy evaluator to the
    same engine and introduce conflict/freshness records.
-2. **Discovery/normalization.** Official provider interface, amendment versions,
-   normalized procurement model, source SLO and fixtures.
+2. **Discovery/normalization — in progress.** Generic HTTP(S) JSON items now have
+   canonical append-only observed versions and replay idempotency. Далее: official
+   provider interface, cursors/receipts, immutable document-byte amendments,
+   normalized procurement model and source SLO.
 3. **Document intelligence — in progress.** Checksum-bound local PDF/DOCX/TXT
    extraction now produces evidence-linked UNKNOWN candidates. Далее: immutable
    object versions, reviewer workflow, MIME/AV/archive sandbox, OCR/table map and

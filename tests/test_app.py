@@ -1177,6 +1177,194 @@ def test_tender_feed_and_document_download(client, monkeypatch, tmp_path):
     assert downloaded["bytes"] == 7
 
 
+def test_tender_feed_persists_canonical_amendments_and_ignores_replays(
+    client, monkeypatch
+):
+    import json
+
+    from sqlalchemy import select
+
+    from app import integrations
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import BusinessRecord, DomainEvent
+
+    source_token = "feed-token-must-remain-in-request-header-only"
+    feed = {
+        "items": [
+            {
+                "external_id": "versioned-feed-1",
+                "title": "Уборка склада",
+                "deadline_at": "2030-01-01T12:00:00Z",
+                "revision": "1",
+                "data": {"expected_margin": 25, "company_fit": 90},
+                "documents": [
+                    {
+                        "name": "Техническое задание.pdf",
+                        "url": "https://feed.example/specification.pdf",
+                        "content_type": "application/pdf",
+                    },
+                    {
+                        "name": "Проект договора.pdf",
+                        "url": "https://feed.example/contract.pdf",
+                        "content_type": "application/pdf",
+                    },
+                ],
+            }
+        ]
+    }
+
+    class Response:
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return feed
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            assert kwargs["headers"]["Authorization"] == f"Bearer {source_token}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url):
+            return Response()
+
+    monkeypatch.setattr(integrations.httpx, "Client", Client)
+    monkeypatch.setattr(
+        integrations.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    monkeypatch.setattr(settings, "tender_sources", "https://feed.example/tenders")
+    monkeypatch.setattr(settings, "tender_source_token", source_token)
+
+    original = feed["items"][0]
+    reordered = {key: original[key] for key in reversed(original)}
+    reordered["data"] = {key: original["data"][key] for key in reversed(original["data"])}
+    reordered["documents"] = list(reversed(original["documents"]))
+    original_hash, _, _ = integrations._tender_feed_version(
+        settings.tender_sources,
+        original,
+        external_id=original["external_id"],
+        title=original["title"],
+    )
+    reordered_hash, _, _ = integrations._tender_feed_version(
+        settings.tender_sources,
+        reordered,
+        external_id=reordered["external_id"],
+        title=reordered["title"],
+    )
+    assert original_hash == reordered_hash
+
+    first = client.post(
+        "/api/tender-sources/collect", headers={"X-Role": "manager"}
+    ).json()
+    assert first == {
+        "status": "completed",
+        "created": 1,
+        "updated": 0,
+        "unchanged": 0,
+        "errors": [],
+    }
+
+    repeated = client.post(
+        "/api/tender-sources/collect", headers={"X-Role": "manager"}
+    ).json()
+    assert repeated == {
+        "status": "completed",
+        "created": 0,
+        "updated": 0,
+        "unchanged": 1,
+        "errors": [],
+    }
+
+    feed["items"][0]["title"] = "Уборка склада и территории"
+    feed["items"][0]["revision"] = "2"
+    amended = client.post(
+        "/api/tender-sources/collect", headers={"X-Role": "manager"}
+    ).json()
+    assert amended == {
+        "status": "completed",
+        "created": 0,
+        "updated": 1,
+        "unchanged": 0,
+        "errors": [],
+    }
+
+    with SessionLocal() as db:
+        tender = db.scalar(
+            select(BusinessRecord).where(
+                BusinessRecord.record_type == "tender",
+                BusinessRecord.external_id == "versioned-feed-1",
+            )
+        )
+        assert tender is not None
+        versions = tender.data["feed_versions"]
+        assert [item["version"] for item in versions] == [1, 2]
+        assert [item["source_revision"] for item in versions] == ["1", "2"]
+        assert versions[0]["snapshot"]["title"] == "Уборка склада"
+        assert versions[1]["snapshot"]["title"] == "Уборка склада и территории"
+        assert versions[0]["version_hash"] != versions[1]["version_hash"]
+        assert tender.data["latest_feed_version_hash"] == versions[1]["version_hash"]
+        assert tender.data["latest_feed_source_revision"] == "2"
+        assert tender.data["feed_contract_version"] == "tender-feed-v1"
+        events = list(
+            db.scalars(
+                select(DomainEvent)
+                .where(
+                    DomainEvent.aggregate_type == "tender",
+                    DomainEvent.aggregate_id == str(tender.id),
+                    DomainEvent.event_type.in_(["tender.discovered", "tender.updated"]),
+                )
+                .order_by(DomainEvent.id)
+            ).all()
+        )
+        assert len(events) == 2
+        assert [event.payload["feed_version"] for event in events] == [1, 2]
+        persisted = json.dumps(
+            {
+                "data": tender.data,
+                "events": [
+                    {"payload": event.payload, "idempotency_key": event.idempotency_key}
+                    for event in events
+                ],
+            },
+            ensure_ascii=False,
+        )
+        assert source_token not in persisted
+
+    class NoPlaintextAuthenticatedClient(Client):
+        def get(self, url):
+            raise AssertionError("authenticated plaintext feed must not be requested")
+
+    monkeypatch.setattr(integrations.httpx, "Client", NoPlaintextAuthenticatedClient)
+    monkeypatch.setattr(settings, "tender_sources", "http://feed.example/tenders")
+    plaintext = client.post(
+        "/api/tender-sources/collect", headers={"X-Role": "manager"}
+    ).json()
+    assert plaintext == {
+        "status": "completed_with_errors",
+        "created": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "errors": [
+            {
+                "source": "http://feed.example/tenders",
+                "error": "Tender source collection failed",
+                "error_type": "HTTPException",
+            }
+        ],
+    }
+
+
 def test_tender_collection_does_not_expose_source_exception(client, monkeypatch):
     from app import integrations
     from app.config import settings

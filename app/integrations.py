@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import re
 import socket
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -22,6 +23,7 @@ from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope
 
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 BLOCKED_HOST_SUFFIXES = (".internal", ".invalid", ".lan", ".local", ".localhost", ".test")
+TENDER_FEED_CONTRACT_VERSION = "tender-feed-v1"
 
 
 def _safe_url(url: str) -> None:
@@ -48,9 +50,16 @@ def _safe_url(url: str) -> None:
         raise HTTPException(422, "Private or local source URLs are not allowed")
 
 
-def _safe_get(client: httpx.Client, url: str) -> httpx.Response:
+def _safe_get(
+    client: httpx.Client,
+    url: str,
+    *,
+    require_https: bool = False,
+) -> httpx.Response:
     current_url = url
     for _ in range(6):
+        if require_https and urlparse(current_url).scheme != "https":
+            raise HTTPException(422, "Authenticated source URLs must use HTTPS")
         _safe_url(current_url)
         response = client.get(current_url)
         if getattr(response, "status_code", 200) not in REDIRECT_STATUSES:
@@ -63,18 +72,104 @@ def _safe_get(client: httpx.Client, url: str) -> httpx.Response:
     raise HTTPException(502, "Tender source has too many redirects")
 
 
+def _tender_feed_version(
+    source: str,
+    item: dict[str, Any],
+    *,
+    external_id: str,
+    title: str,
+) -> tuple[str, str, dict[str, Any]]:
+    """Return a stable provider-item hash and a safe persisted source snapshot."""
+
+    raw_data = item.get("data") or {}
+    if not isinstance(raw_data, dict):
+        raise ValueError("feed item data must be an object")
+    raw_documents = item.get("documents") or []
+    if not isinstance(raw_documents, list) or any(
+        not isinstance(document, dict) for document in raw_documents
+    ):
+        raise ValueError("feed item documents must be a list of objects")
+    documents = sorted(
+        (
+            {
+                "name": str(document.get("name") or "document")[:255],
+                "url": str(document.get("url") or "")[:1024],
+                "content_type": str(
+                    document.get("content_type") or "application/octet-stream"
+                )[:128],
+            }
+            for document in raw_documents
+        ),
+        key=lambda document: (
+            document["url"],
+            document["name"],
+            document["content_type"],
+        ),
+    )
+    provider_data = {
+        **raw_data,
+        **{
+            key: value
+            for key, value in item.items()
+            if key
+            not in {
+                "id",
+                "external_id",
+                "title",
+                "name",
+                "deadline_at",
+                "data",
+                "documents",
+            }
+        },
+    }
+    source_revision = ""
+    for key in ("amendment_id", "revision", "version", "updated_at"):
+        candidate = item.get(key) or provider_data.get(key)
+        if candidate not in (None, ""):
+            source_revision = str(candidate)[:255]
+            break
+    snapshot = {
+        "contract_version": TENDER_FEED_CONTRACT_VERSION,
+        "source": source,
+        "external_id": external_id,
+        "title": title,
+        "deadline_at": str(item.get("deadline_at") or ""),
+        "data": provider_data,
+        "documents": documents,
+    }
+    encoded = json.dumps(
+        snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest(), source_revision, snapshot
+
+
 def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, Any]:
     sources = sources if sources is not None else [x.strip() for x in settings.tender_sources.split(",") if x.strip()]
     if not sources:
-        return {"status": "source_configuration_required", "created": 0, "updated": 0, "errors": []}
+        return {
+            "status": "source_configuration_required",
+            "created": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "errors": [],
+        }
     headers = {"Authorization": f"Bearer {settings.tender_source_token}"} if settings.tender_source_token else {}
-    created = updated = 0
+    created = updated = unchanged = 0
     errors = []
     with httpx.Client(timeout=settings.tender_request_timeout_seconds, follow_redirects=False, headers=headers) as client:
         for source in sources:
             try:
                 _safe_url(source)
-                response = _safe_get(client, source); response.raise_for_status()
+                response = _safe_get(
+                    client,
+                    source,
+                    require_https=bool(headers),
+                )
+                response.raise_for_status()
                 body = response.json(); items = body.get("items", []) if isinstance(body, dict) else body
                 if not isinstance(items, list): raise ValueError("feed must return a list or {items: [...]} object")
                 for item in items:
@@ -82,10 +177,21 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                     external_id = str(item.get("external_id") or item.get("id") or "").strip()
                     title = str(item.get("title") or item.get("name") or "").strip()
                     if not external_id or not title: continue
+                    version_hash, source_revision, provider_snapshot = _tender_feed_version(
+                        source,
+                        item,
+                        external_id=external_id,
+                        title=title,
+                    )
                     row = db.scalar(select(BusinessRecord).where(BusinessRecord.record_type == "tender", BusinessRecord.external_id == external_id))
                     is_new = row is None
+                    if row is not None and str(
+                        (row.data or {}).get("latest_feed_version_hash") or ""
+                    ) == version_hash:
+                        unchanged += 1
+                        continue
                     deadline = datetime.fromisoformat(str(item["deadline_at"]).replace("Z", "+00:00")).replace(tzinfo=None) if item.get("deadline_at") else None
-                    data = item.get("data", {}) | {key: value for key, value in item.items() if key not in {"id", "external_id", "title", "name", "deadline_at", "data", "documents"}}
+                    data = provider_snapshot["data"]
                     data = {
                         **data,
                         "source_legal_risk_flags": list(data.get("legal_risk_flags") or []),
@@ -96,6 +202,28 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                         "scope_assessment": classify_tender_scope(title, data),
                     }
                     evaluation = evaluate_tender_viability(data)
+                    previous_data = row.data if row is not None and isinstance(row.data, dict) else {}
+                    stored_history = previous_data.get("feed_versions") or []
+                    if not isinstance(stored_history, list):
+                        raise ValueError("stored tender feed history is invalid")
+                    history = list(stored_history)
+                    history.append(
+                        {
+                            "version": len(history) + 1,
+                            "version_hash": version_hash,
+                            "source_revision": source_revision,
+                            "observed_at": datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                            "snapshot": provider_snapshot,
+                        }
+                    )
+                    version_data = {
+                        "feed_contract_version": TENDER_FEED_CONTRACT_VERSION,
+                        "latest_feed_version_hash": version_hash,
+                        "latest_feed_source_revision": source_revision,
+                        "feed_versions": history,
+                    }
                     if row:
                         row.title = title
                         row.deadline_at = deadline
@@ -107,6 +235,7 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                             "viability_evaluation": evaluation,
                             "score_breakdown": evaluation.get("score_breakdown", {}),
                             "recommendation": evaluation["decision"],
+                            **version_data,
                         }
                         row.score = evaluation.get("score")
                         updated += 1
@@ -123,22 +252,49 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
                                 "viability_evaluation": evaluation,
                                 "score_breakdown": evaluation.get("score_breakdown", {}),
                                 "recommendation": evaluation["decision"],
+                                **version_data,
                             },
                             score=evaluation.get("score"),
                         )
                         db.add(row); db.flush(); created += 1
-                    for doc in item.get("documents", []):
-                        url = str(doc.get("url") or "")
+                    for doc in provider_snapshot["documents"]:
+                        url = doc["url"]
                         if url and not db.scalar(select(TenderDocument.id).where(TenderDocument.record_id == row.id, TenderDocument.source_url == url)):
-                            db.add(TenderDocument(record_id=row.id, name=str(doc.get("name") or "document"), source_url=url, content_type=str(doc.get("content_type") or "application/octet-stream")))
-                    event_bus.publish(db, "tender.discovered" if is_new else "tender.updated", "tender", str(row.id), {"external_id": external_id, "score": row.score, "viability_status": evaluation["status"]}, idempotency_key=f"tender-feed:{external_id}:{hashlib.sha256(repr(item).encode()).hexdigest()[:16]}")
+                            db.add(TenderDocument(record_id=row.id, name=doc["name"], source_url=url, content_type=doc["content_type"]))
+                    feed_identity_hash = hashlib.sha256(
+                        f"{source}:{external_id}".encode("utf-8")
+                    ).hexdigest()[:32]
+                    event_bus.publish(
+                        db,
+                        "tender.discovered" if is_new else "tender.updated",
+                        "tender",
+                        str(row.id),
+                        {
+                            "external_id": external_id,
+                            "score": row.score,
+                            "viability_status": evaluation["status"],
+                            "feed_version": len(history),
+                            "feed_version_hash": version_hash,
+                            "source_revision": source_revision,
+                        },
+                        idempotency_key=(
+                            f"tender-feed:{feed_identity_hash}:{len(history)}:"
+                            f"{version_hash}"
+                        ),
+                    )
             except Exception as exc:
                 errors.append({
                     "source": source,
                     "error": "Tender source collection failed",
                     "error_type": type(exc).__name__[:128],
                 })
-    return {"status": "completed_with_errors" if errors else "completed", "created": created, "updated": updated, "errors": errors}
+    return {
+        "status": "completed_with_errors" if errors else "completed",
+        "created": created,
+        "updated": updated,
+        "unchanged": unchanged,
+        "errors": errors,
+    }
 
 
 def download_tender_document(db: Session, document: TenderDocument) -> dict[str, Any]:
