@@ -51,9 +51,176 @@ DESIRED_OUTCOME_TYPES = frozenset(
     }
 )
 
+AGENT_QUALITY_FOCUS_MARKERS = (
+    (
+        "agent_utilization",
+        (
+            "idle",
+            "без задач",
+            "загрузк",
+            "перераспредел",
+            "запросы/час",
+            "requests/hour",
+        ),
+    ),
+    (
+        "evidence_confidence",
+        ("источник", "достовер", "уверен", "confidence", "допущ", "гипотез"),
+    ),
+    (
+        "incident_observability",
+        (
+            "инцидент",
+            "сбой",
+            "health",
+            "алерт",
+            "превыша",
+            "time_to_",
+            "время выполн",
+        ),
+    ),
+    (
+        "request_routing",
+        (
+            "классиф",
+            "категор",
+            "тип задач",
+            "маршрут",
+            "routing",
+            "route_tag",
+            "recommended_agent",
+            "целевой агент",
+        ),
+    ),
+    (
+        "decision_telemetry",
+        (
+            "телеметр",
+            "логир",
+            "decision",
+            "outcome",
+            "исход",
+            "статус выполн",
+            "аудит",
+        ),
+    ),
+    (
+        "quality_evaluation",
+        ("оценк", "качест", "score", "критери", "success_flag", "успеш"),
+    ),
+)
+
 
 def _normalize(text: str) -> str:
     return " ".join(text.lower().replace("ё", "е").split())
+
+
+def _agent_quality_focus(change: str) -> str:
+    normalized = _normalize(change)
+    for focus, markers in AGENT_QUALITY_FOCUS_MARKERS:
+        if any(marker in normalized for marker in markers):
+            return focus
+    digest = hashlib.sha256(normalized.encode()).hexdigest()[:16]
+    return f"specific:{digest}"
+
+
+def _coaching_agent_type(row: ImprovementRequest) -> str:
+    intent = row.intent if isinstance(row.intent, dict) else {}
+    agent_type = re.sub(
+        r"[^a-z0-9_-]",
+        "",
+        str(intent.get("agent_type") or "").lower(),
+    )[:64]
+    if agent_type:
+        return agent_type
+    for capability in row.missing_capabilities or []:
+        value = str(capability)
+        suffix = "_quality_improvement"
+        if value.endswith(suffix):
+            candidate = re.sub(
+                r"[^a-z0-9_-]",
+                "",
+                value[: -len(suffix)].lower(),
+            )[:64]
+            if candidate:
+                return candidate
+    return "general"
+
+
+def compact_agent_coaching_backlog(
+    db: Session,
+    *,
+    actor: str = "perplexity_agent_coach",
+) -> dict[str, Any]:
+    """Conservatively supersede queued paraphrases without deleting history."""
+
+    rows = list(
+        db.scalars(
+            select(ImprovementRequest)
+            .where(
+                ImprovementRequest.status == "queued",
+                ImprovementRequest.source_user == "perplexity_agent_coach",
+                ImprovementRequest.classification == "agent_quality_gap",
+            )
+            .order_by(ImprovementRequest.id)
+        ).all()
+    )
+    groups: dict[tuple[str, str], list[ImprovementRequest]] = {}
+    for row in rows:
+        focus = _agent_quality_focus(row.suggested_function or row.request_text)
+        groups.setdefault((_coaching_agent_type(row), focus), []).append(row)
+
+    duplicate_count = 0
+    canonical_ids: list[int] = []
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for (_agent_type, focus), group in groups.items():
+        if len(group) < 2:
+            continue
+        canonical = group[0]
+        duplicates = group[1:]
+        duplicate_ids = [row.id for row in duplicates]
+        canonical_ids.append(canonical.id)
+        canonical.occurrence_count = sum(max(1, row.occurrence_count) for row in group)
+        canonical.intent = {
+            **(canonical.intent if isinstance(canonical.intent, dict) else {}),
+            "semantic_focus": focus,
+            "consolidated_duplicate_ids": duplicate_ids,
+        }
+        canonical.updated_at = now
+        for duplicate in duplicates:
+            duplicate.status = "rejected"
+            duplicate.handoff_status = "not_needed"
+            duplicate.implementation_summary = (
+                f"Superseded as a semantic duplicate of improvement #{canonical.id}; "
+                "the original recommendation is retained for audit."
+            )
+            duplicate.intent = {
+                **(duplicate.intent if isinstance(duplicate.intent, dict) else {}),
+                "semantic_focus": focus,
+                "duplicate_of": canonical.id,
+                "superseded_at": now.isoformat(),
+            }
+            duplicate.updated_at = now
+        duplicate_count += len(duplicates)
+
+    result = {
+        "reviewed_count": len(rows),
+        "semantic_group_count": len(groups),
+        "duplicates_superseded": duplicate_count,
+        "canonical_ids": canonical_ids,
+    }
+    if duplicate_count:
+        from .orchestrator import audit
+
+        audit(
+            db,
+            actor,
+            "improvement.coaching_backlog_compacted",
+            "improvement_queue",
+            "perplexity_agent_coach",
+            result,
+        )
+    return result
 
 
 def classify_request_routing(message: str, intent: dict[str, Any]) -> dict[str, str]:
@@ -511,6 +678,7 @@ def record_agent_coaching_improvements(
     """Turn bounded, advisory Perplexity findings into a backpressured Codex backlog."""
     if coaching.get("status") != "succeeded":
         return []
+    compact_agent_coaching_backlog(db)
     effective_queue_limit = max(
         0,
         int(
@@ -519,6 +687,36 @@ def record_agent_coaching_improvements(
             else queue_limit
         ),
     )
+    existing_rows = list(
+        db.scalars(
+            select(ImprovementRequest)
+            .where(ImprovementRequest.source_user == "perplexity_agent_coach")
+            .order_by(ImprovementRequest.id)
+        ).all()
+    )
+    status_rank = {
+        "queued": 0,
+        "handed_off": 1,
+        "in_progress": 2,
+        "blocked": 3,
+        "implemented": 4,
+        "rejected": 5,
+    }
+    semantic_rows: dict[tuple[str, str], ImprovementRequest] = {}
+    for existing in existing_rows:
+        semantic_focus = _agent_quality_focus(
+            existing.suggested_function or existing.request_text
+        )
+        semantic_key = (_coaching_agent_type(existing), semantic_focus)
+        current = semantic_rows.get(semantic_key)
+        if current is None or (
+            status_rank.get(existing.status, 99),
+            existing.id,
+        ) < (
+            status_rank.get(current.status, 99),
+            current.id,
+        ):
+            semantic_rows[semantic_key] = existing
     queued_count = int(
         db.scalar(
             select(func.count(ImprovementRequest.id)).where(
@@ -538,8 +736,27 @@ def record_agent_coaching_improvements(
         expected_effect = redact_sensitive_text(str(item.get("expected_effect", "")).strip())[:2000]
         if not change or not validation:
             continue
+        semantic_focus = _agent_quality_focus(change)
+        semantic_key = (agent_type, semantic_focus)
+        row = semantic_rows.get(semantic_key)
+        if row is not None:
+            row.occurrence_count += 1
+            row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            recorded.append(
+                {
+                    "id": row.id,
+                    "status": row.status,
+                    "agent_type": agent_type,
+                    "semantic_focus": semantic_focus,
+                }
+            )
+            continue
         signature = json.dumps(
-            {"provider": "perplexity_sonar", "agent_type": agent_type, "change": _normalize(change), "validation": _normalize(validation)},
+            {
+                "provider": "perplexity_sonar",
+                "agent_type": agent_type,
+                "semantic_focus": semantic_focus,
+            },
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -572,7 +789,12 @@ def record_agent_coaching_improvements(
                 source_channel="system",
                 source_user="perplexity_agent_coach",
                 request_text=request_text,
-                intent={"kind": "agent_quality_improvement", "agent_type": agent_type, "advisory_only": True},
+                intent={
+                    "kind": "agent_quality_improvement",
+                    "agent_type": agent_type,
+                    "semantic_focus": semantic_focus,
+                    "advisory_only": True,
+                },
                 capability_score=0.5,
                 classification="agent_quality_gap",
                 reason=assessment["reason"],
@@ -588,7 +810,15 @@ def record_agent_coaching_improvements(
             db.flush()
             queued_count += 1
             row.codex_prompt = build_codex_prompt(request_text, assessment, row.id)
-        recorded.append({"id": row.id, "status": row.status, "agent_type": agent_type})
+            semantic_rows[semantic_key] = row
+        recorded.append(
+            {
+                "id": row.id,
+                "status": row.status,
+                "agent_type": agent_type,
+                "semantic_focus": semantic_focus,
+            }
+        )
     return recorded
 
 

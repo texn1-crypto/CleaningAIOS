@@ -97,7 +97,12 @@ incident, and `/sysadmin` in Telegram to request the latest live check.
 Only aggregate agent telemetry and measured outcome counts are sent. Perplexity may
 return review recommendations, but cannot call application tools, see credentials,
 change prompts, or execute a business action. Its result is stored with the audited
-Meta Brain task for later evaluation.
+Meta Brain task for later evaluation. Recommendations are backpressured and grouped
+by a deterministic `(agent_type, semantic_focus)` key so harmless wording changes do
+not grow the queue. A reconciliation pass keeps the oldest queued recommendation as
+the canonical item, aggregates occurrences, and marks paraphrases as superseded
+without deleting their text or audit history. Owner, incident and source-grounded
+improvements are outside this compaction boundary.
 
 The same read-only provider powers the separate `evolution_researcher`. At
 `EVOLUTION_RESEARCH_DAILY_HOUR` in `EVOLUTION_RESEARCH_TIMEZONE` it reads one
