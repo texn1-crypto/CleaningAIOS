@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -10,11 +11,16 @@ from sqlalchemy.orm import Session
 
 from .models import (
     BusinessRecord,
+    CompanyProfileSnapshot,
     TenderDocument,
     TenderPrequalificationSnapshot,
 )
 from .schemas import TenderPrequalificationCreate, TenderQualificationFact
 from .tender_autopilot import EvidenceBindingError
+from .company_profiles import (
+    PREQUALIFICATION_CAPABILITY_MAP,
+    validate_company_profile_snapshot,
+)
 
 
 RULES_VERSION = "tender-prequalification-v1"
@@ -104,11 +110,53 @@ def build_tender_prequalification(
     tender: BusinessRecord,
     documents: list[TenderDocument],
     payload: TenderPrequalificationCreate,
+    company_profile: CompanyProfileSnapshot | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Evaluate fixed prequalification constraints without guessing missing facts."""
 
     document_map = {document.id: document for document in documents}
     _validate_checks(payload.checks, document_map)
+    if payload.company_profile_snapshot_hash:
+        if company_profile is None:
+            raise ValueError("Company profile snapshot is unavailable")
+        validate_company_profile_snapshot(company_profile)
+        if company_profile.input_hash != payload.company_profile_snapshot_hash:
+            raise ValueError("Company profile snapshot hash does not match")
+        if company_profile.status != "verified":
+            raise ValueError(
+                "Company profile must be verified before tender prequalification"
+            )
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        required_through = max(
+            now,
+            (
+                tender.deadline_at.astimezone(timezone.utc).replace(tzinfo=None)
+                if tender.deadline_at is not None
+                and tender.deadline_at.tzinfo is not None
+                else tender.deadline_at
+            )
+            or now,
+        )
+        if company_profile.valid_through < required_through:
+            raise ValueError(
+                "Company profile contains a document that expires before the tender deadline"
+            )
+        capability_statuses = {
+            item["code"]: item["status"]
+            for item in company_profile.input_snapshot.get("capabilities", [])
+        }
+        check_statuses = {check.code: check.status for check in payload.checks}
+        mismatches = sorted(
+            prequalification_code
+            for prequalification_code, capability_code in PREQUALIFICATION_CAPABILITY_MAP.items()
+            if check_statuses.get(prequalification_code)
+            != capability_statuses.get(capability_code)
+        )
+        if mismatches:
+            raise ValueError(
+                "Prequalification checks do not match the cited company profile: "
+                + ", ".join(mismatches)
+            )
     canonical = {
         "rules_version": RULES_VERSION,
         "source": {
@@ -116,6 +164,9 @@ def build_tender_prequalification(
             "provider": tender.source,
             "external_id": tender.external_id or "",
         },
+        "company_profile_snapshot_hash": (
+            payload.company_profile_snapshot_hash or ""
+        ),
         "checks": sorted(
             (_canonical_check(check) for check in payload.checks),
             key=lambda item: item["code"],
@@ -184,6 +235,20 @@ def build_tender_prequalification(
             "unknown": len(unknown_codes),
         },
         "supplier_discovery_allowed": status == "eligible",
+        "company_profile": {
+            "snapshot_hash": payload.company_profile_snapshot_hash,
+            "company_identifier": (
+                "*" * max(0, len(company_profile.company_identifier) - 4)
+                + company_profile.company_identifier[-4:]
+                if company_profile
+                else None
+            ),
+            "source": (
+                "immutable_company_profile_snapshot"
+                if company_profile is not None
+                else "legacy_unbound"
+            ),
+        },
         "automatic_participation_allowed": False,
     }
     return canonical, result
@@ -203,7 +268,20 @@ def persist_tender_prequalification(
             .order_by(TenderDocument.id)
         ).all()
     )
-    canonical, result = build_tender_prequalification(tender, documents, payload)
+    company_profile = None
+    if payload.company_profile_snapshot_hash:
+        company_profile = db.scalar(
+            select(CompanyProfileSnapshot).where(
+                CompanyProfileSnapshot.input_hash
+                == payload.company_profile_snapshot_hash
+            )
+        )
+    canonical, result = build_tender_prequalification(
+        tender,
+        documents,
+        payload,
+        company_profile,
+    )
     existing = db.scalar(
         select(TenderPrequalificationSnapshot).where(
             TenderPrequalificationSnapshot.record_id == tender.id,
@@ -214,6 +292,7 @@ def persist_tender_prequalification(
         return existing, False
     row = TenderPrequalificationSnapshot(
         record_id=tender.id,
+        company_profile_snapshot_hash=payload.company_profile_snapshot_hash,
         input_hash=result["input_hash"],
         rules_version=RULES_VERSION,
         status=result["status"],
@@ -244,6 +323,7 @@ def tender_prequalification_view(
     return {
         "id": row.id,
         "record_id": row.record_id,
+        "company_profile_snapshot_hash": row.company_profile_snapshot_hash,
         "input_hash": row.input_hash,
         "rules_version": row.rules_version,
         "status": row.status,

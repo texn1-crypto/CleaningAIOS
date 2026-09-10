@@ -17,6 +17,11 @@
 - `TenderSourceRun` — final receipt каждой настроенной попытки collection: безопасная
   метка и hash источника, timing, HTTP status, outcome counters и bounded error type.
   Raw exception, query/userinfo и provider secret в публичный контракт не входят.
+- `CompanyProfileSnapshot` — append-only версия Company Digital Twin, связанная с
+  существующим профилем реквизитов. Она хранит legal identity, business limits,
+  capability facts и metadata документов с file hash/issuer/issue/expiry/status,
+  но не раскрывает номера банковских счетов. Только integrity-valid `verified`
+  версия, действующая до deadline тендера, может быть привязана к prequalification.
 - `TenderPrequalificationSnapshot` — append-only результат FAST DISQUALIFICATION:
   фиксированная taxonomy hard constraints, exact evidence checksums, explainable
   hard stops, verification gaps, rules version и actor. Только `eligible` snapshot
@@ -34,7 +39,8 @@
 ## Следующие relational objects
 
 `Procurement`, `ProcurementVersion`, `DocumentVersion`, `EvidenceFact`,
-`Requirement`, `RequirementConflict`, `CompanyCapability`, `Supplier`,
+`Requirement`, `RequirementConflict`, расширенные `CompanyCapability`/person-role/
+contract-history relations, `Supplier`,
 `SupplierQuote`, `QuoteLine`, `EconomicsScenario`, `RiskAssessment`,
 `ApplicationPackage`, `ExternalActionReceipt`, `ContractObligation`,
 `ActualCost`, `ActualProfit`.

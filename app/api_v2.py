@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import ApprovalRequest, BusinessGoal, BusinessRecord, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderPrequalificationSnapshot, TenderSourceRun, TenderSupplierQuoteSnapshot
+from .models import ApprovalRequest, BusinessGoal, BusinessRecord, CompanyProfileSnapshot, CompanyRequisite, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderPrequalificationSnapshot, TenderSourceRun, TenderSupplierQuoteSnapshot
 from .integrations import collect_tenders, download_tender_document, tender_source_freshness
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -25,7 +25,7 @@ from .reports import build_ceo_brief
 from .orchestrator import audit, dispatch
 from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, validate_attachments, verified_recipients
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest, TenderPrequalificationCreate, TenderProductComparisonReviewCreate, TenderProductSpecificationReviewCreate, TenderSupplierQuoteCreate
+from .schemas import CampaignLaunch, CompanyProfileSnapshotCreate, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest, TenderPrequalificationCreate, TenderProductComparisonReviewCreate, TenderProductSpecificationReviewCreate, TenderSupplierQuoteCreate
 from .security import Principal, principal, require_role
 from .chat import redact_sensitive_text
 from .approval_service import (
@@ -66,6 +66,10 @@ from .tender_autopilot import (
 from .tender_prequalification import (
     persist_tender_prequalification,
     tender_prequalification_view,
+)
+from .company_profiles import (
+    company_profile_snapshot_view,
+    persist_company_profile_snapshot,
 )
 from .tender_supplier_quotes import (
     persist_supplier_quote_snapshot,
@@ -766,6 +770,82 @@ def company_graph(db: Session = Depends(get_db), _: Principal = Depends(principa
 @router.get("/finance/site-economics")
 def economics(site_id: Optional[int] = None, db: Session = Depends(get_db), _: Principal = Depends(principal)):
     return site_economics(db, site_id)
+
+
+@router.get("/company/requisites/{profile_id}/qualification-snapshots")
+def list_company_profile_snapshots(
+    profile_id: int,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "viewer")
+    requisites = db.get(CompanyRequisite, profile_id)
+    if requisites is None:
+        raise HTTPException(404, "Company requisites profile not found")
+    rows = db.scalars(
+        select(CompanyProfileSnapshot)
+        .where(CompanyProfileSnapshot.company_requisite_id == profile_id)
+        .order_by(CompanyProfileSnapshot.id.desc())
+    ).all()
+    return [company_profile_snapshot_view(row) for row in rows]
+
+
+@router.post(
+    "/company/requisites/{profile_id}/qualification-snapshots",
+    status_code=201,
+)
+def create_company_profile_snapshot(
+    profile_id: int,
+    payload: CompanyProfileSnapshotCreate,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    requisites = db.get(CompanyRequisite, profile_id)
+    if requisites is None:
+        raise HTTPException(404, "Company requisites profile not found")
+    try:
+        snapshot, created = persist_company_profile_snapshot(
+            db,
+            requisites,
+            payload,
+            actor=actor.subject,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    result = snapshot.result_snapshot
+    event_bus.publish(
+        db,
+        "company.profile_snapshot_created",
+        "company_profile_snapshot",
+        str(snapshot.id),
+        {
+            "company_requisite_id": profile_id,
+            "company_identifier_suffix": snapshot.company_identifier[-4:],
+            "input_hash": snapshot.input_hash,
+            "status": snapshot.status,
+            "verification_gaps": result["verification_gaps"],
+            "hard_stops": result["hard_stops"],
+            "created": created,
+        },
+        idempotency_key=f"company-profile:{profile_id}:{snapshot.input_hash}",
+        actor=actor.subject,
+    )
+    audit(
+        db,
+        actor.subject,
+        "company.profile_snapshot_created",
+        "company_profile_snapshot",
+        str(snapshot.id),
+        {
+            "company_requisite_id": profile_id,
+            "input_hash": snapshot.input_hash,
+            "status": snapshot.status,
+            "created": created,
+        },
+    )
+    db.commit()
+    return {**company_profile_snapshot_view(snapshot), "created": created}
 
 
 @router.post("/simulations")

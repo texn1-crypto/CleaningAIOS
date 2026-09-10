@@ -176,9 +176,17 @@
       "id": 16,
       "title": "COMPANY DIGITAL TWIN",
       "priority": "P0",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/models.py:CompanyProfileSnapshot",
+        "app/schemas.py:CompanyProfileSnapshotCreate",
+        "app/company_profiles.py",
+        "app/api_v2.py:create_company_profile_snapshot",
+        "migrations/versions/0028_company_profile_snapshots.py",
+        "tests/test_tender_autopilot.py:test_company_profile_snapshot_is_immutable_idempotent_and_binds_prequalification",
+        "tests/test_tender_autopilot.py:test_company_profile_fails_closed_on_expiry_and_capability_mismatch"
+      ],
+      "notes": "A manager-only API now persists immutable, idempotent Company Digital Twin snapshots against an existing legal requisites profile. The canonical snapshot covers masked legal identity, tax/VAT, categories/geography, exact Decimal business limits, a fixed qualification-capability taxonomy and document issue/expiry/issuer/verification/file-hash metadata. Payment account values remain in the protected requisites table and only completeness plus a fingerprint enter the snapshot/API. Expired, unknown, unsupported, unproven or restricted facts fail closed; only an integrity-checked verified snapshot whose documents remain valid through tender deadline can bind prequalification. Directors, authorized employees, MChD/signature certificates, insurance, contract/penalty history, automated registry verification and conflict refresh remain missing, so the requirement stays PARTIAL."
     },
     {
       "id": 17,
@@ -187,14 +195,17 @@
       "status": "partial",
       "evidence": [
         "app/models.py:TenderPrequalificationSnapshot",
+        "app/models.py:CompanyProfileSnapshot",
+        "app/company_profiles.py",
         "app/tender_prequalification.py",
         "app/api_v2.py:create_tender_prequalification_snapshot",
         "app/tender_autopilot.py:persist_tender_assessment",
         "migrations/versions/0026_tender_prequalification_snapshots.py",
+        "migrations/versions/0028_company_profile_snapshots.py",
         "tests/test_tender_autopilot.py:test_prequalification_snapshot_is_fail_closed_idempotent_and_binds_decision",
         "tests/test_tender_autopilot.py:test_prequalification_explains_hard_stops_and_rejects_invalid_evidence"
       ],
-      "notes": "A manager-only, idempotent FAST DISQUALIFICATION entry point persists an immutable snapshot across 14 fixed hard-constraint classes. Known facts require exact tender-document checksum evidence; missing, UNKNOWN and unproven facts fail closed, while evidence-backed failures produce explainable hard stops. An eligible exact snapshot can be bound to the decision passport. Company Digital Twin evidence ingestion and real supplier discovery remain missing, so the requirement stays PARTIAL."
+      "notes": "A manager-only, idempotent FAST DISQUALIFICATION entry point persists an immutable snapshot across 14 fixed hard-constraint classes. Known facts require exact tender-document checksum evidence; missing, UNKNOWN and unproven facts fail closed, while evidence-backed failures produce explainable hard stops. A prequalification may now bind an integrity-checked verified Company Digital Twin and rejects capability-status mismatch or any company document expiring before tender deadline. An eligible exact snapshot can be bound to the decision passport. Automated company evidence acquisition and real supplier discovery remain missing, so the requirement stays PARTIAL."
     },
     {
       "id": 18,
@@ -2726,6 +2737,7 @@
       "status": "partial",
       "evidence": [
         "app/integrations.py",
+        "app/company_profiles.py",
         "app/tender_autopilot.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
@@ -2734,7 +2746,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, durable per-source run receipts and deterministic freshness incidents, then passes an immutable evidence-bound FAST DISQUALIFICATION gate and an immutable verified supplier quote gate before economics, auction forecast, product matching, review and decision snapshot. Official provider ingest/cursors, automated supplier discovery, quote acquisition and RFQ remain incomplete."
+      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, durable per-source run receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION and the immutable verified supplier quote gate, economics, auction forecast, product matching, review and decision snapshot. Official provider ingest/cursors, automated company/supplier evidence acquisition, quote acquisition and RFQ remain incomplete."
     },
     {
       "id": 298,
@@ -2882,6 +2894,7 @@
       "evidence": [
         "docs/tender-autopilot/GAP_ANALYSIS.md",
         "app/integrations.py",
+        "app/company_profiles.py",
         "app/tender_autopilot.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
@@ -2889,7 +2902,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Provider-scoped canonical generic feed amendments, durable source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound fast prequalification, immutable verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction, manager review, comparison and decision conversion are persisted; Company Digital Twin evidence, official provider adapters/cursors, automated supplier acquisition/RFQ, broader document controls and A4 E2E remain incomplete."
+      "notes": "Provider-scoped canonical generic feed amendments, durable source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction, manager review, comparison and decision conversion are persisted. The Company Digital Twin is still partial; official provider adapters/cursors, automated company/supplier evidence acquisition and RFQ, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2915,6 +2928,7 @@
       "evidence": [
         "docs/tender-autopilot/",
         "app/integrations.py",
+        "app/company_profiles.py",
         "app/tender_autopilot.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
@@ -2922,7 +2936,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, immutable fast-prequalification, immutable verified supplier quote snapshots and regression evidence. It remains partial until the first-release DoD is met."
+      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, immutable Company Digital Twin, fast-prequalification, verified supplier quote snapshots and regression evidence. It remains partial until the first-release DoD is met."
     },
     {
       "id": 317,
@@ -2931,6 +2945,7 @@
       "status": "partial",
       "evidence": [
         "app/integrations.py",
+        "app/company_profiles.py",
         "app/tender_autopilot.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
@@ -2938,7 +2953,7 @@
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with source-run receipts and freshness incidents, document-byte versions, immutable evidence-bound FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact manager review, comparison and hash-bound decision inputs. Company Digital Twin evidence, official provider adapters/cursors, automated supplier discovery/quote acquisition and RFQ remain open."
+      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with source-run receipts and freshness incidents, document-byte versions, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact manager review, comparison and hash-bound decision inputs. Extended/automated Company Digital Twin verification, official provider adapters/cursors, automated supplier discovery/quote acquisition and RFQ remain open."
     },
     {
       "id": 318,

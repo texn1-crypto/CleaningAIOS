@@ -10,7 +10,7 @@
 | Malware/ZIP bomb/path traversal | Storage boundary and size limit exist | Sandbox, AV, archive limits and corpus |
 | Secret/PII leakage to AI | Provider scopes and redaction policy | Document-level `LOCAL_ONLY` enforcement |
 | Account/session theft | No autonomous ETP session today | Isolated worker, vault, MFA human takeover |
-| Supplier/invoice fraud | Evidence-bound quote in decision | Entity verification and bank-detail change hold |
+| Supplier/invoice fraud | Evidence-bound quote plus immutable masked company-profile fingerprint | Automated registry verification and bank-detail change hold |
 | Duplicate external action | Outbox/consumer receipts | Provider idempotency + external receipt registry |
 | Unauthorized submit/sign/pay | Separate owner approvals, no executor connected | Separation of duties and production adapter gates |
 

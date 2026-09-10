@@ -606,16 +606,56 @@ class TenderPrequalificationSnapshot(Base):
             "status IN ('needs_verification', 'ineligible', 'eligible')",
             name="ck_tender_prequalification_status",
         ),
+        Index(
+            "ix_tender_prequal_company_profile",
+            "company_profile_snapshot_hash",
+        ),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     record_id: Mapped[int] = mapped_column(
         ForeignKey("business_records.id", ondelete="RESTRICT"), index=True
+    )
+    company_profile_snapshot_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
     )
     input_hash: Mapped[str] = mapped_column(String(64), index=True)
     rules_version: Mapped[str] = mapped_column(
         String(64), default="tender-prequalification-v1"
     )
     status: Mapped[str] = mapped_column(String(32), index=True)
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    result_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_by: Mapped[str] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class CompanyProfileSnapshot(Base):
+    """Append-only, evidence-bound qualification profile of a legal entity."""
+
+    __tablename__ = "company_profile_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_requisite_id",
+            "input_hash",
+            name="uq_company_profile_snapshot_input",
+        ),
+        CheckConstraint(
+            "status IN ('needs_verification', 'restricted', 'verified')",
+            name="ck_company_profile_snapshot_status",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_requisite_id: Mapped[int] = mapped_column(
+        ForeignKey("company_requisites.id", ondelete="RESTRICT"), index=True
+    )
+    company_identifier: Mapped[str] = mapped_column(String(12), index=True)
+    input_hash: Mapped[str] = mapped_column(String(64), index=True)
+    rules_version: Mapped[str] = mapped_column(
+        String(64), default="company-profile-v1"
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    verified_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    valid_through: Mapped[datetime] = mapped_column(DateTime, index=True)
     input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
     result_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
     created_by: Mapped[str] = mapped_column(String(128), index=True)

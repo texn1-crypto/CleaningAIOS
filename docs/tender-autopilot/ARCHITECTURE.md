@@ -11,7 +11,7 @@ Official sources / imports / operator
                 v
  Document pipeline -> evidence facts -> requirement graph
                 |
-                +-> company qualification
+                +-> immutable Company Digital Twin -> company qualification
                 +-> supplier quote verification
                 +-> deterministic Decimal economics
                 +-> legal/operational risk rules
@@ -50,6 +50,9 @@ agents не получают shell или право изменять production
 - Snapshot связывает source, facts, document checksums, quote, policy и rules version.
 - Supplier work разрешается только полным evidence-bound prequalification snapshot
   со статусом `eligible`; missing/UNKNOWN не проходят guard.
+- Связанный Company Digital Twin должен быть immutable, integrity-valid,
+  `verified`, согласован с qualification checks и действовать до tender deadline;
+  номера счетов не покидают защищённый профиль реквизитов.
 - Economics может ссылаться на supplier quote snapshot только со статусом
   `verified`, с совпадающими tender, prequalification hash и canonical quote.
 - Изменение документа, quote или economics создаёт новый hash и новый approval.

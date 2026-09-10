@@ -9,6 +9,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import (
     BusinessRecord,
+    CompanyProfileSnapshot,
     DomainEvent,
     TenderAssessmentSnapshot,
     TenderDocument,
@@ -19,6 +20,7 @@ from app.tender_prequalification import REQUIRED_CHECKS
 
 
 MANAGER = {"X-Role": "manager"}
+OWNER = {"X-Role": "owner"}
 
 
 def _create_tender_with_evidence(client, suffix: str) -> tuple[int, int, int]:
@@ -194,6 +196,232 @@ def _supplier_quote_payload(
     }
 
 
+def _company_requisites(client, suffix: str) -> dict:
+    seed = sum(ord(char) for char in suffix) % 10_000_000
+    return client.post(
+        "/api/company/requisites",
+        headers=OWNER,
+        json={
+            "profile_name": f"Tender company {suffix}",
+            "legal_name": f"ООО Тендерная компания {suffix}",
+            "inn": f"78{seed:08d}",
+            "kpp": "780101001",
+            "ogrn": "1027800000001",
+            "settlement_account": "40702810900000000001",
+            "currency": "RUB",
+            "bank_name": "Тестовый банк",
+            "bank_inn": "7701000001",
+            "bank_address": "Санкт-Петербург",
+            "bic": "044030001",
+            "correspondent_account": "30101810000000000001",
+            "legal_address": "Санкт-Петербург, тестовый адрес",
+        },
+    ).json()
+
+
+def _company_profile_payload(*, expiry_date: str = "2042-12-31") -> dict:
+    evidence_hash = "c" * 64
+    return {
+        "verified_at": "2020-01-02T12:00:00Z",
+        "taxation_regime": "ОСНО",
+        "vat_status": "payer",
+        "categories_allowed": ["клининг", "расходные материалы"],
+        "geographic_capabilities": ["Санкт-Петербург", "Ленинградская область"],
+        "internal_min_margin_percent": "12.5000",
+        "available_financing": "2000000.00",
+        "credit_limit": "1000000.00",
+        "max_exposure": "3000000.00",
+        "working_capital_limit": "2500000.00",
+        "risk_flags": [],
+        "documents": [
+            {
+                "document_type": "qualification_dossier",
+                "issue_date": "2019-01-01",
+                "expiry_date": expiry_date,
+                "issuer": "Уполномоченный реестр",
+                "verification_status": "verified",
+                "file_hash": evidence_hash,
+            }
+        ],
+        "capabilities": [
+            {
+                "code": code,
+                "description": description,
+                "status": "satisfied",
+                "evidence_file_hashes": [evidence_hash],
+            }
+            for code, description in {
+                "required_license": "Лицензия подтверждена или не требуется",
+                "relevant_experience": "Есть релевантный опыт",
+                "geographic_capability": "География доступна",
+                "execution_capacity": "Мощности доступны",
+                "working_capital": "Капитал доступен",
+                "security_access": "Обеспечение доступно",
+                "entity_eligibility": "Юридическое лицо допущено",
+                "platform_accreditation": "Аккредитация действует",
+                "risk_policy": "Риск-политика соблюдена",
+                "conflict_of_interest": "Конфликт интересов отсутствует",
+            }.items()
+        ],
+    }
+
+
+def test_company_profile_snapshot_is_immutable_idempotent_and_binds_prequalification(
+    client,
+):
+    requisites = _company_requisites(client, "profile-ready")
+    payload = _company_profile_payload()
+
+    forbidden = client.post(
+        f"/api/company/requisites/{requisites['id']}/qualification-snapshots",
+        headers={"X-Role": "operator"},
+        json=payload,
+    )
+    assert forbidden.status_code == 403
+
+    first = client.post(
+        f"/api/company/requisites/{requisites['id']}/qualification-snapshots",
+        headers=MANAGER,
+        json=payload,
+    )
+    assert first.status_code == 201
+    snapshot = first.json()
+    assert snapshot["created"] is True
+    assert snapshot["status"] == "verified"
+    assert snapshot["result"]["prequalification_binding_allowed"] is True
+    assert snapshot["result"]["automatic_external_action_allowed"] is False
+    assert snapshot["profile"]["requisites"]["banking_requisites_present"] is True
+    assert len(snapshot["profile"]["requisites"]["banking_requisites_hash"]) == 64
+    assert "settlement_account" not in snapshot["profile"]["requisites"]
+
+    replay = client.post(
+        f"/api/company/requisites/{requisites['id']}/qualification-snapshots",
+        headers=MANAGER,
+        json=payload,
+    )
+    assert replay.status_code == 201
+    assert replay.json()["id"] == snapshot["id"]
+    assert replay.json()["created"] is False
+
+    listed = client.get(
+        f"/api/company/requisites/{requisites['id']}/qualification-snapshots",
+        headers={"X-Role": "viewer"},
+    )
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()] == [snapshot["id"]]
+
+    tender_id, specification_id, _ = _create_tender_with_evidence(
+        client,
+        "company-profile-bound",
+    )
+    prequalification = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={
+            "checks": _prequalification_checks(specification_id),
+            "company_profile_snapshot_hash": snapshot["input_hash"],
+        },
+    )
+    assert prequalification.status_code == 201
+    result = prequalification.json()
+    assert result["status"] == "eligible"
+    assert result["company_profile_snapshot_hash"] == snapshot["input_hash"]
+    assert result["result"]["company_profile"] == {
+        "snapshot_hash": snapshot["input_hash"],
+        "company_identifier": requisites["inn"],
+        "source": "immutable_company_profile_snapshot",
+    }
+
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(CompanyProfileSnapshot)) == 1
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(DomainEvent)
+                .where(DomainEvent.event_type == "company.profile_snapshot_created")
+            )
+            == 1
+        )
+
+
+def test_company_profile_fails_closed_on_expiry_and_capability_mismatch(client):
+    requisites = _company_requisites(client, "profile-fail-closed")
+    expired_payload = _company_profile_payload(expiry_date="2021-01-01")
+    expired = client.post(
+        f"/api/company/requisites/{requisites['id']}/qualification-snapshots",
+        headers=MANAGER,
+        json=expired_payload,
+    )
+    assert expired.status_code == 201
+    assert expired.json()["status"] == "needs_verification"
+    assert "document:qualification_dossier:expired" in expired.json()["result"][
+        "verification_gaps"
+    ]
+
+    short_lived = client.post(
+        f"/api/company/requisites/{requisites['id']}/qualification-snapshots",
+        headers=MANAGER,
+        json=_company_profile_payload(expiry_date="2030-01-01"),
+    )
+    assert short_lived.status_code == 201
+    assert short_lived.json()["status"] == "verified"
+
+    tender_id, specification_id, _ = _create_tender_with_evidence(
+        client,
+        "company-profile-expiry",
+    )
+    expired_binding = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={
+            "checks": _prequalification_checks(specification_id),
+            "company_profile_snapshot_hash": expired.json()["input_hash"],
+        },
+    )
+    assert expired_binding.status_code == 422
+    assert "must be verified" in expired_binding.json()["detail"]
+
+    deadline_binding = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={
+            "checks": _prequalification_checks(specification_id),
+            "company_profile_snapshot_hash": short_lived.json()["input_hash"],
+        },
+    )
+    assert deadline_binding.status_code == 422
+    assert "expires before the tender deadline" in deadline_binding.json()["detail"]
+
+    valid = client.post(
+        f"/api/company/requisites/{requisites['id']}/qualification-snapshots",
+        headers=MANAGER,
+        json=_company_profile_payload(),
+    ).json()
+    mismatched = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={
+            "checks": _prequalification_checks(
+                specification_id,
+                overrides={"allowed_geography": "unknown"},
+            ),
+            "company_profile_snapshot_hash": valid["input_hash"],
+        },
+    )
+    assert mismatched.status_code == 422
+    assert "allowed_geography" in mismatched.json()["detail"]
+
+    bad_evidence = _company_profile_payload()
+    bad_evidence["capabilities"][0]["evidence_file_hashes"] = ["d" * 64]
+    rejected = client.post(
+        f"/api/company/requisites/{requisites['id']}/qualification-snapshots",
+        headers=MANAGER,
+        json=bad_evidence,
+    )
+    assert rejected.status_code == 422
+    assert "unavailable company document" in rejected.json()["detail"]
+
+
 def test_prequalification_snapshot_is_fail_closed_idempotent_and_binds_decision(
     client,
 ):
@@ -280,11 +508,14 @@ def test_prequalification_snapshot_is_fail_closed_idempotent_and_binds_decision(
 
     with SessionLocal() as db:
         assert db.scalar(
-            select(func.count()).select_from(TenderPrequalificationSnapshot)
+            select(func.count())
+            .select_from(TenderPrequalificationSnapshot)
+            .where(TenderPrequalificationSnapshot.record_id == tender_id)
         ) == 1
         assert db.scalar(
             select(func.count()).select_from(DomainEvent).where(
-                DomainEvent.event_type == "tender.prequalification_evaluated"
+                DomainEvent.event_type == "tender.prequalification_evaluated",
+                DomainEvent.aggregate_id == str(tender_id),
             )
         ) == 1
 

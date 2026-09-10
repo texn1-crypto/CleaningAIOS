@@ -56,6 +56,16 @@ outbox-событие; изменённые байты получают нову
 доступен для проверки старых evidence. Если уже существующий файл по ожидаемому пути
 не совпадает с SHA-256, загрузка завершается fail-closed без перезаписи.
 
+`POST /api/company/requisites/{profile_id}/qualification-snapshots` создаёт
+неизменяемую версию Company Digital Twin для существующего профиля юридического
+лица. Snapshot хранит legal identity, налогообложение/НДС, категории, географию,
+лимиты и фиксированную taxonomy capability checks. Каждый подтверждающий документ
+имеет `issue_date`, `expiry_date`, issuer, verification status и SHA-256;
+просроченный, неизвестный или не подтверждённый документ не даёт статус
+`verified`. Платёжные реквизиты не копируются в публичный snapshot: сохраняются
+только признак комплектности и fingerprint, а идентификаторы маскируются в API.
+История доступна через соответствующий `GET`, точный повтор идемпотентен.
+
 `POST /api/tenders/{record_id}/prequalification-snapshots` выполняет отдельный
 FAST DISQUALIFICATION до supplier work. Сервис требует фиксированный набор из 14
 hard-constraint checks (лицензии, опыт, география, сроки, capacity, капитал,
@@ -67,6 +77,11 @@ hard-constraint checks (лицензии, опыт, география, срок
 набор подтверждённых checks получает `eligible` и `supplier_discovery_allowed`.
 Повтор точного входа идемпотентен, история доступна через manager/viewer API и
 фиксируется в audit/outbox. Сам endpoint не ищет поставщиков и не отправляет RFQ.
+Опциональный `company_profile_snapshot_hash` связывает проверки компании с точной
+неизменяемой версией Digital Twin. Профиль обязан быть integrity-valid и
+`verified`, его capability statuses должны совпадать с prequalification, а самый
+ранний срок документа — покрывать текущую дату и deadline тендера. Legacy unbound
+вход сохранён для обратной совместимости и явно обозначается в результате.
 
 `POST /api/tenders/{record_id}/supplier-quote-snapshots` сохраняет ручную или
 импортированную котировку только после точного `eligible` prequalification hash.
@@ -168,12 +183,14 @@ extractor не объявляет товары соответствующими 
 
 Срез production-quality для общего HTTP(S) JSON feed и ручного/fixture структурированного ввода,
 локального выделения кандидатов требований и характеристик товара, проверки
-исходных фактов, evidence-bound fast prequalification и supplier quote snapshot,
+исходных фактов, evidence-bound Company Digital Twin, fast prequalification и
+supplier quote snapshot,
 fail-closed
 междокументного черновика, привязанного к нему
 решения менеджера и review-bound decision snapshot. OCR/сложный table extraction,
-официальные ЕИС/ЭТП adapters и provider cursors, malware/archive sandbox, supplier
-discovery/RFQ, подача, ЭЦП, autobid, платежи и
+официальные ЕИС/ЭТП adapters и provider cursors, автоматическая верификация полного
+Company Digital Twin, malware/archive sandbox, supplier discovery/RFQ, подача,
+ЭЦП, autobid, платежи и
 post-win execution ещё не реализованы.
 Интерфейс не должен называть их подключёнными или завершёнными.
 

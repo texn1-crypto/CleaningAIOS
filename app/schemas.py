@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -257,8 +257,78 @@ class TenderQualificationFact(BaseModel):
     evidence: list[TenderEvidenceRef] = Field(default_factory=list, max_length=20)
 
 
+class CompanyProfileDocument(BaseModel):
+    document_type: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    issue_date: date
+    expiry_date: date
+    issuer: str = Field(min_length=2, max_length=255)
+    verification_status: str = Field(pattern="^(verified|invalid|unknown)$")
+    file_hash: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+
+
+class CompanyCapabilityFact(BaseModel):
+    code: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    description: str = Field(min_length=2, max_length=1000)
+    status: str = Field(pattern="^(satisfied|not_satisfied|unknown)$")
+    evidence_file_hashes: list[str] = Field(default_factory=list, max_length=20)
+
+
+class CompanyProfileSnapshotCreate(BaseModel):
+    verified_at: datetime
+    taxation_regime: str = Field(min_length=1, max_length=128)
+    vat_status: str = Field(pattern="^(payer|exempt|unknown)$")
+    categories_allowed: list[str] = Field(default_factory=list, max_length=200)
+    geographic_capabilities: list[str] = Field(default_factory=list, max_length=200)
+    internal_min_margin_percent: Optional[Decimal] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        max_digits=7,
+        decimal_places=4,
+    )
+    available_financing: Optional[Decimal] = Field(
+        default=None,
+        ge=0,
+        max_digits=18,
+        decimal_places=2,
+    )
+    credit_limit: Optional[Decimal] = Field(
+        default=None,
+        ge=0,
+        max_digits=18,
+        decimal_places=2,
+    )
+    max_exposure: Optional[Decimal] = Field(
+        default=None,
+        ge=0,
+        max_digits=18,
+        decimal_places=2,
+    )
+    working_capital_limit: Optional[Decimal] = Field(
+        default=None,
+        ge=0,
+        max_digits=18,
+        decimal_places=2,
+    )
+    risk_flags: list[str] = Field(default_factory=list, max_length=200)
+    documents: list[CompanyProfileDocument] = Field(min_length=1, max_length=500)
+    capabilities: list[CompanyCapabilityFact] = Field(min_length=1, max_length=200)
+
+
 class TenderPrequalificationCreate(BaseModel):
     checks: list[TenderQualificationFact] = Field(min_length=1, max_length=200)
+    company_profile_snapshot_hash: Optional[str] = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+    )
 
 
 class TenderProductComplianceParameter(BaseModel):
