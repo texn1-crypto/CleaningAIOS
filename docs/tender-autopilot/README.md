@@ -83,14 +83,22 @@ extractor не объявляет товары соответствующими 
 `review_hash` сохраняются в PostgreSQL, событие — в audit/outbox, а точный повтор
 идемпотентен. Review не разрешает участие, подачу или иное внешнее действие.
 
+`POST /api/tenders/{record_id}/decision-snapshots` также принимает
+`product_comparison_review_hash`. В этом режиме строки product compliance
+формируются только из актуального integrity-checked review; смешивание с ручной
+матрицей запрещено. Review hash входит в канонический input snapshot. Неполные
+или неоднозначные строки не превращаются в ложные факты, а добавляют
+`product_comparison_review:needs_verification`. Это по-прежнему лишь паспорт
+решения: участие и подача требуют отдельных owner approvals.
+
 ## Честная граница готовности
 
 Срез production-quality для ручного/fixture структурированного ввода,
 локального выделения кандидатов требований и характеристик товара, проверки
-исходных фактов, fail-closed междокументного черновика и привязанного к нему
-решения менеджера. Автоматическое преобразование review во вход decision
-snapshot, OCR/сложный table extraction, официальные ЕИС/ЭТП adapters, supplier
-RFQ, подача, ЭЦП, autobid, платежи и post-win execution ещё не реализованы.
+исходных фактов, fail-closed междокументного черновика, привязанного к нему
+решения менеджера и review-bound decision snapshot. OCR/сложный table extraction,
+официальные ЕИС/ЭТП adapters, supplier RFQ, подача, ЭЦП, autobid, платежи и
+post-win execution ещё не реализованы.
 Интерфейс не должен называть их подключёнными или завершёнными.
 
 Документы:

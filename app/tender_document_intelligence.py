@@ -910,6 +910,157 @@ def review_product_comparison_draft(
     return result, True
 
 
+def product_compliance_from_comparison_review(
+    tender: BusinessRecord,
+    documents: list[TenderDocument],
+    *,
+    review_hash: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Derive snapshot-ready compliance rows from one current manager review."""
+
+    tender_data = tender.data if isinstance(tender.data, dict) else {}
+    if tender_data.get("latest_product_comparison_review_hash") != review_hash:
+        raise TenderDocumentReviewError("Product comparison review is stale")
+    review_history = tender_data.get("product_comparison_reviews")
+    if not isinstance(review_history, list):
+        raise TenderDocumentReviewError("Product comparison review is unavailable")
+    review = next(
+        (
+            item
+            for item in review_history
+            if isinstance(item, dict) and item.get("review_hash") == review_hash
+        ),
+        None,
+    )
+    if review is None or review.get("version") != PRODUCT_COMPARISON_REVIEW_VERSION:
+        raise TenderDocumentReviewError("Product comparison review is unavailable")
+    decisions = review.get("decisions")
+    draft_hash = str(review.get("draft_hash") or "")
+    if not isinstance(decisions, list) or not decisions:
+        raise TenderDocumentReviewError("Product comparison review decisions are unavailable")
+    review_canonical = {
+        "version": PRODUCT_COMPARISON_REVIEW_VERSION,
+        "tender_id": tender.id,
+        "draft_hash": draft_hash,
+        "decisions": decisions,
+    }
+    expected_review_hash = hashlib.sha256(
+        json.dumps(
+            review_canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if review.get("tender_id") != tender.id or expected_review_hash != review_hash:
+        raise TenderDocumentReviewError("Product comparison review integrity check failed")
+
+    validated_review, created = review_product_comparison_draft(
+        tender,
+        documents,
+        draft_hash=draft_hash,
+        decisions=decisions,
+        reviewed_by=str(review.get("reviewed_by") or "manager"),
+    )
+    if created or validated_review.get("review_hash") != review_hash:
+        raise TenderDocumentReviewError("Product comparison review integrity check failed")
+
+    draft_history = tender_data.get("product_comparison_drafts")
+    draft = next(
+        (
+            item
+            for item in draft_history
+            if isinstance(item, dict) and item.get("draft_hash") == draft_hash
+        ),
+        None,
+    ) if isinstance(draft_history, list) else None
+    if draft is None:
+        raise TenderDocumentReviewError("Product comparison draft is unavailable")
+    comparisons = draft.get("comparisons")
+    if not isinstance(comparisons, list):
+        raise TenderDocumentReviewError("Product comparison candidates are unavailable")
+    decision_map = {
+        str(decision.get("candidate_hash")): decision
+        for decision in decisions
+        if isinstance(decision, dict) and decision.get("candidate_hash")
+    }
+
+    compliance: list[dict[str, Any]] = []
+    skipped_candidate_hashes: list[str] = []
+    for candidate in sorted(comparisons, key=lambda item: str(item["candidate_hash"])):
+        candidate_hash = str(candidate["candidate_hash"])
+        decision = decision_map[candidate_hash]
+        required_value = str(candidate.get("required_value") or "").strip()
+        if not required_value:
+            skipped_candidate_hashes.append(candidate_hash)
+            continue
+        evidence: list[dict[str, Any]] = []
+        evidence_keys: set[tuple[Any, ...]] = set()
+        for fact in [
+            *(candidate.get("required_facts") or []),
+            *(candidate.get("offered_facts") or []),
+        ]:
+            if not isinstance(fact, dict):
+                continue
+            for reference in fact.get("evidence") or []:
+                if not isinstance(reference, dict):
+                    continue
+                key = (
+                    reference.get("document_id"),
+                    reference.get("document_checksum"),
+                    reference.get("locator"),
+                    reference.get("excerpt"),
+                )
+                if key in evidence_keys:
+                    continue
+                evidence_keys.add(key)
+                evidence.append(reference)
+        compliance.append(
+            {
+                "code": str(candidate.get("code") or ""),
+                "parameter": str(candidate.get("parameter") or ""),
+                "required_value": required_value,
+                "offered_value": str(candidate.get("offered_value") or ""),
+                "mandatory": True,
+                "match_status": str(decision.get("match_status") or "unknown"),
+                "confidence": (
+                    "1" if decision.get("match_status") in {"match", "mismatch"} else "0"
+                ),
+                "evidence": evidence,
+            }
+        )
+
+    unknown_count = sum(
+        decision.get("match_status") == "unknown"
+        for decision in decisions
+        if isinstance(decision, dict)
+    )
+    mismatch_count = sum(
+        decision.get("match_status") == "mismatch"
+        for decision in decisions
+        if isinstance(decision, dict)
+    )
+    expected_status = "needs_verification" if unknown_count else "reviewed"
+    expected_product_match = (
+        "rejected" if mismatch_count else "unverified" if unknown_count else "verified"
+    )
+    if (
+        review.get("status") != expected_status
+        or review.get("product_match") != expected_product_match
+    ):
+        raise TenderDocumentReviewError("Product comparison review integrity check failed")
+    metadata = {
+        "review_hash": review_hash,
+        "draft_hash": draft_hash,
+        "status": expected_status,
+        "product_match": expected_product_match,
+        "decision_count": len(decisions),
+        "derived_parameter_count": len(compliance),
+        "skipped_candidate_hashes": skipped_candidate_hashes,
+    }
+    return compliance, metadata
+
+
 def extract_requirement_candidates(document: TenderDocument) -> tuple[dict[str, Any], bool]:
     path = _verified_storage_path(document)
     previous = (document.analysis or {}).get("requirement_extraction")

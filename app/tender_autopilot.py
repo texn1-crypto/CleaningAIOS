@@ -160,6 +160,17 @@ def _canonical_input(
     payload: TenderDecisionSnapshotCreate,
 ) -> dict[str, Any]:
     tender_data = tender.data or {}
+    product_compliance = {
+        "required": payload.product_compliance_required,
+        "parameters": sorted(
+            (_product_compliance_view(fact) for fact in payload.product_compliance),
+            key=lambda item: item["code"],
+        ),
+    }
+    if payload.product_comparison_review_hash:
+        product_compliance["comparison_review_hash"] = (
+            payload.product_comparison_review_hash
+        )
     return {
         "rules_version": RULES_VERSION,
         "source": {
@@ -178,13 +189,7 @@ def _canonical_input(
             (_fact_view(fact) for fact in payload.qualification_checks),
             key=lambda item: item["code"],
         ),
-        "product_compliance": {
-            "required": payload.product_compliance_required,
-            "parameters": sorted(
-                (_product_compliance_view(fact) for fact in payload.product_compliance),
-                key=lambda item: item["code"],
-            ),
-        },
+        "product_compliance": product_compliance,
         "supplier_quote": {
             "supplier_name": payload.supplier_quote.supplier_name.strip(),
             "quote_reference": payload.supplier_quote.quote_reference.strip(),
@@ -264,6 +269,29 @@ def build_tender_assessment(
     verification_gaps: list[str] = []
     hard_stops: list[str] = []
     risk_factors: list[str] = []
+    comparison_review_status: str | None = None
+    comparison_review_decision_count = 0
+    if payload.product_comparison_review_hash:
+        tender_data = tender.data if isinstance(tender.data, dict) else {}
+        reviews = tender_data.get("product_comparison_reviews")
+        review = next(
+            (
+                item
+                for item in reviews
+                if isinstance(item, dict)
+                and item.get("review_hash") == payload.product_comparison_review_hash
+            ),
+            None,
+        ) if isinstance(reviews, list) else None
+        if not isinstance(review, dict):
+            raise ValueError("Product comparison review is unavailable")
+        comparison_review_status = str(review.get("status") or "")
+        review_decisions = review.get("decisions")
+        comparison_review_decision_count = (
+            len(review_decisions) if isinstance(review_decisions, list) else 0
+        )
+        if comparison_review_status != "reviewed":
+            verification_gaps.append("product_comparison_review:needs_verification")
     for field in ("external_id", "source_url", "deadline_at"):
         if not source[field]:
             verification_gaps.append(f"source.{field}:missing")
@@ -510,6 +538,23 @@ def build_tender_assessment(
             ),
             "matrix": canonical["product_compliance"]["parameters"],
             "confidence_is_advisory_only": True,
+            **(
+                {
+                    "comparison_review_hash": payload.product_comparison_review_hash,
+                    "source": "manager_product_comparison_review",
+                    "comparison_review_status": comparison_review_status,
+                    "comparison_review_decision_count": (
+                        comparison_review_decision_count
+                    ),
+                    "unresolved_candidate_count": max(
+                        0,
+                        comparison_review_decision_count
+                        - len(payload.product_compliance),
+                    ),
+                }
+                if payload.product_comparison_review_hash
+                else {}
+            ),
         },
         "supplier": {
             "name": quote.supplier_name,
@@ -596,15 +641,37 @@ def persist_tender_assessment(
     actor: str,
     now: datetime | None = None,
 ) -> tuple[TenderAssessmentSnapshot, bool]:
-    documents = db.scalars(
+    documents = list(db.scalars(
         select(TenderDocument)
         .where(TenderDocument.record_id == tender.id)
         .order_by(TenderDocument.id)
-    ).all()
+    ).all())
+    effective_payload = payload
+    if payload.product_comparison_review_hash:
+        if payload.product_compliance:
+            raise ValueError(
+                "Manual product compliance cannot be combined with a comparison review hash"
+            )
+        from .tender_document_intelligence import (
+            product_compliance_from_comparison_review,
+        )
+
+        product_compliance, _metadata = product_compliance_from_comparison_review(
+            tender,
+            documents,
+            review_hash=payload.product_comparison_review_hash,
+        )
+        effective_payload = TenderDecisionSnapshotCreate.model_validate(
+            {
+                **payload.model_dump(),
+                "product_compliance_required": True,
+                "product_compliance": product_compliance,
+            }
+        )
     canonical, result = build_tender_assessment(
         tender,
-        list(documents),
-        payload,
+        documents,
+        effective_payload,
         now=now,
     )
     existing = db.scalar(

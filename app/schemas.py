@@ -314,6 +314,10 @@ class TenderDecisionSnapshotCreate(BaseModel):
     requirements: list[TenderRequirementFact] = Field(min_length=1, max_length=500)
     qualification_checks: list[TenderQualificationFact] = Field(min_length=1, max_length=200)
     product_compliance_required: bool = False
+    product_comparison_review_hash: Optional[str] = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+    )
     product_compliance: list[TenderProductComplianceParameter] = Field(
         default_factory=list,
         max_length=500,

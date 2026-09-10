@@ -7,7 +7,12 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import BusinessRecord, DomainEvent, TenderDocument
+from app.models import (
+    BusinessRecord,
+    DomainEvent,
+    TenderAssessmentSnapshot,
+    TenderDocument,
+)
 
 
 MANAGER = {"X-Role": "manager"}
@@ -657,6 +662,7 @@ def test_product_comparison_draft_is_review_bound_persisted_and_idempotent(
     ).json()
 
     document_ids: dict[str, int] = {}
+    document_checksums: dict[str, str] = {}
     for source_role, source, kind in (
         ("tender_requirement", requirement_source, "tender_specification"),
         ("offered_product", offered_source, "supplier_specification"),
@@ -675,6 +681,7 @@ def test_product_comparison_draft_is_review_bound_persisted_and_idempotent(
             },
         ).json()
         document_ids[source_role] = document["id"]
+        document_checksums[source_role] = checksum
         extraction = client.post(
             f"/api/tender-documents/{document['id']}/product-specification/extract",
             headers=MANAGER,
@@ -875,9 +882,125 @@ def test_product_comparison_draft_is_review_bound_persisted_and_idempotent(
         persisted.data = original_data
         db.commit()
 
+    snapshot_payload = _assessment_payload(
+        document_ids["tender_requirement"],
+        document_ids["offered_product"],
+    )
+    snapshot_payload["requirements"][0]["evidence"][0]["document_checksum"] = (
+        document_checksums["tender_requirement"]
+    )
+    snapshot_payload["qualification_checks"][0]["evidence"][0][
+        "document_checksum"
+    ] = document_checksums["tender_requirement"]
+    snapshot_payload["supplier_quote"]["evidence"][0]["document_checksum"] = (
+        document_checksums["offered_product"]
+    )
+    snapshot_payload["product_comparison_review_hash"] = review["review_hash"]
+
+    conflicting_payload = deepcopy(snapshot_payload)
+    conflicting_payload["product_compliance"] = [
+        {
+            "code": "product.manual",
+            "parameter": "Ручное значение",
+            "required_value": "1",
+            "offered_value": "1",
+            "mandatory": True,
+            "match_status": "match",
+            "confidence": "1",
+            "evidence": [],
+        }
+    ]
+    conflicting = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=conflicting_payload,
+    )
+    assert conflicting.status_code == 422
+    assert conflicting.json()["detail"] == (
+        "Manual product compliance cannot be combined with a comparison review hash"
+    )
+
+    snapshot_response = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=snapshot_payload,
+    )
+    assert snapshot_response.status_code == 201
+    snapshot = snapshot_response.json()
+    assert snapshot["created"] is True
+    assert snapshot["status"] == "not_viable"
+    assert snapshot["participation_review_task_id"] is None
+    compliance = snapshot["result"]["product_compliance"]
+    assert compliance["comparison_review_hash"] == review["review_hash"]
+    assert compliance["source"] == "manager_product_comparison_review"
+    assert compliance["comparison_review_status"] == "needs_verification"
+    assert compliance["comparison_review_decision_count"] == 3
+    assert compliance["unresolved_candidate_count"] == 1
+    assert compliance["required"] is True
+    assert compliance["total"] == 2
+    assert compliance["matched"] == 1
+    assert compliance["mismatched"] == 1
+    assert compliance["unknown"] == 0
+    assert compliance["product_match"] == "rejected"
+    assert (
+        "product_comparison_review:needs_verification"
+        in snapshot["result"]["verification_gaps"]
+    )
+    assert snapshot["result"]["automatic_submission_allowed"] is False
+
+    repeated_snapshot = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=snapshot_payload,
+    ).json()
+    assert repeated_snapshot["created"] is False
+    assert repeated_snapshot["id"] == snapshot["id"]
+
+    stale_review_payload = deepcopy(snapshot_payload)
+    stale_review_payload["product_comparison_review_hash"] = "f" * 64
+    stale_review = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=stale_review_payload,
+    )
+    assert stale_review.status_code == 422
+    assert stale_review.json()["detail"] == "Product comparison review is stale"
+
     with SessionLocal() as db:
         persisted = db.get(BusinessRecord, tender["id"])
         assert persisted is not None
+        snapshot_data = deepcopy(persisted.data)
+        tampered_review_data = deepcopy(snapshot_data)
+        tampered_review_data["product_comparison_reviews"][0][
+            "product_match"
+        ] = "verified"
+        persisted.data = tampered_review_data
+        db.commit()
+
+    tampered_review = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=snapshot_payload,
+    )
+    assert tampered_review.status_code == 422
+    assert tampered_review.json()["detail"] == (
+        "Product comparison review integrity check failed"
+    )
+
+    with SessionLocal() as db:
+        persisted = db.get(BusinessRecord, tender["id"])
+        assert persisted is not None
+        persisted.data = snapshot_data
+        db.commit()
+
+    with SessionLocal() as db:
+        persisted = db.get(BusinessRecord, tender["id"])
+        assert persisted is not None
+        persisted_snapshot = db.get(TenderAssessmentSnapshot, snapshot["id"])
+        assert persisted_snapshot is not None
+        assert persisted_snapshot.input_snapshot["product_compliance"][
+            "comparison_review_hash"
+        ] == review["review_hash"]
         assert persisted.data["latest_product_comparison_draft_hash"] == result[
             "draft_hash"
         ]
@@ -899,6 +1022,14 @@ def test_product_comparison_draft_is_review_bound_persisted_and_idempotent(
             .where(
                 DomainEvent.event_type
                 == "tender.product_comparison_draft_created",
+                DomainEvent.aggregate_id == str(tender["id"]),
+            )
+        ) == 1
+        assert db.scalar(
+            select(func.count())
+            .select_from(DomainEvent)
+            .where(
+                DomainEvent.event_type == "tender.decision_snapshot_created",
                 DomainEvent.aggregate_id == str(tender["id"]),
             )
         ) == 1
