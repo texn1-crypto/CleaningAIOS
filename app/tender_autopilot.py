@@ -15,6 +15,7 @@ from .models import (
     TenderAssessmentSnapshot,
     TenderDocument,
     TenderPrequalificationSnapshot,
+    TenderSupplierQuoteSnapshot,
 )
 from .schemas import (
     TenderDecisionSnapshotCreate,
@@ -22,6 +23,10 @@ from .schemas import (
     TenderProductComplianceParameter,
     TenderQualificationFact,
     TenderRequirementFact,
+)
+from .tender_supplier_quotes import (
+    decision_quote_view,
+    supplier_quote_snapshot_integrity_valid,
 )
 
 
@@ -187,6 +192,11 @@ def _canonical_input(
             if payload.prequalification_snapshot_hash
             else {}
         ),
+        **(
+            {"supplier_quote_snapshot_hash": payload.supplier_quote_snapshot_hash}
+            if payload.supplier_quote_snapshot_hash
+            else {}
+        ),
         "source": {
             "record_id": tender.id,
             "platform": str(tender_data.get("platform") or tender.source or ""),
@@ -204,19 +214,7 @@ def _canonical_input(
             key=lambda item: item["code"],
         ),
         "product_compliance": product_compliance,
-        "supplier_quote": {
-            "supplier_name": payload.supplier_quote.supplier_name.strip(),
-            "quote_reference": payload.supplier_quote.quote_reference.strip(),
-            "total_cost": _money(payload.supplier_quote.total_cost),
-            "currency": payload.supplier_quote.currency,
-            "vat_included": payload.supplier_quote.vat_included,
-            "stock_status": payload.supplier_quote.stock_status,
-            "valid_until": _iso(payload.supplier_quote.valid_until),
-            "evidence": sorted(
-                (_evidence_view(ref) for ref in payload.supplier_quote.evidence),
-                key=lambda item: (item["document_id"], item["locator"], item["excerpt"]),
-            ),
-        },
+        "supplier_quote": decision_quote_view(payload.supplier_quote),
         "economics": {
             "contract_value": _money(payload.contract_value),
             "contract_months": payload.contract_months,
@@ -586,6 +584,14 @@ def build_tender_assessment(
             "vat_included": quote.vat_included,
             "stock_status": quote.stock_status,
             "valid_until": _iso(quote.valid_until),
+            **(
+                {
+                    "source": "immutable_supplier_quote_snapshot",
+                    "snapshot_hash": payload.supplier_quote_snapshot_hash,
+                }
+                if payload.supplier_quote_snapshot_hash
+                else {}
+            ),
         },
         "economics": {
             "valid": economics_valid,
@@ -691,6 +697,38 @@ def persist_tender_assessment(
         if submitted_checks != stored_checks:
             raise ValueError(
                 "Qualification checks do not match the cited prequalification snapshot"
+            )
+    if payload.supplier_quote_snapshot_hash:
+        quote_snapshot = db.scalar(
+            select(TenderSupplierQuoteSnapshot).where(
+                TenderSupplierQuoteSnapshot.record_id == tender.id,
+                TenderSupplierQuoteSnapshot.input_hash
+                == payload.supplier_quote_snapshot_hash,
+            )
+        )
+        if quote_snapshot is None:
+            raise ValueError("Supplier quote snapshot is unavailable")
+        if not supplier_quote_snapshot_integrity_valid(quote_snapshot):
+            raise ValueError("Supplier quote snapshot integrity check failed")
+        if quote_snapshot.status != "verified":
+            raise ValueError(
+                "Supplier quote snapshot must be verified before economics"
+            )
+        if not payload.prequalification_snapshot_hash:
+            raise ValueError(
+                "Supplier quote snapshot requires its prequalification snapshot"
+            )
+        if (
+            quote_snapshot.prequalification_snapshot_hash
+            != payload.prequalification_snapshot_hash
+        ):
+            raise ValueError(
+                "Supplier quote and prequalification snapshots do not match"
+            )
+        stored_quote = quote_snapshot.input_snapshot.get("decision_quote")
+        if decision_quote_view(payload.supplier_quote) != stored_quote:
+            raise ValueError(
+                "Supplier quote does not match the cited supplier quote snapshot"
             )
     if payload.product_comparison_review_hash:
         if payload.product_compliance:

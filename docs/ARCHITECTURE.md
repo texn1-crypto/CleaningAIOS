@@ -193,6 +193,9 @@ rows link back to their source resource. Navigation never infers task state loca
   a fixed 14-check taxonomy and exact document checksums. Missing, UNKNOWN or
   evidence-free known facts fail closed; only `eligible` permits supplier discovery.
   A decision snapshot may bind the exact prequalification hash and matching facts.
+  A separate immutable supplier quote snapshot records typed commercial terms,
+  freshness and exact document evidence after that gate. Only `verified` quote data
+  matching the cited prequalification and inline decision input can feed economics.
 - The advisory router supports three native contracts. `LLM_BASE_URL` targets the
   OpenAI Responses API and sends `LLM_API_KEY` only in the Authorization header with
   `store=false`. `ANTHROPIC_BASE_URL` targets Claude Messages API and sends

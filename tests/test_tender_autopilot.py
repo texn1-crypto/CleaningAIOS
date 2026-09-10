@@ -13,6 +13,7 @@ from app.models import (
     TenderAssessmentSnapshot,
     TenderDocument,
     TenderPrequalificationSnapshot,
+    TenderSupplierQuoteSnapshot,
 )
 from app.tender_prequalification import REQUIRED_CHECKS
 
@@ -149,6 +150,50 @@ def _prequalification_checks(
     ]
 
 
+def _supplier_quote_payload(
+    prequalification_hash: str,
+    quote_document_id: int,
+) -> dict:
+    return {
+        "prequalification_snapshot_hash": prequalification_hash,
+        "supplier_name": "ООО Поставщик",
+        "supplier_identifier": "7801000000",
+        "quote_reference": "QUOTE-001",
+        "product_sku": "CLEAN-001",
+        "brand": "CleanBrand",
+        "manufacturer": "ООО Производитель",
+        "country": "Россия",
+        "unit_price": "500.00",
+        "total_cost": "500000.00",
+        "currency": "RUB",
+        "vat_included": True,
+        "minimum_order": "1.000",
+        "requested_quantity": "1000.000",
+        "quantity_available": "1200.000",
+        "stock_location": "Санкт-Петербург",
+        "stock_status": "confirmed",
+        "lead_time_days": 5,
+        "delivery_cost": "0.00",
+        "delivery_included": True,
+        "payment_terms": "Оплата в течение 30 дней",
+        "quoted_at": "2026-01-01T12:00:00Z",
+        "valid_until": "2040-01-05T12:00:00Z",
+        "specification_match": "match",
+        "certificate_status": "valid",
+        "supplier_reliability": "trusted",
+        "source": "https://supplier.example.invalid/quote/QUOTE-001",
+        "verified_at": "2026-01-02T12:00:00Z",
+        "evidence": [
+            {
+                "document_id": quote_document_id,
+                "document_checksum": "b" * 64,
+                "locator": "page 1",
+                "excerpt": "Итого 500 000 рублей, товар в наличии",
+            }
+        ],
+    }
+
+
 def test_prequalification_snapshot_is_fail_closed_idempotent_and_binds_decision(
     client,
 ):
@@ -242,6 +287,240 @@ def test_prequalification_snapshot_is_fail_closed_idempotent_and_binds_decision(
                 DomainEvent.event_type == "tender.prequalification_evaluated"
             )
         ) == 1
+
+
+def test_supplier_quote_snapshot_is_verified_idempotent_and_binds_decision(client):
+    tender_id, specification_id, quote_id = _create_tender_with_evidence(
+        client,
+        "supplier-quote-snapshot",
+    )
+    checks = _prequalification_checks(specification_id)
+    prequalification = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": checks},
+    ).json()
+    quote_payload = _supplier_quote_payload(prequalification["input_hash"], quote_id)
+
+    forbidden = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers={"X-Role": "operator"},
+        json=quote_payload,
+    )
+    assert forbidden.status_code == 403
+
+    first = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=quote_payload,
+    )
+    assert first.status_code == 201
+    quote_snapshot = first.json()
+    assert quote_snapshot["created"] is True
+    assert quote_snapshot["status"] == "verified"
+    assert quote_snapshot["result"]["economics_allowed"] is True
+    assert quote_snapshot["result"]["hard_stops"] == []
+    assert quote_snapshot["result"]["verification_gaps"] == []
+    assert quote_snapshot["quote"]["unit_price"] == "500.00"
+    assert quote_snapshot["quote"]["requested_quantity"] == "1000.000"
+
+    replay = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=quote_payload,
+    )
+    assert replay.status_code == 201
+    assert replay.json()["created"] is False
+    assert replay.json()["id"] == quote_snapshot["id"]
+
+    listed = client.get(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers={"X-Role": "viewer"},
+    )
+    assert listed.status_code == 200
+    assert [row["id"] for row in listed.json()] == [quote_snapshot["id"]]
+
+    decision_payload = _assessment_payload(specification_id, quote_id)
+    decision_payload["qualification_checks"] = checks
+    decision_payload["prequalification_snapshot_hash"] = prequalification[
+        "input_hash"
+    ]
+    decision_payload["supplier_quote_snapshot_hash"] = quote_snapshot["input_hash"]
+    decision = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=decision_payload,
+    )
+    assert decision.status_code == 201
+    assert decision.json()["result"]["economics"]["valid"] is True
+    assert decision.json()["result"]["supplier"] == {
+        "name": "ООО Поставщик",
+        "quote_reference": "QUOTE-001",
+        "total_cost": "500000.00",
+        "currency": "RUB",
+        "vat_included": True,
+        "stock_status": "confirmed",
+        "valid_until": "2040-01-05T12:00:00Z",
+        "source": "immutable_supplier_quote_snapshot",
+        "snapshot_hash": quote_snapshot["input_hash"],
+    }
+
+    mismatched = deepcopy(decision_payload)
+    mismatched["supplier_quote"]["total_cost"] = "500001.00"
+    mismatch_response = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=mismatched,
+    )
+    assert mismatch_response.status_code == 422
+    assert "does not match" in mismatch_response.json()["detail"]
+
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(func.count()).select_from(TenderSupplierQuoteSnapshot)
+        ) == 1
+        assert db.scalar(
+            select(func.count()).select_from(DomainEvent).where(
+                DomainEvent.event_type == "tender.supplier_quote_recorded",
+                DomainEvent.aggregate_id == str(tender_id),
+            )
+        ) == 1
+
+
+def test_supplier_quote_snapshot_fails_closed_on_unknown_and_invalid_evidence(
+    client,
+):
+    tender_id, specification_id, quote_id = _create_tender_with_evidence(
+        client,
+        "supplier-quote-unknown",
+    )
+    checks = _prequalification_checks(specification_id)
+    prequalification = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": checks},
+    ).json()
+    quote_payload = _supplier_quote_payload(prequalification["input_hash"], quote_id)
+
+    wrong_checksum = deepcopy(quote_payload)
+    wrong_checksum["evidence"][0]["document_checksum"] = "f" * 64
+    checksum_response = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=wrong_checksum,
+    )
+    assert checksum_response.status_code == 422
+    assert "Checksum mismatch" in checksum_response.json()["detail"]
+
+    unknown = deepcopy(quote_payload)
+    unknown.update(
+        {
+            "stock_status": "unknown",
+            "quantity_available": None,
+            "stock_location": "",
+            "lead_time_days": None,
+            "specification_match": "unknown",
+            "certificate_status": "unknown",
+            "supplier_reliability": "unknown",
+            "verified_at": None,
+        }
+    )
+    response = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=unknown,
+    )
+    assert response.status_code == 201
+    snapshot = response.json()
+    assert snapshot["status"] == "needs_verification"
+    assert snapshot["result"]["economics_allowed"] is False
+    assert "supplier_quote:stock_unknown" in snapshot["result"][
+        "verification_gaps"
+    ]
+
+    expired = deepcopy(quote_payload)
+    expired.update(
+        {
+            "quote_reference": "QUOTE-EXPIRED",
+            "quoted_at": "2019-01-01T12:00:00Z",
+            "valid_until": "2020-01-01T12:00:00Z",
+            "verified_at": "2019-01-02T12:00:00Z",
+        }
+    )
+    expired_response = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=expired,
+    ).json()
+    assert expired_response["status"] == "needs_verification"
+    assert "supplier_quote:expired" in expired_response["result"][
+        "verification_gaps"
+    ]
+
+    rejected = deepcopy(quote_payload)
+    rejected["quote_reference"] = "QUOTE-MISMATCH"
+    rejected["specification_match"] = "mismatch"
+    rejected_response = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=rejected,
+    ).json()
+    assert rejected_response["status"] == "rejected"
+    assert "supplier_quote:specification_mismatch" in rejected_response["result"][
+        "hard_stops"
+    ]
+
+    decision_payload = _assessment_payload(specification_id, quote_id)
+    decision_payload["qualification_checks"] = checks
+    decision_payload["prequalification_snapshot_hash"] = prequalification[
+        "input_hash"
+    ]
+    decision_payload["supplier_quote_snapshot_hash"] = snapshot["input_hash"]
+    blocked = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=decision_payload,
+    )
+    assert blocked.status_code == 422
+    assert "must be verified" in blocked.json()["detail"]
+
+    other_tender_id, other_specification_id, other_quote_id = (
+        _create_tender_with_evidence(
+            client,
+            "supplier-quote-other-tender",
+        )
+    )
+    cross_tender = deepcopy(quote_payload)
+    cross_tender["evidence"][0]["document_id"] = other_quote_id
+    cross_tender_response = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=cross_tender,
+    )
+    assert other_tender_id != tender_id
+    assert cross_tender_response.status_code == 422
+    assert "does not belong" in cross_tender_response.json()["detail"]
+
+    incomplete_checks = _prequalification_checks(
+        other_specification_id,
+        overrides={"required_license": "unknown"},
+    )
+    incomplete_prequalification = client.post(
+        f"/api/tenders/{other_tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": incomplete_checks},
+    ).json()
+    guarded_payload = _supplier_quote_payload(
+        incomplete_prequalification["input_hash"],
+        other_quote_id,
+    )
+    guarded = client.post(
+        f"/api/tenders/{other_tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=guarded_payload,
+    )
+    assert guarded.status_code == 422
+    assert "must be eligible" in guarded.json()["detail"]
 
 
 def test_prequalification_explains_hard_stops_and_rejects_invalid_evidence(client):

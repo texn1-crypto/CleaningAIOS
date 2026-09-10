@@ -17,6 +17,8 @@ jobs:
           mypy --strict app/chat.py app/agent_evals.py app/observability.py app/logging_config.py app/prompt_registry.py app/mcp_read_client.py app/company_brain_retrieval.py app/orchestrator_telemetry.py
           mypy --strict --follow-imports=skip app/agent_tools.py
           mypy --strict --follow-imports=skip app/tender_prequalification.py
+          mypy --strict --follow-imports=skip app/tender_supplier_quotes.py
+          mypy --strict --follow-imports=skip app/tender_autopilot.py
       - name: Agent behavior evals
         run: python scripts/run_agent_evals.py
       - name: Dependency vulnerability audit

@@ -314,10 +314,38 @@ class TenderSupplierQuoteInput(BaseModel):
     evidence: list[TenderEvidenceRef] = Field(min_length=1, max_length=20)
 
 
+class TenderSupplierQuoteCreate(TenderSupplierQuoteInput):
+    prequalification_snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    supplier_identifier: str = Field(min_length=1, max_length=64)
+    product_sku: str = Field(min_length=1, max_length=128)
+    brand: str = Field(default="", max_length=128)
+    manufacturer: str = Field(min_length=1, max_length=255)
+    country: str = Field(min_length=2, max_length=128)
+    unit_price: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    minimum_order: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=3)
+    requested_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=3)
+    quantity_available: Optional[Decimal] = Field(default=None, ge=0, max_digits=18, decimal_places=3)
+    stock_location: str = Field(default="", max_length=255)
+    lead_time_days: Optional[int] = Field(default=None, ge=0, le=3650)
+    delivery_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    delivery_included: bool = False
+    payment_terms: str = Field(min_length=1, max_length=1000)
+    quoted_at: datetime
+    specification_match: str = Field(pattern="^(match|mismatch|unknown)$")
+    certificate_status: str = Field(pattern="^(valid|not_required|missing|unknown)$")
+    supplier_reliability: str = Field(pattern="^(trusted|unknown|blocked)$")
+    source: str = Field(min_length=1, max_length=1024)
+    verified_at: Optional[datetime] = None
+
+
 class TenderDecisionSnapshotCreate(BaseModel):
     requirements: list[TenderRequirementFact] = Field(min_length=1, max_length=500)
     qualification_checks: list[TenderQualificationFact] = Field(min_length=1, max_length=200)
     prequalification_snapshot_hash: Optional[str] = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+    )
+    supplier_quote_snapshot_hash: Optional[str] = Field(
         default=None,
         pattern=r"^[a-f0-9]{64}$",
     )

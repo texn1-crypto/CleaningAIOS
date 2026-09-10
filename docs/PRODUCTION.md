@@ -111,6 +111,14 @@ snapshot may cite its exact hash; the API rejects another tender, a non-eligible
 snapshot or changed qualification checks. This does not contact suppliers or send
 RFQ messages.
 
+After an eligible prequalification, managers may persist manual/imported supplier
+evidence with `POST /api/tenders/{record_id}/supplier-quote-snapshots` and inspect
+history with the corresponding `GET`. Unknown, expired, mismatched or incompletely
+verified quotes fail closed; only the exact `verified` quote hash may be bound to a
+decision snapshot. The PostgreSQL row is immutable and the call emits audited,
+idempotent outbox evidence. It does not discover suppliers, send RFQs or place an
+order.
+
 `PERPLEXITY_API_KEY` enables the research-grounded agent coach used by Meta Brain.
 Only aggregate agent telemetry and measured outcome counts are sent. Perplexity may
 return review recommendations, but cannot call application tools, see credentials,

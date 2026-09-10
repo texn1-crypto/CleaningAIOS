@@ -21,7 +21,9 @@ DISCOVERED -> NORMALIZED -> DOCUMENTS_READY -> REQUIREMENTS_READY
 Сейчас `BusinessRecord.status` остаётся backward-compatible projection. Новый
 prequalification snapshot реализует `needs_verification`, `ineligible` и
 `eligible`; только `eligible` выставляет внутренний guard
-`supplier_discovery_allowed`. Новый decision snapshot реализует состояния:
+`supplier_discovery_allowed`. Supplier quote snapshot после этого реализует
+`needs_verification`, `rejected` и `verified`; только `verified` hash можно
+привязать к economics. Новый decision snapshot реализует состояния:
 
 - `needs_verification` — неизвестный обязательный факт, expired quote или missing evidence;
 - `not_viable` — подтверждённый hard stop;
@@ -37,6 +39,8 @@ prequalification snapshot реализует `needs_verification`, `ineligible` 
 - Evidence document принадлежит tender и checksum совпадает.
 - FAST DISQUALIFICATION использует полный фиксированный набор checks; missing,
   UNKNOWN или известный факт без evidence никогда не дают `eligible`.
+- Supplier quote принадлежит тому же tender и eligible prequalification snapshot;
+  exact checksum evidence и canonical inline quote совпадают с quote snapshot.
 - Mandatory requirements и qualification имеют `satisfied` + evidence.
 - Supplier stock confirmed, quote не просрочен.
 - Economics inputs verified; base/conservative margin и capital проходят policy.

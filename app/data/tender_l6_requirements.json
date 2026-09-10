@@ -200,9 +200,18 @@
       "id": 18,
       "title": "SUPPLIER DISCOVERY AGENT",
       "priority": "P0",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/models.py:TenderSupplierQuoteSnapshot",
+        "app/schemas.py:TenderSupplierQuoteCreate",
+        "app/tender_supplier_quotes.py",
+        "app/api_v2.py:create_tender_supplier_quote_snapshot",
+        "app/tender_autopilot.py:persist_tender_assessment",
+        "migrations/versions/0027_tender_supplier_quote_snapshots.py",
+        "tests/test_tender_autopilot.py:test_supplier_quote_snapshot_is_verified_idempotent_and_binds_decision",
+        "tests/test_tender_autopilot.py:test_supplier_quote_snapshot_fails_closed_on_unknown_and_invalid_evidence"
+      ],
+      "notes": "A manager-only manual/import entry point now persists an immutable, idempotent supplier quote snapshot after an exact eligible prequalification. The snapshot captures typed supplier/product/price/VAT/stock/delivery/payment/freshness/compliance/reliability fields with exact tender-document evidence. UNKNOWN, expired and incomplete quotes fail closed; only an integrity-checked verified quote hash matching the same prequalification and inline decision quote can feed economics. Automated supplier discovery, external quote parsing, RFQ, reservations and backups remain missing, so the requirement stays PARTIAL."
     },
     {
       "id": 19,
@@ -2718,13 +2727,14 @@
       "evidence": [
         "app/integrations.py",
         "app/tender_autopilot.py",
+        "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
         "docs/tender-autopilot/README.md",
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, durable per-source run receipts and deterministic freshness incidents, then passes an immutable evidence-bound FAST DISQUALIFICATION gate before an assumption-bound auction forecast, product matching, fail-closed local extraction, exact manager review, a persisted cross-document comparison and a review-hash-bound decision snapshot. Official provider ingest/cursors and supplier discovery/quote acquisition remain incomplete."
+      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, durable per-source run receipts and deterministic freshness incidents, then passes an immutable evidence-bound FAST DISQUALIFICATION gate and an immutable verified supplier quote gate before economics, auction forecast, product matching, review and decision snapshot. Official provider ingest/cursors, automated supplier discovery, quote acquisition and RFQ remain incomplete."
     },
     {
       "id": 298,
@@ -2873,12 +2883,13 @@
         "docs/tender-autopilot/GAP_ANALYSIS.md",
         "app/integrations.py",
         "app/tender_autopilot.py",
+        "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Provider-scoped canonical generic feed amendments, durable source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound fast prequalification, auction forecast, stop price, product matching, fail-closed extraction, manager review, cross-document comparison and review-to-snapshot conversion are persisted; Company Digital Twin evidence, official provider adapters/cursors, supplier acquisition, broader document controls and A4 E2E remain incomplete."
+      "notes": "Provider-scoped canonical generic feed amendments, durable source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound fast prequalification, immutable verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction, manager review, comparison and decision conversion are persisted; Company Digital Twin evidence, official provider adapters/cursors, automated supplier acquisition/RFQ, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2904,12 +2915,14 @@
       "evidence": [
         "docs/tender-autopilot/",
         "app/integrations.py",
+        "app/tender_autopilot.py",
+        "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, immutable fast-prequalification and regression evidence. It remains partial until the first-release DoD is met."
+      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, immutable fast-prequalification, immutable verified supplier quote snapshots and regression evidence. It remains partial until the first-release DoD is met."
     },
     {
       "id": 317,
@@ -2919,12 +2932,13 @@
       "evidence": [
         "app/integrations.py",
         "app/tender_autopilot.py",
+        "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/api_v2.py",
         "tests/test_app.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with source-run receipts and freshness incidents, document-byte versions, an immutable evidence-bound FAST DISQUALIFICATION snapshot, deterministic auction forecast, product compliance gates, fail-closed local extraction, exact manager review, an evidence-bound comparison draft, draft-hash-bound decisions and review-hash-bound snapshot inputs. Company Digital Twin evidence, official provider adapters/cursors and supplier quote acquisition remain open."
+      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with source-run receipts and freshness incidents, document-byte versions, immutable evidence-bound FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact manager review, comparison and hash-bound decision inputs. Company Digital Twin evidence, official provider adapters/cursors, automated supplier discovery/quote acquisition and RFQ remain open."
     },
     {
       "id": 318,

@@ -622,6 +622,44 @@ class TenderPrequalificationSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
+class TenderSupplierQuoteSnapshot(Base):
+    """Append-only supplier quote with exact qualification and document evidence."""
+
+    __tablename__ = "tender_supplier_quote_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "record_id",
+            "input_hash",
+            name="uq_tender_supplier_quote_input",
+        ),
+        CheckConstraint(
+            "status IN ('needs_verification', 'rejected', 'verified')",
+            name="ck_tender_supplier_quote_status",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    record_id: Mapped[int] = mapped_column(
+        ForeignKey("business_records.id", ondelete="RESTRICT"), index=True
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), index=True)
+    prequalification_snapshot_hash: Mapped[str] = mapped_column(
+        String(64), index=True
+    )
+    rules_version: Mapped[str] = mapped_column(
+        String(64), default="tender-supplier-quote-v1"
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    supplier_name: Mapped[str] = mapped_column(String(255), index=True)
+    supplier_identifier: Mapped[str] = mapped_column(String(64), index=True)
+    quote_reference: Mapped[str] = mapped_column(String(255), index=True)
+    quoted_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    valid_until: Mapped[datetime] = mapped_column(DateTime, index=True)
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    result_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_by: Mapped[str] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class TenderAssessmentSnapshot(Base):
     """Append-only, evidence-bound tender decision passport."""
 

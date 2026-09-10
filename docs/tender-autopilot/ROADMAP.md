@@ -17,8 +17,10 @@
    extraction now produces evidence-linked UNKNOWN candidates. Далее: immutable
    reviewer workflow, MIME/AV/archive sandbox, OCR/table map and
    a broader prompt-injection corpus.
-4. **Qualification/suppliers.** Company digital twin, supplier registry, RFQ
-   idempotency, quote parsing/freshness, backup/reservation.
+4. **Qualification/suppliers — in progress.** Immutable manual/imported quote
+   registry, evidence/freshness and exact decision binding are connected. Далее:
+   Company Digital Twin, supplier discovery, RFQ idempotency, external quote
+   parsing, backup/reservation.
 5. **Application readiness.** Requirement graph, templates, package hash,
    four-eyes review and explicit missing-item remediation.
 6. **Assisted submission.** Capability registry and mock adapters first; external

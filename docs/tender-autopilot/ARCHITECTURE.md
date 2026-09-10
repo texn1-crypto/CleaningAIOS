@@ -20,6 +20,9 @@ Official sources / imports / operator
  Immutable TenderPrequalificationSnapshot
         |
         v
+ Immutable TenderSupplierQuoteSnapshot
+        |
+        v
  Immutable TenderAssessmentSnapshot
                 |
                 v
@@ -47,6 +50,8 @@ agents не получают shell или право изменять production
 - Snapshot связывает source, facts, document checksums, quote, policy и rules version.
 - Supplier work разрешается только полным evidence-bound prequalification snapshot
   со статусом `eligible`; missing/UNKNOWN не проходят guard.
+- Economics может ссылаться на supplier quote snapshot только со статусом
+  `verified`, с совпадающими tender, prequalification hash и canonical quote.
 - Изменение документа, quote или economics создаёт новый hash и новый approval.
 - Participation approval не разрешает submission, signing, bid или payment.
 - LLM может предложить факт, но не активирует его без evidence policy.

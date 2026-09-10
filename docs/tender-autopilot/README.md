@@ -68,6 +68,18 @@ hard-constraint checks (лицензии, опыт, география, срок
 Повтор точного входа идемпотентен, история доступна через manager/viewer API и
 фиксируется в audit/outbox. Сам endpoint не ищет поставщиков и не отправляет RFQ.
 
+`POST /api/tenders/{record_id}/supplier-quote-snapshots` сохраняет ручную или
+импортированную котировку только после точного `eligible` prequalification hash.
+Snapshot содержит идентификатор поставщика, SKU/производителя, точные денежные и
+количественные значения, НДС, остаток/локацию, срок поставки, доставку, условия
+оплаты, срок действия, product/certificate/reliability статусы, source и
+checksum-bound evidence. Просроченная, неизвестная или неподтверждённая
+котировка остаётся `needs_verification`, а доказанный mismatch/blocked supplier/
+нехватка количества получает `rejected`; только `verified` разрешает передать
+её в economics. Snapshot append-only и идемпотентен, история доступна через
+соответствующий `GET`. Endpoint не ищет поставщика, не отправляет RFQ и не делает
+заказ.
+
 `POST /api/tenders/{record_id}/decision-snapshots` принимает типизированные:
 
 - требования и qualification checks;
@@ -82,6 +94,11 @@ hard-constraint checks (лицензии, опыт, география, срок
 тендера, только со статусом `eligible` и только если qualification checks полностью
 совпадают; stale, чужой или изменённый набор отклоняется. Inline checks сохранены
 для обратной совместимости, а новый snapshot-bound путь явно маркируется в результате.
+
+Опциональный `supplier_quote_snapshot_hash` аналогично привязывает economics к
+точному `verified` quote того же тендера и того же prequalification snapshot;
+inline quote обязан совпасть с сохранённой канонической котировкой. Старый inline
+путь остаётся доступен для обратной совместимости.
 
 Для подтверждённого совпадения параметра нужны evidence-ссылки как минимум на
 два разных документа: требование заказчика и характеристику предложения. Сервис повторно
@@ -151,11 +168,12 @@ extractor не объявляет товары соответствующими 
 
 Срез production-quality для общего HTTP(S) JSON feed и ручного/fixture структурированного ввода,
 локального выделения кандидатов требований и характеристик товара, проверки
-исходных фактов, evidence-bound fast prequalification, fail-closed
+исходных фактов, evidence-bound fast prequalification и supplier quote snapshot,
+fail-closed
 междокументного черновика, привязанного к нему
 решения менеджера и review-bound decision snapshot. OCR/сложный table extraction,
 официальные ЕИС/ЭТП adapters и provider cursors, malware/archive sandbox, supplier
-RFQ, подача, ЭЦП, autobid, платежи и
+discovery/RFQ, подача, ЭЦП, autobid, платежи и
 post-win execution ещё не реализованы.
 Интерфейс не должен называть их подключёнными или завершёнными.
 
