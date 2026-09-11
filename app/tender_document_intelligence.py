@@ -1323,6 +1323,7 @@ def review_requirement_candidates(
         "candidate_set_hash": candidate_set_hash,
         "document_checksum": actual_checksum,
         "extractor_version": extractor_version,
+        "decisions": canonical_decisions,
         "status": "needs_verification" if unknown_count else "reviewed",
         "candidate_count": len(reviewed_candidates),
         "accepted_count": accepted_count,
@@ -1343,3 +1344,257 @@ def review_requirement_candidates(
     document.status = "analyzed"
     document.analyzed_at = datetime.now(timezone.utc).replace(tzinfo=None)
     return result, True
+
+
+def requirements_from_reviews(
+    documents: list[TenderDocument],
+    *,
+    review_hashes: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Derive assessment facts from exact, current requirement reviews.
+
+    Every cited review is revalidated against the stored bytes, extraction,
+    candidate set, manager decisions and original evidence before any fact is
+    returned. Superseded reviews fail closed so an older positive review cannot
+    bypass a newer correction.
+    """
+
+    if not review_hashes:
+        raise TenderDocumentReviewError("Tender requirement review hash is required")
+    if len(review_hashes) != len(set(review_hashes)):
+        raise TenderDocumentReviewError(
+            "Tender requirement review hashes must be unique"
+        )
+
+    reviews_by_hash: dict[str, tuple[TenderDocument, dict[str, Any]]] = {}
+    for document in documents:
+        analysis = document.analysis if isinstance(document.analysis, dict) else {}
+        history = analysis.get("requirement_reviews")
+        if not isinstance(history, list):
+            continue
+        for review in history:
+            if not isinstance(review, dict):
+                continue
+            review_hash = str(review.get("review_hash") or "").lower()
+            if review_hash not in review_hashes:
+                continue
+            if review_hash in reviews_by_hash:
+                raise TenderDocumentReviewError(
+                    "Tender requirement review hash is not unique"
+                )
+            reviews_by_hash[review_hash] = (document, review)
+
+    missing = sorted(set(review_hashes) - set(reviews_by_hash))
+    if missing:
+        raise TenderDocumentReviewError("Tender requirement review is unavailable")
+
+    facts: list[dict[str, Any]] = []
+    document_ids: list[int] = []
+    statuses: list[str] = []
+    seen_codes: set[str] = set()
+    for requested_hash in review_hashes:
+        document, review = reviews_by_hash[requested_hash]
+        analysis = document.analysis if isinstance(document.analysis, dict) else {}
+        latest = analysis.get("requirement_review")
+        if not isinstance(latest, dict) or latest.get("review_hash") != requested_hash:
+            raise TenderDocumentReviewError("Tender requirement review is stale")
+
+        try:
+            _verified_storage_path(document)
+        except TenderDocumentExtractionError as exc:
+            raise TenderDocumentReviewError(str(exc)) from exc
+        actual_checksum = str(document.checksum or "").lower()
+        extraction = analysis.get("requirement_extraction")
+        if not isinstance(extraction, dict):
+            raise TenderDocumentReviewError(
+                "Tender requirement extraction is unavailable"
+            )
+        extractor_version = str(review.get("extractor_version") or "")
+        if (
+            review.get("version") != REQUIREMENT_REVIEW_VERSION
+            or review.get("document_checksum") != actual_checksum
+            or extraction.get("document_checksum") != actual_checksum
+            or extraction.get("extractor_version") != extractor_version
+        ):
+            raise TenderDocumentReviewError("Tender requirement review is stale")
+
+        extracted_candidates = extraction.get("candidates")
+        reviewed_candidates = review.get("requirements")
+        if not isinstance(extracted_candidates, list) or not isinstance(
+            reviewed_candidates, list
+        ):
+            raise TenderDocumentReviewError(
+                "Tender requirement review candidates are unavailable"
+            )
+        extracted_map = {
+            str(candidate.get("candidate_hash") or ""): candidate
+            for candidate in extracted_candidates
+            if isinstance(candidate, dict) and candidate.get("candidate_hash")
+        }
+        reviewed_map = {
+            str(candidate.get("candidate_hash") or ""): candidate
+            for candidate in reviewed_candidates
+            if isinstance(candidate, dict) and candidate.get("candidate_hash")
+        }
+        if (
+            len(extracted_map) != len(extracted_candidates)
+            or len(reviewed_map) != len(reviewed_candidates)
+            or set(extracted_map) != set(reviewed_map)
+        ):
+            raise TenderDocumentReviewError(
+                "Tender requirement review candidate set is invalid"
+            )
+        candidate_set_hash = hashlib.sha256(
+            ":".join(sorted(extracted_map)).encode("utf-8")
+        ).hexdigest()
+        if review.get("candidate_set_hash") != candidate_set_hash:
+            raise TenderDocumentReviewError(
+                "Tender requirement review candidate set is stale"
+            )
+
+        stored_decisions = review.get("decisions")
+        if isinstance(stored_decisions, list):
+            canonical_decisions = stored_decisions
+        else:
+            canonical_decisions = [
+                {
+                    "candidate_hash": candidate_hash,
+                    "accepted": candidate.get("review_outcome") == "accepted",
+                    "corrected_code": str(candidate.get("code") or ""),
+                    "corrected_description": str(
+                        candidate.get("description") or ""
+                    ),
+                    "mandatory": bool(candidate.get("mandatory")),
+                    "compliance_status": str(candidate.get("status") or "unknown"),
+                    "reason": str(candidate.get("reason") or ""),
+                }
+                for candidate_hash, candidate in sorted(reviewed_map.items())
+            ]
+        canonical = {
+            "version": REQUIREMENT_REVIEW_VERSION,
+            "document_id": document.id,
+            "document_checksum": actual_checksum,
+            "extractor_version": extractor_version,
+            "candidate_set_hash": candidate_set_hash,
+            "decisions": canonical_decisions,
+        }
+        expected_review_hash = hashlib.sha256(
+            json.dumps(
+                canonical,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if expected_review_hash != requested_hash:
+            raise TenderDocumentReviewError(
+                "Tender requirement review integrity check failed"
+            )
+
+        decision_map = {
+            str(decision.get("candidate_hash") or ""): decision
+            for decision in canonical_decisions
+            if isinstance(decision, dict) and decision.get("candidate_hash")
+        }
+        if (
+            len(decision_map) != len(canonical_decisions)
+            or set(decision_map) != set(reviewed_map)
+        ):
+            raise TenderDocumentReviewError(
+                "Tender requirement review decisions are invalid"
+            )
+        for candidate_hash in sorted(reviewed_map):
+            reviewed = reviewed_map[candidate_hash]
+            extracted = extracted_map[candidate_hash]
+            decision = decision_map[candidate_hash]
+            accepted = bool(decision.get("accepted"))
+            expected_outcome = "accepted" if accepted else "rejected"
+            expected_verification = "verified" if accepted else "rejected"
+            evidence = reviewed.get("evidence")
+            if (
+                reviewed.get("review_outcome") != expected_outcome
+                or reviewed.get("verification_status") != expected_verification
+                or str(reviewed.get("code") or "")
+                != str(decision.get("corrected_code") or "")
+                or str(reviewed.get("description") or "")
+                != str(decision.get("corrected_description") or "")
+                or bool(reviewed.get("mandatory")) != bool(decision.get("mandatory"))
+                or str(reviewed.get("status") or "")
+                != str(decision.get("compliance_status") or "")
+                or str(reviewed.get("reason") or "")
+                != str(decision.get("reason") or "")
+                or evidence != extracted.get("evidence")
+            ):
+                raise TenderDocumentReviewError(
+                    "Tender requirement review integrity check failed"
+                )
+            if not isinstance(evidence, list) or not evidence:
+                raise TenderDocumentReviewError(
+                    "Tender requirement review evidence is unavailable"
+                )
+            for reference in evidence:
+                if (
+                    not isinstance(reference, dict)
+                    or reference.get("document_id") != document.id
+                    or str(reference.get("document_checksum") or "").lower()
+                    != actual_checksum
+                    or not str(reference.get("locator") or "").strip()
+                    or not str(reference.get("excerpt") or "").strip()
+                ):
+                    raise TenderDocumentReviewError(
+                        "Tender requirement review evidence is stale"
+                    )
+            if not accepted:
+                continue
+            code = str(reviewed.get("code") or "")
+            if code in seen_codes:
+                raise TenderDocumentReviewError(
+                    "Reviewed tender requirements must have unique codes"
+                )
+            seen_codes.add(code)
+            facts.append(
+                {
+                    "code": code,
+                    "description": str(reviewed.get("description") or ""),
+                    "mandatory": bool(reviewed.get("mandatory")),
+                    "status": str(reviewed.get("status") or "unknown"),
+                    "evidence": evidence,
+                }
+            )
+        accepted_count = sum(
+            candidate.get("review_outcome") == "accepted"
+            for candidate in reviewed_candidates
+        )
+        unknown_count = sum(
+            candidate.get("review_outcome") == "accepted"
+            and candidate.get("status") == "unknown"
+            for candidate in reviewed_candidates
+        )
+        expected_status = "needs_verification" if unknown_count else "reviewed"
+        if (
+            review.get("candidate_count") != len(reviewed_candidates)
+            or review.get("accepted_count") != accepted_count
+            or review.get("rejected_count")
+            != len(reviewed_candidates) - accepted_count
+            or review.get("unknown_compliance_count") != unknown_count
+            or review.get("status") != expected_status
+        ):
+            raise TenderDocumentReviewError(
+                "Tender requirement review integrity check failed"
+            )
+        document_ids.append(document.id)
+        statuses.append(expected_status)
+
+    if not facts:
+        raise TenderDocumentReviewError(
+            "Tender requirement reviews have no accepted facts"
+        )
+    return facts, {
+        "review_hashes": list(review_hashes),
+        "document_ids": document_ids,
+        "review_statuses": statuses,
+        "derived_requirement_count": len(facts),
+        "unknown_compliance_count": sum(
+            fact["status"] == "unknown" for fact in facts
+        ),
+    }

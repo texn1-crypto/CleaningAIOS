@@ -160,6 +160,15 @@ checksum документа, версией extractor, хешем полного
 `TenderDocument.analysis`. `review_hash` фиксируется в audit/outbox, точный
 повтор идемпотентен. Проверка не разрешает eligibility, участие или подачу.
 
+`POST /api/tenders/{record_id}/decision-snapshots` может принимать
+`requirement_review_hashes` вместо ручного копирования `requirements`. Сервис
+сам находит только актуальные append-only review, повторно проверяет байты и
+checksum документа, версию extractor, полный набор кандидатов, решения
+менеджера, review hash и исходные evidence, затем формирует канонические факты.
+Смешивание ручных фактов с review hash, дубли, устаревший review и любая подмена
+отклоняются fail-closed. Хеши review и выведенные факты входят в неизменяемый
+input snapshot; UNKNOWN остаётся `needs_verification`.
+
 `POST /api/tender-documents/{document_id}/product-specification/extract`
 аналогично выделяет пары «параметр — значение» из документа требований или
 спецификации поставщика. Роль документа берётся только из явной классификации,
@@ -215,7 +224,8 @@ prequalification, две immutable supplier quotes, product compliance, Decimal
 economics, auction forecast, stop-price invariant, risk, checklist и approval card.
 Дополнительный A4 document-path test читает реальные байты TXT из защищённого
 хранилища, извлекает требования, проводит exact-set checksum-bound manager review
-и использует принятые evidence-факты в decision snapshot. Это пока PARTIAL
+и передаёт в decision snapshot только review hash; сервер сам проверяет источник
+и выводит принятые evidence-факты без ручного копирования. Это пока PARTIAL
 evidence: сетевой download A4-пакета, PDF/OCR/table extraction, независимый
 multi-agent review, submission/auction и post-win tail ещё не покрыты.
 

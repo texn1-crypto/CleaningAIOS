@@ -210,6 +210,15 @@ def _canonical_input(
             (_fact_view(fact) for fact in payload.requirements),
             key=lambda item: item["code"],
         ),
+        **(
+            {
+                "requirement_review_hashes": sorted(
+                    payload.requirement_review_hashes
+                )
+            }
+            if payload.requirement_review_hashes
+            else {}
+        ),
         "qualification_checks": sorted(
             (_fact_view(fact) for fact in payload.qualification_checks),
             key=lambda item: item["code"],
@@ -812,6 +821,14 @@ def build_tender_assessment(
             "not_satisfied": sum(
                 fact.status == "not_satisfied" for fact in payload.requirements
             ),
+            **(
+                {
+                    "source": "manager_requirement_reviews",
+                    "review_hashes": sorted(payload.requirement_review_hashes),
+                }
+                if payload.requirement_review_hashes
+                else {}
+            ),
         },
         "qualification": {
             "total": len(payload.qualification_checks),
@@ -973,6 +990,27 @@ def persist_tender_assessment(
         .order_by(TenderDocument.id)
     ).all())
     effective_payload = payload
+    if payload.requirement_review_hashes:
+        if payload.requirements:
+            raise ValueError(
+                "Manual requirements cannot be combined with requirement review hashes"
+            )
+        from .tender_document_intelligence import requirements_from_reviews
+
+        requirements, _metadata = requirements_from_reviews(
+            documents,
+            review_hashes=payload.requirement_review_hashes,
+        )
+        effective_payload = TenderDecisionSnapshotCreate.model_validate(
+            {
+                **payload.model_dump(),
+                "requirements": requirements,
+            }
+        )
+    elif not payload.requirements:
+        raise ValueError(
+            "Manual requirements or requirement review hashes are required"
+        )
     if payload.prequalification_snapshot_hash:
         prequalification = db.scalar(
             select(TenderPrequalificationSnapshot).where(
@@ -1028,8 +1066,8 @@ def persist_tender_assessment(
             raise ValueError(
                 "Supplier quote does not match the cited supplier quote snapshot"
             )
-    if payload.product_comparison_review_hash:
-        if payload.product_compliance:
+    if effective_payload.product_comparison_review_hash:
+        if effective_payload.product_compliance:
             raise ValueError(
                 "Manual product compliance cannot be combined with a comparison review hash"
             )
@@ -1040,11 +1078,11 @@ def persist_tender_assessment(
         product_compliance, _metadata = product_compliance_from_comparison_review(
             tender,
             documents,
-            review_hash=payload.product_comparison_review_hash,
+            review_hash=effective_payload.product_comparison_review_hash,
         )
         effective_payload = TenderDecisionSnapshotCreate.model_validate(
             {
-                **payload.model_dump(),
+                **effective_payload.model_dump(),
                 "product_compliance_required": True,
                 "product_compliance": product_compliance,
             }

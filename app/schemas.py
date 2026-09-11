@@ -448,7 +448,13 @@ class TenderSupplierQuoteCreate(TenderSupplierQuoteInput):
 
 
 class TenderDecisionSnapshotCreate(BaseModel):
-    requirements: list[TenderRequirementFact] = Field(min_length=1, max_length=500)
+    requirements: list[TenderRequirementFact] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    requirement_review_hashes: list[
+        Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+    ] = Field(default_factory=list, max_length=500)
     qualification_checks: list[TenderQualificationFact] = Field(min_length=1, max_length=200)
     prequalification_snapshot_hash: Optional[str] = Field(
         default=None,

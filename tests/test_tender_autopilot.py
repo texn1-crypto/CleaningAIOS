@@ -1468,16 +1468,42 @@ def test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only(
     assessment_payload = _assessment_payload(
         document["id"], quote_document["id"]
     )
-    assessment_payload["requirements"] = [
-        {
-            key: requirement[key]
-            for key in ("code", "description", "mandatory", "status", "evidence")
-        }
-        for requirement in review["requirements"]
-        if requirement["review_outcome"] == "accepted"
-    ]
+    assessment_payload["requirements"] = []
+    assessment_payload["requirement_review_hashes"] = [review["review_hash"]]
     for check in assessment_payload["qualification_checks"]:
         check["evidence"][0]["document_checksum"] = checksum
+
+    mixed_sources = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json={
+            **assessment_payload,
+            "requirements": _assessment_payload(
+                document["id"], quote_document["id"]
+            )["requirements"],
+        },
+    )
+    assert mixed_sources.status_code == 422
+    assert mixed_sources.json()["detail"] == (
+        "Manual requirements cannot be combined with requirement review hashes"
+    )
+
+    duplicate_reviews = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json={
+            **assessment_payload,
+            "requirement_review_hashes": [
+                review["review_hash"],
+                review["review_hash"],
+            ],
+        },
+    )
+    assert duplicate_reviews.status_code == 422
+    assert duplicate_reviews.json()["detail"] == (
+        "Tender requirement review hashes must be unique"
+    )
+
     assessment = client.post(
         f"/api/tenders/{tender['id']}/decision-snapshots",
         headers=MANAGER,
@@ -1491,7 +1517,28 @@ def test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only(
         "satisfied": 2,
         "unknown": 0,
         "not_satisfied": 0,
+        "source": "manager_requirement_reviews",
+        "review_hashes": [review["review_hash"]],
     }
+    with SessionLocal() as db:
+        snapshot = db.get(TenderAssessmentSnapshot, assessment.json()["id"])
+        assert snapshot is not None
+        assert snapshot.input_snapshot["requirement_review_hashes"] == [
+            review["review_hash"]
+        ]
+        assert len(snapshot.input_snapshot["requirements"]) == 2
+        decision_event = db.scalar(
+            select(DomainEvent)
+            .where(
+                DomainEvent.event_type == "tender.decision_snapshot_created",
+                DomainEvent.aggregate_id == str(tender["id"]),
+            )
+            .order_by(DomainEvent.id.desc())
+        )
+        assert decision_event is not None
+        assert decision_event.payload["requirement_review_hashes"] == [
+            review["review_hash"]
+        ]
 
     replay = client.post(
         f"/api/tender-documents/{document['id']}/requirements/review",
@@ -1514,6 +1561,27 @@ def test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only(
     assert changed["unknown_compliance_count"] == 1
     assert changed["review_hash"] != review["review_hash"]
 
+    superseded = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=assessment_payload,
+    )
+    assert superseded.status_code == 422
+    assert superseded.json()["detail"] == "Tender requirement review is stale"
+
+    needs_verification_payload = {
+        **assessment_payload,
+        "requirement_review_hashes": [changed["review_hash"]],
+    }
+    needs_verification = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=needs_verification_payload,
+    )
+    assert needs_verification.status_code == 201
+    assert needs_verification.json()["status"] == "needs_verification"
+    assert needs_verification.json()["result"]["requirements"]["unknown"] == 1
+
     with SessionLocal() as db:
         persisted = db.get(TenderDocument, document["id"])
         assert persisted is not None
@@ -1532,6 +1600,26 @@ def test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only(
                 DomainEvent.aggregate_id == str(tender["id"]),
             )
         ) == 2
+
+        tampered_analysis = deepcopy(persisted.analysis)
+        tampered_analysis["requirement_review"]["requirements"][0][
+            "description"
+        ] = "Подменённое требование"
+        tampered_analysis["requirement_reviews"][-1]["requirements"][0][
+            "description"
+        ] = "Подменённое требование"
+        persisted.analysis = tampered_analysis
+        db.commit()
+
+    tampered = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=needs_verification_payload,
+    )
+    assert tampered.status_code == 422
+    assert tampered.json()["detail"] == (
+        "Tender requirement review integrity check failed"
+    )
 
 
 def test_tender_requirement_extraction_rejects_untrusted_storage_and_viewer(

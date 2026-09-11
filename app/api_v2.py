@@ -1468,6 +1468,7 @@ def create_tender_decision_snapshot(
             "prequalification_snapshot_hash": (
                 payload.prequalification_snapshot_hash
             ),
+            "requirement_review_hashes": payload.requirement_review_hashes,
             "supplier_quote_snapshot_hash": payload.supplier_quote_snapshot_hash,
             "application_checklist_hash": result[
                 "application_checklist"
@@ -1489,6 +1490,7 @@ def create_tender_decision_snapshot(
             "tender_id": tender.id,
             "status": snapshot.status,
             "input_hash": snapshot.input_hash,
+            "requirement_review_hashes": payload.requirement_review_hashes,
             "supplier_quote_snapshot_hash": payload.supplier_quote_snapshot_hash,
             "application_checklist_hash": result[
                 "application_checklist"
