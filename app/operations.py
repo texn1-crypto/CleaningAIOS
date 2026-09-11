@@ -479,12 +479,20 @@ def execute_ceo_strategy_checkpoint(
         for row in previous
         if (row.payload or {}).get("origin") == "ceo_continuous_backlog"
     ]
-    terminal = [
+    terminal_candidates = [
         row
         for row in previous
         if row.status in {"done", "failed", "blocked"}
         and (row.payload or {}).get("origin") != "ceo_continuous_backlog"
     ][:20]
+    approval_waiting = [
+        row.id
+        for row in terminal_candidates
+        if row.status == "blocked"
+        and (row.result or {}).get("approval_id")
+        and (row.result or {}).get("reason") == "owner_approval_required"
+    ]
+    terminal = [row for row in terminal_candidates if row.id not in approval_waiting]
     failed = [row.id for row in terminal if row.status == "failed"]
     blocked = [row.id for row in terminal if row.status == "blocked"]
     completed = [row.id for row in terminal if row.status == "done"]
@@ -493,6 +501,9 @@ def execute_ceo_strategy_checkpoint(
     if failed or blocked:
         state = "at_risk"
         strategy_decision = "repair_before_next_experiment"
+    elif approval_waiting and not measured:
+        state = "waiting_owner_approval"
+        strategy_decision = "hold_for_owner_approval"
     elif not measured:
         state = "baseline"
         strategy_decision = "establish_baseline"
@@ -524,6 +535,7 @@ def execute_ceo_strategy_checkpoint(
         "completed_task_count": len(completed),
         "failed_task_count": len(failed),
         "blocked_task_count": len(blocked),
+        "owner_approval_waiting_task_count": len(approval_waiting),
         "measured_task_count": measured,
         "completion_rate_percent": completion_rate,
         "next_action": (
@@ -534,6 +546,7 @@ def execute_ceo_strategy_checkpoint(
         "self_improvement": {
             "protocol": payload.get("self_improvement_protocol"),
             "observation_task_ids": [row.id for row in terminal],
+            "owner_approval_waiting_task_ids": approval_waiting,
             "baseline_completion_rate_percent": completion_rate,
             "hypothesis": payload.get("strategy_hypothesis"),
             "decision": strategy_decision,
@@ -547,6 +560,7 @@ def execute_ceo_strategy_checkpoint(
             "completed": len(completed),
             "failed": len(failed),
             "blocked": len(blocked),
+            "owner_approval_waiting": len(approval_waiting),
             "completion_rate_percent": completion_rate,
             "strategy_decision": strategy_decision,
             "lead_stage": payload.get("lead_stage"),

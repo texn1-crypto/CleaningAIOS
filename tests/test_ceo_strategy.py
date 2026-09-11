@@ -149,6 +149,40 @@ def test_strategy_checkpoint_revises_from_domain_outcomes_not_busywork():
         assert result["external_actions_executed"] is False
 
 
+def test_strategy_checkpoint_preserves_owner_approval_as_a_guardrail():
+    session_factory = _session_factory()
+    now = datetime(2026, 9, 9, 9, 0)
+    with session_factory() as db:
+        approval_wait = Task(
+            title="Send approved proposal",
+            agent_type="sales",
+            status="blocked",
+            result={
+                "reason": "owner_approval_required",
+                "approval_id": 42,
+            },
+        )
+        db.add(approval_wait)
+        db.flush()
+        checkpoint = next(
+            task
+            for task in maintain_ceo_development_backlog(db, now=now, cadence_hours=24)
+            if task.agent_type == "sales"
+        )
+
+        result = dispatch(db, checkpoint)
+
+        assert result["status"] == "waiting_owner_approval"
+        assert result["strategy_decision"] == "hold_for_owner_approval"
+        assert result["blocked_task_count"] == 0
+        assert result["owner_approval_waiting_task_count"] == 1
+        assert result["self_improvement"]["observation_task_ids"] == []
+        assert result["self_improvement"]["owner_approval_waiting_task_ids"] == [
+            approval_wait.id
+        ]
+        assert result["external_actions_executed"] is False
+
+
 def test_ceo_review_deduplicates_system_admin_handoff_for_failed_lane():
     session_factory = _session_factory()
     with session_factory() as db:
