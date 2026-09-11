@@ -744,6 +744,10 @@ class TenderSupplierQuoteSnapshot(Base):
             "ix_tender_supplier_quote_supplier_identifier",
             "supplier_identifier",
         ),
+        Index(
+            "ix_tender_supplier_quote_candidate_snapshot",
+            "supplier_candidate_snapshot_hash",
+        ),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     record_id: Mapped[int] = mapped_column(
