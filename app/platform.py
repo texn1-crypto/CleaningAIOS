@@ -10,9 +10,9 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .agents import AGENTS, heartbeat
-from .capability_flags import PROTECTED_CAPABILITY_SET
+from .capability_flags import PROTECTED_CAPABILITY_SET, external_action_gate
 from .config import settings
-from .models import AgentRun, ApprovalRequest, CapabilityFlag, CompanyKnowledge, DomainEvent, EventConsumerReceipt, SafetyControl, Task
+from .models import AgentRun, ApprovalRequest, CompanyKnowledge, DomainEvent, EventConsumerReceipt, Task
 from .task_state import record_task_created, transition_task
 
 
@@ -232,35 +232,9 @@ class DecisionEngine:
     def evaluate(self, db: Session, task: Task) -> dict[str, Any]:
         action_kind = task.payload.get("action_kind")
         if action_kind in approval_engine.protected_actions:
-            kill_switch = db.get(SafetyControl, "global_external_actions")
-            if kill_switch is not None and kill_switch.active:
-                return {
-                    "allowed": False,
-                    "reason": "global_kill_switch_active",
-                    "approval_id": None,
-                    "kill_switch": {
-                        "key": kill_switch.key,
-                        "version": kill_switch.version,
-                        "reason": kill_switch.reason,
-                    },
-                }
-            capability_flag = db.get(CapabilityFlag, str(action_kind))
-            if capability_flag is None or not capability_flag.enabled:
-                return {
-                    "allowed": False,
-                    "reason": "capability_disabled",
-                    "approval_id": None,
-                    "capability_flag": {
-                        "key": str(action_kind),
-                        "enabled": False,
-                        "version": capability_flag.version if capability_flag else 0,
-                        "reason": (
-                            capability_flag.reason
-                            if capability_flag
-                            else "capability_flag_missing"
-                        ),
-                    },
-                }
+            gate = external_action_gate(db, str(action_kind))
+            if not gate["allowed"]:
+                return {**gate, "approval_id": None}
             supplied_id = task.payload.get("approval_id")
             if approval_engine.authorized(db, action_kind, supplied_id, "task", str(task.id)):
                 return {"allowed": True, "reason": "owner_approved", "approval_id": supplied_id}

@@ -16,6 +16,7 @@ from sqlalchemy import case, func, select, update
 
 from .config import settings
 from .chat import redact_sensitive_text
+from .capability_flags import external_action_gate
 from .db import SessionLocal
 from .orchestrator import run_next
 from .models import AuditLog, MailTransportState, OutboundMessage, SenderMailbox, Suppression
@@ -395,6 +396,8 @@ def _defer_mailbox_after_provider_block(
 
 
 def send_next_email(db, *, now: datetime | None = None) -> bool:
+    if not external_action_gate(db, "bulk_outreach")["allowed"]:
+        return False
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)
     window_start, next_window_start = outreach_delivery_window(now)
     if window_start is None:

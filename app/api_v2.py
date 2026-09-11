@@ -47,6 +47,7 @@ from .telegram_control import (
     parse_callback_token,
 )
 from .capability_flags import (
+    GLOBAL_EXTERNAL_ACTIONS_CONTROL,
     PROTECTED_CAPABILITY_SET,
     capability_flag_view,
 )
@@ -97,7 +98,6 @@ from .tender_requirements import (
 from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest, TelegramTaskQuery
 
 router = APIRouter(prefix="/api")
-GLOBAL_EXTERNAL_ACTIONS_CONTROL = "global_external_actions"
 
 
 def get_db():

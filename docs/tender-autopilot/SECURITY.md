@@ -21,9 +21,9 @@ write actions may not.
 
 ## Global external-actions kill switch
 
-The database-backed `global_external_actions` control is the final policy gate for
-every protected action, including submission, signing/contract, payments, bulk
-outreach, social publication and final HR decisions. A manager can inspect it at
+The database-backed `global_external_actions` control is the intended final policy
+gate for every protected action, including submission, signing/contract, payments,
+bulk outreach, social publication and final HR decisions. A manager can inspect it at
 `GET /api/safety/external-actions-kill-switch`; only the owner can change it with
 `PUT /api/safety/external-actions-kill-switch`. Activation requires a reason.
 
@@ -48,6 +48,13 @@ Only the owner may change a known flag with
 increments the version and writes audit/outbox evidence; identical retries do not.
 Initial flags are explicitly persisted as enabled to preserve existing approval-only
 workflows. New/unknown protected capabilities have no implicit allow state and must
-be added to the code-owned registry before use. Coverage of protected actions that
-bypass Task/Orchestrator must be verified before the feature-flag requirement can be
-called complete.
+be added to the code-owned registry before use.
+
+The same deterministic gate is now called by the Decision Engine and by both direct
+worker network boundaries: SMTP bulk outreach and social provider publication. The
+worker returns before selecting or transmitting queued content when either stop is
+active or the required capability row is missing; queued work is therefore preserved
+for a later authorized run. Approval, verified consent/suppression and rate-limit
+checks remain separate mandatory controls. Other direct protected entry points and
+per-tender controls still require enforcement evidence before the feature-flag
+requirement can be called complete.

@@ -992,9 +992,10 @@
         "app/api_v2.py:update_capability_flag",
         "migrations/versions/0030_capability_flags.py",
         "tests/test_capability_flags.py",
+        "tests/test_direct_external_action_gates.py",
         "docs/tender-autopilot/SECURITY.md"
       ],
-      "notes": "Every code-owned protected Task/Orchestrator action now has an explicit persisted flag. Missing or disabled flags fail closed before approval; managers have a read view and only the owner can perform reasoned, versioned, idempotent changes with audit/outbox evidence. Initial enabled values preserve existing approval-only workflows and never bypass owner approval or the global kill switch. Central enforcement evidence for direct non-Task protected endpoints and per-tender flags remains missing, so the requirement stays PARTIAL."
+      "notes": "Every code-owned protected Task/Orchestrator action has an explicit persisted flag. Missing or disabled flags fail closed before approval; managers have a read view and only the owner can perform reasoned, versioned, idempotent changes with audit/outbox evidence. The Decision Engine plus direct SMTP bulk-outreach and social-provider workers now share the same global-first deterministic gate and preserve queued work while stopped. Initial enabled values preserve existing approval-only workflows and never bypass owner approval, consent, suppression or rate limits. Other direct protected entry points and per-tender flags remain missing, so the requirement stays PARTIAL."
     },
     {
       "id": 106,
@@ -2762,10 +2763,11 @@
         "docs/tender-autopilot/README.md",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
+        "tests/test_direct_external_action_gates.py",
         "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, transaction-bound pagination checkpoints, hashed provider page acknowledgements, completeness receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION and the immutable verified supplier quote gate, economics, auction forecast, product matching, review and decision snapshot. Persisted capability flags now gate every protected Task/Orchestrator action before approval, while the global kill switch and owner approval remain mandatory. Official provider adapters and portal contracts, automated company/supplier evidence acquisition, quote acquisition and RFQ remain incomplete."
+      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, transaction-bound pagination checkpoints, hashed provider page acknowledgements, completeness receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION and the immutable verified supplier quote gate, economics, auction forecast, product matching, review and decision snapshot. Persisted capability flags gate every protected Task/Orchestrator action before approval and the direct SMTP/social workers share the same global-first gate, while owner approval remains mandatory. Official provider adapters and portal contracts, automated company/supplier evidence acquisition, quote acquisition and RFQ remain incomplete."
     },
     {
       "id": 298,
@@ -2923,10 +2925,11 @@
         "migrations/versions/0030_capability_flags.py",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
+        "tests/test_direct_external_action_gates.py",
         "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Provider-scoped canonical generic feed amendments, protected transaction-bound page checkpoints, hashed acknowledgements, completeness/source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction, manager review, comparison and decision conversion are persisted. Protected Task/Orchestrator actions now also require an enabled persisted capability flag before approval. The Company Digital Twin and flag coverage are still partial; official provider adapters and verified portal contracts, automated company/supplier evidence acquisition and RFQ, broader document controls and A4 E2E remain incomplete."
+      "notes": "Provider-scoped canonical generic feed amendments, protected transaction-bound page checkpoints, hashed acknowledgements, completeness/source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction, manager review, comparison and decision conversion are persisted. Protected Task/Orchestrator actions require an enabled persisted capability flag before approval; direct SMTP outreach and social publication workers now enforce the same global-first gate. The Company Digital Twin and remaining direct-entry/per-tender flag coverage are still partial; official provider adapters and verified portal contracts, automated company/supplier evidence acquisition and RFQ, broader document controls and A4 E2E remain incomplete."
     },
     {
       "id": 314,
@@ -2962,10 +2965,11 @@
         "migrations/versions/0030_capability_flags.py",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
+        "tests/test_direct_external_action_gates.py",
         "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, transaction-bound provider pagination checkpoints and hashed completeness evidence, persisted protected-action capability gates, immutable Company Digital Twin, fast-prequalification, verified supplier quote snapshots and regression evidence. It remains partial until the first-release DoD is met."
+      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, transaction-bound provider pagination checkpoints and hashed completeness evidence, persisted protected-action capability gates shared by Decision Engine and the direct SMTP/social workers, immutable Company Digital Twin, fast-prequalification, verified supplier quote snapshots and regression evidence. It remains partial until the first-release DoD is met."
     },
     {
       "id": 317,
@@ -2984,10 +2988,11 @@
         "migrations/versions/0030_capability_flags.py",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
+        "tests/test_direct_external_action_gates.py",
         "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py"
       ],
-      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with protected resumable page checkpoints, hashed acknowledgements, explicit completeness/source-run receipts and freshness incidents, document-byte versions, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact manager review, comparison and hash-bound decision inputs. Every protected Task/Orchestrator action also requires a persisted capability flag before approval. Direct-entry flag coverage, extended/automated Company Digital Twin verification, official provider adapters/contracts, automated supplier discovery/quote acquisition and RFQ remain open."
+      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with protected resumable page checkpoints, hashed acknowledgements, explicit completeness/source-run receipts and freshness incidents, document-byte versions, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact manager review, comparison and hash-bound decision inputs. Every protected Task/Orchestrator action requires a persisted capability flag before approval, and direct SMTP/social workers share the same global-first gate. Remaining direct-entry/per-tender flag coverage, extended/automated Company Digital Twin verification, official provider adapters/contracts, automated supplier discovery/quote acquisition and RFQ remain open."
     },
     {
       "id": 318,

@@ -80,6 +80,13 @@ blocked task to the queue through an idempotent transition key, so concurrent or
 duplicate decisions cannot resume the workflow twice. “Request changes” records a
 terminal review outcome without resuming execution.
 
+The persisted global external-actions stop and exact per-capability flag are
+evaluated by one deterministic gate before the approval decision. Direct SMTP
+delivery and social-provider publication call the same gate before they select or
+transmit queued content. Missing or disabled capability state therefore fails closed
+outside Task dispatch as well; queued work remains available for a later authorized
+run, and its existing approval, consent, suppression and rate-limit checks still run.
+
 Telegram is a channel adapter over this same service, not a second approval
 implementation. Every update is authorized server-side against an exact
 `user_id`/`chat_id` binding with the roles owner/admin/manager/operator/viewer and

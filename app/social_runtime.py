@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .chat import redact_sensitive_text
+from .capability_flags import external_action_gate
 from .config import settings
 from .models import ApprovalRequest, ContentItem, MediaAsset
 from .notifications import queue_owner_notification
@@ -725,6 +726,8 @@ def _resume_approved_configured_post(db: Session, current: datetime) -> None:
 
 
 def publish_next_social_post(db: Session, *, now: datetime | None = None) -> bool:
+    if not external_action_gate(db, "social_publication")["allowed"]:
+        return False
     current = now or now_utc()
     _resume_approved_configured_post(db, current)
     item = db.scalar(
