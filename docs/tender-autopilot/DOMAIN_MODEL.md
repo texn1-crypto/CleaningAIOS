@@ -1,0 +1,80 @@
+# Domain model
+
+## Текущие canonical objects
+
+- `BusinessRecord(record_type=tender)` — агрегат найденной закупки и mutable
+  projection её текущего состояния. Для generic feed его external identity задаётся
+  парой `(source, external_id)`; одинаковые provider-local ID разных источников не
+  объединяются. Для остальных типов `BusinessRecord` сохранена уникальность пары
+  `(record_type, external_id)`.
+- `TenderDocument` — зарегистрированный оригинал/версия с source URL, storage path,
+  MIME, checksum и analysis metadata. Product specification extraction хранится
+  как `extracted/needs_verification`; отдельный review привязан к checksum,
+  extractor version, полному набору candidate hashes и actor. Requirement review
+  использует ту же exact-set/checksum защиту, сохраняет исходные evidence и
+  append-only review history; UNKNOWN не превращается в автоматическое разрешение.
+  Проверенные факты требований и предложения собираются в persisted draft-историю внутри
+  `BusinessRecord.data`, связанную с checksum и review hash каждого документа;
+  draft остаётся `needs_verification` и не заменяет decision snapshot.
+- `TenderSourceRun` — final receipt каждой настроенной попытки collection: безопасная
+  метка и hash источника, timing, HTTP status, outcome counters, completeness,
+  request/next URL hashes, provider acknowledgement hash и bounded error type.
+  Raw exception, raw cursor, query/userinfo и provider secret в публичный контракт
+  не входят.
+- `TenderSourceCheckpoint` — защищённый mutable projection следующей страницы
+  `tender-page-v1`. Он меняется только в одной транзакции с успешно принятой
+  страницей; API/outbox показывают digest и наличие pending page, но не opaque URL.
+- `CompanyProfileSnapshot` — append-only версия Company Digital Twin, связанная с
+  существующим профилем реквизитов. Она хранит legal identity, business limits,
+  capability facts и metadata документов с file hash/issuer/issue/expiry/status,
+  но не раскрывает номера банковских счетов. Только integrity-valid `verified`
+  версия, действующая до deadline тендера, может быть привязана к prequalification.
+- `TenderPrequalificationSnapshot` — append-only результат FAST DISQUALIFICATION:
+  фиксированная taxonomy hard constraints, exact evidence checksums, explainable
+  hard stops, verification gaps, rules version и actor. Только `eligible` snapshot
+  разрешает переход к supplier discovery; сам snapshot не запускает внешние действия.
+- `TenderSupplierCandidateSnapshot` — append-only набор минимум из двух различных
+  supplier identities с product identity, credential-free HTTPS provenance,
+  observation/freshness и fail-closed specification/certificate/reliability facts.
+  Он привязан к последней eligible prequalification; только текущий integrity-valid
+  `ready_for_quote_collection` набор может опционально связать exact supplier с
+  quote. Snapshot не запускает RFQ, reservation или order.
+- `TenderAssessmentSnapshot` — append-only паспорт решения: canonical inputs,
+  exact hashes, rules version, result и actor. Внутри snapshot хранится
+  evidence-bound product compliance matrix; confidence остаётся только
+  advisory и не заменяет evidence.
+- `Task` + `TaskTransition` — durable workflow и его неизменяемая история.
+- `ApprovalRequest` + `ApprovalDecisionRecord` — отдельное разрешение защищённого
+  действия и terminal receipt решения.
+- `DomainEvent` + `EventConsumerReceipt` — transactional outbox и exactly-once
+  consumer effect.
+
+## Следующие relational objects
+
+`Procurement`, `ProcurementVersion`, `DocumentVersion`, `EvidenceFact`,
+`Requirement`, `RequirementConflict`, расширенные `CompanyCapability`/person-role/
+contract-history relations, `Supplier`,
+`SupplierQuote`, `QuoteLine`, `EconomicsScenario`, `RiskAssessment`,
+`ApplicationPackage`, `ExternalActionReceipt`, `ContractObligation`,
+`ActualCost`, `ActualProfit`.
+
+Их следует вводить по vertical slice, не создавая параллельную истину рядом с
+существующими records.
+
+## Классы знания
+
+| Класс | Может участвовать в final decision |
+|---|---|
+| `raw` | Нет, только provenance |
+| `extracted` | Нет без evidence binding |
+| `verified` | Да, пока freshness валиден |
+| `calculated` | Да, если все inputs verified и rules version известна |
+| `predicted` | Только как uncertainty-aware сигнал |
+| `human_confirmed` | Да, с actor/time/reason и без затирания raw fact |
+
+## Identity и versioning
+
+Юридическое лицо идентифицируется надёжным legal identifier, закупка — парой
+provider/external ID, документ — content hash плюс source version, quote — supplier
+и quote reference/version. Title, filename и свободный текст не являются
+устойчивыми идентификаторами.

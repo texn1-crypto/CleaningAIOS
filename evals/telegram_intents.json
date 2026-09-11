@@ -1,0 +1,237 @@
+[
+  {
+    "id": "greeting",
+    "message": "Привет",
+    "expected": {"kind": "greeting"}
+  },
+  {
+    "id": "menu",
+    "message": "Открой меню",
+    "expected": {"kind": "menu"}
+  },
+  {
+    "id": "help",
+    "message": "Что ты умеешь?",
+    "expected": {"kind": "help"}
+  },
+  {
+    "id": "dashboard",
+    "message": "Как дела у системы?",
+    "expected": {"kind": "dashboard"}
+  },
+  {
+    "id": "tasks",
+    "message": "Покажи текущие задачи",
+    "expected": {"kind": "tasks"}
+  },
+  {
+    "id": "approvals",
+    "message": "Что ожидает подтверждения?",
+    "expected": {"kind": "approvals"}
+  },
+  {
+    "id": "bulk_approval_never_bulk_decides",
+    "message": "Покажи что нужно подтвердить и одобри все",
+    "expected": {"kind": "approvals", "bulk_requested": true}
+  },
+  {
+    "id": "activity_report",
+    "message": "Пришли отчет о проделанной работе",
+    "expected": {"kind": "activity_report", "period_hours": 24}
+  },
+  {
+    "id": "system_admin_report",
+    "message": "Что сломалось и какие ошибки у бота?",
+    "expected": {"kind": "system_admin_report"}
+  },
+  {
+    "id": "task_eta",
+    "message": "Когда будет готова задача 42?",
+    "expected": {"kind": "task_eta", "task_id": 42}
+  },
+  {
+    "id": "outreach_read",
+    "message": "Покажи рассылки",
+    "expected": {"kind": "outreach"}
+  },
+  {
+    "id": "tender_read",
+    "message": "Что с тендерами?",
+    "expected": {"kind": "records", "record_type": "tender"}
+  },
+  {
+    "id": "finance_read",
+    "message": "Покажи финансы",
+    "expected": {"kind": "summary", "module": "finance"}
+  },
+  {
+    "id": "marketing_read",
+    "message": "Покажи маркетинг",
+    "expected": {"kind": "summary", "module": "marketing"}
+  },
+  {
+    "id": "leads_read",
+    "message": "Покажи список лидов",
+    "expected": {"kind": "records", "record_type": "lead"}
+  },
+  {
+    "id": "tender_research",
+    "message": "Найди тендеры по уборке бизнес-центров",
+    "expected": {
+      "kind": "task",
+      "agent_type": "research",
+      "payload": {"collection": "tenders"},
+      "protected": false
+    }
+  },
+  {
+    "id": "sales_task",
+    "message": "Создай задачу связаться с новым клиентом",
+    "expected": {
+      "kind": "task",
+      "agent_type": "sales",
+      "payload": {"source": "telegram_natural_language"},
+      "protected": false
+    }
+  },
+  {
+    "id": "proposal_draft",
+    "message": "Подготовь коммерческое предложение для клиента Северный офис",
+    "expected": {
+      "kind": "task",
+      "agent_type": "sales",
+      "payload": {"action": "generate_proposal", "client_query": "Северный офис"},
+      "protected": false
+    }
+  },
+  {
+    "id": "improve_requires_context",
+    "message": "улучши это",
+    "expected": {"kind": "clarification"}
+  },
+  {
+    "id": "improve_reply_is_draft",
+    "message": "улучши это",
+    "referenced_text": "мы качественно уберем ваш офис",
+    "expected": {
+      "kind": "task",
+      "agent_type": "copywriter",
+      "payload": {"action": "improve_referenced_text", "draft_only": true, "external_send": false},
+      "protected": false
+    }
+  },
+  {
+    "id": "image_generation_is_draft",
+    "message": "Создай изображение чистого холла бизнес-центра",
+    "expected": {
+      "kind": "task",
+      "agent_type": "marketing",
+      "payload": {"action": "generate_image", "external_publish": false},
+      "protected": false
+    }
+  },
+  {
+    "id": "social_setup_is_draft",
+    "message": "Настрой социальные сети ВК и Одноклассники",
+    "expected": {
+      "kind": "task",
+      "agent_type": "marketing",
+      "payload": {"action": "prepare_social_account_setup", "channels": ["vk", "odnoklassniki"]},
+      "protected": false
+    }
+  },
+  {
+    "id": "safe_operations_excludes_protected",
+    "message": "Делай все возможное без меня",
+    "expected": {
+      "kind": "task",
+      "agent_type": "orchestrator",
+      "payload": {"action": "run_safe_operations_cycle", "protected_scope": "excluded"},
+      "protected": false
+    }
+  },
+  {
+    "id": "financial_requires_approval",
+    "message": "Оплати счет поставщику",
+    "expected": {
+      "kind": "task",
+      "agent_type": "finance",
+      "payload": {"action_kind": "financial"},
+      "protected": true
+    }
+  },
+  {
+    "id": "contract_requires_approval",
+    "message": "Подпиши договор с новым клиентом",
+    "expected": {
+      "kind": "task",
+      "agent_type": "sales",
+      "payload": {"action_kind": "contract"},
+      "protected": true
+    }
+  },
+  {
+    "id": "tender_submission_requires_approval",
+    "message": "Подай заявку на этот тендер",
+    "expected": {
+      "kind": "task",
+      "agent_type": "tender",
+      "payload": {"action_kind": "tender_submission"},
+      "protected": true
+    }
+  },
+  {
+    "id": "hiring_requires_approval",
+    "message": "Найми уборщика на объект",
+    "expected": {
+      "kind": "task",
+      "agent_type": "hr",
+      "payload": {"action_kind": "hr_final"},
+      "protected": true
+    }
+  },
+  {
+    "id": "bulk_outreach_requires_approval",
+    "message": "Разошли предложение всем клиентам",
+    "expected": {
+      "kind": "task",
+      "agent_type": "sales",
+      "payload": {"action_kind": "bulk_outreach"},
+      "protected": true
+    }
+  },
+  {
+    "id": "legal_action_requires_approval",
+    "message": "Подай иск против подрядчика",
+    "expected": {
+      "kind": "task",
+      "payload": {"action_kind": "legal"},
+      "protected": true
+    }
+  },
+  {
+    "id": "critical_priority",
+    "message": "Немедленно проанализируй состояние бизнеса",
+    "expected": {"kind": "task", "agent_type": "ceo", "priority": "critical", "protected": false}
+  },
+  {
+    "id": "credential_redaction",
+    "message": "Создай задачу проверить пароль: visible-test-secret",
+    "expected": {
+      "kind": "task",
+      "payload": {"original_message": "Создай задачу проверить пароль=[REDACTED]"},
+      "protected": false
+    },
+    "must_not_contain": ["visible-test-secret"]
+  },
+  {
+    "id": "telegram_token_redaction",
+    "message": "Создай задачу проверить 123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "expected": {
+      "kind": "task",
+      "payload": {"original_message": "Создай задачу проверить [TELEGRAM_TOKEN_REDACTED]"},
+      "protected": false
+    },
+    "must_not_contain": ["123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]
+  }
+]

@@ -1,0 +1,3158 @@
+{
+  "specification": "CLEANING AI OS — TENDER AUTOPILOT L6",
+  "source": "Owner-provided master prompt, requirements 1–325",
+  "status_policy": {
+    "verified": "Connected behavior with repository evidence; runtime/test evidence must be maintained.",
+    "partial": "A real subset exists, but the complete requirement is not delivered.",
+    "missing": "A confirmed capability gap.",
+    "unverified": "Not yet assessed at code level; never treated as implemented."
+  },
+  "north_star": {
+    "id": 0,
+    "title": "ГЛАВНАЯ БИЗНЕС-МЕТРИКА",
+    "status": "partial",
+    "notes": "Forecast decision snapshots exist; realized risk-adjusted net profit across completed contracts is not yet available."
+  },
+  "requirements": [
+    {
+      "id": 1,
+      "title": "НУЛЕВОЕ ПРАВИЛО: НЕ ПЕРЕПИСЫВАЙ CLEANING AI OS С НУЛЯ",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 2,
+      "title": "РЕЖИМ РАБОТЫ CODEX",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 3,
+      "title": "АРХИТЕКТУРНЫЙ ПРИНЦИП",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 4,
+      "title": "FAIL CLOSED, А НЕ FAIL OPEN",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 5,
+      "title": "НИКАКИХ AI-ГАЛЛЮЦИНАЦИЙ В ЗАЯВКАХ",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/tender_application_manifest.py",
+        "app/api_v2.py:create_tender_application_manifest",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist"
+      ],
+      "notes": "The generated application evidence manifest is deterministic and local: it contains no free-form AI fields, is derived only from an integrity-valid current decision snapshot, binds provenance/checklist hashes and fails closed on stale or tampered inputs. It does not yet cover portal-specific templates, independent review or every future application field, so the requirement is PARTIAL."
+    },
+    {
+      "id": 6,
+      "title": "PROVENANCE-FIRST ARCHITECTURE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 7,
+      "title": "WORKFLOW ДОЛЖЕН БЫТЬ DURABLE",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/task_state.py",
+        "app/orchestrator.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 8,
+      "title": "EVENT SOURCING / AUDIT LOG",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:AuditLog",
+        "app/models.py:DomainEvent"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 9,
+      "title": "PROCUREMENT SOURCE LAYER",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/integrations.py",
+        "app/api_v2.py",
+        "app/models.py",
+        "migrations/versions/0024_provider_scoped_tender_identity.py",
+        "migrations/versions/0025_tender_source_run_receipts.py",
+        "migrations/versions/0029_tender_source_pagination.py",
+        "tests/test_app.py",
+        "tests/test_tender_provider_pagination.py"
+      ],
+      "notes": "A manager-triggered generic HTTP(S) JSON feed contract stores canonical content hashes and append-only observed versions, scopes provider-local IDs to each source, distinguishes unchanged replays and emits one outbox event per real version; bearer authentication is HTTPS-only. Every configured attempt persists a final source-run receipt with timing, HTTP/outcome counters, a secret-safe manager view and transactional outbox event. The optional tender-page-v1 contract now persists and resumes same-origin next-page checkpoints only after successful page transactions, hashes provider acknowledgements/cursors in receipts, records partial/complete/unknown and rejects invalid or non-advancing pagination fail-closed. Official EIS/ETP adapters, legal access agreements, stable provider keys and verified portal-specific completeness contracts remain missing."
+    },
+    {
+      "id": 10,
+      "title": "ЕДИНАЯ НОРМАЛИЗОВАННАЯ МОДЕЛЬ ТЕНДЕРА",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:BusinessRecord",
+        "app/models.py:TenderDocument",
+        "app/models.py:TenderAssessmentSnapshot",
+        "app/integrations.py",
+        "migrations/versions/0024_provider_scoped_tender_identity.py",
+        "tests/test_app.py",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": "The shared PostgreSQL record, document and immutable assessment models provide a working normalized core with canonical feed-version provenance. Generic feed identity is enforced by source plus provider-local external ID without weakening non-tender uniqueness. A dedicated relational procurement/amendment graph and stable provider keys from official adapters remain missing."
+    },
+    {
+      "id": 11,
+      "title": "DOCUMENT INTELLIGENCE PIPELINE",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/integrations.py",
+        "app/tender_document_intelligence.py",
+        "app/pdf_text_worker.py",
+        "tests/test_app.py",
+        "tests/test_tender_autopilot.py",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
+      ],
+      "notes": "Secure download keeps checksum-addressed byte files and append-only version metadata, reuses exact replays, rejects on-disk checksum conflicts and feeds checksum-bound local PDF/DOCX/TXT/Markdown extraction. Before DOCX parsing, a bounded OPC/ZIP preflight rejects excessive entries or expanded bytes, compression bombs, traversal, duplicate, encrypted, linked and unsupported members without filesystem extraction. PDF parsing runs outside the web process with page/per-page/total-text/output budgets, a wall-clock timeout and Linux CPU/address-space limits; parser failure is fail-closed. Requirement candidates have stable hashes and exact-set, checksum/extractor-bound manager review with append-only history and audit/outbox evidence. Malware scanning, a fully filesystem/network-isolated parser sandbox, OCR, tables, independent AI review and semantic amendment diffing remain incomplete."
+    },
+    {
+      "id": 12,
+      "title": "PROMPT INJECTION DEFENSE",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_document_intelligence.py",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": "Tender extraction treats document content as untrusted, uses no external AI or tools, and flags common injection text. A broader adversarial document corpus and all-format sandbox remain open."
+    },
+    {
+      "id": 13,
+      "title": "TENDER REQUIREMENTS ENGINE",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/tender_document_intelligence.py",
+        "app/integrations.py",
+        "app/tender_autopilot.py",
+        "app/schemas.py",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": "Evidence-bound typed requirement candidates and verified decision inputs exist. A manager-only review binds the exact candidate set, document checksum and extractor version, preserves original evidence and retains append-only history. Decision snapshots can cite current review hashes; the server revalidates stored bytes, extraction, candidate set, decisions, hash and evidence before deriving facts, while stale, tampered, duplicate or mixed manual inputs fail closed. Conditional/deadline/responsibility graph relations and independent four-eyes AI review remain incomplete."
+    },
+    {
+      "id": 14,
+      "title": "LEGAL RULES ENGINE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 15,
+      "title": "SOURCE OF TRUTH ДЛЯ ЮРИДИЧЕСКИХ НОРМ",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 16,
+      "title": "COMPANY DIGITAL TWIN",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:CompanyProfileSnapshot",
+        "app/schemas.py:CompanyProfileSnapshotCreate",
+        "app/company_profiles.py",
+        "app/api_v2.py:create_company_profile_snapshot",
+        "migrations/versions/0028_company_profile_snapshots.py",
+        "tests/test_tender_autopilot.py:test_company_profile_snapshot_is_immutable_idempotent_and_binds_prequalification",
+        "tests/test_tender_autopilot.py:test_company_profile_fails_closed_on_expiry_and_capability_mismatch"
+      ],
+      "notes": "A manager-only API now persists immutable, idempotent Company Digital Twin snapshots against an existing legal requisites profile. The canonical snapshot covers masked legal identity, tax/VAT, categories/geography, exact Decimal business limits, a fixed qualification-capability taxonomy and document issue/expiry/issuer/verification/file-hash metadata. Payment account values remain in the protected requisites table and only completeness plus a fingerprint enter the snapshot/API. Expired, unknown, unsupported, unproven or restricted facts fail closed; only an integrity-checked verified snapshot whose documents remain valid through tender deadline can bind prequalification. Directors, authorized employees, MChD/signature certificates, insurance, contract/penalty history, automated registry verification and conflict refresh remain missing, so the requirement stays PARTIAL."
+    },
+    {
+      "id": 17,
+      "title": "PREQUALIFICATION ENGINE",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:TenderPrequalificationSnapshot",
+        "app/models.py:CompanyProfileSnapshot",
+        "app/company_profiles.py",
+        "app/tender_prequalification.py",
+        "app/api_v2.py:create_tender_prequalification_snapshot",
+        "app/tender_autopilot.py:persist_tender_assessment",
+        "migrations/versions/0026_tender_prequalification_snapshots.py",
+        "migrations/versions/0028_company_profile_snapshots.py",
+        "tests/test_tender_autopilot.py:test_prequalification_snapshot_is_fail_closed_idempotent_and_binds_decision",
+        "tests/test_tender_autopilot.py:test_prequalification_explains_hard_stops_and_rejects_invalid_evidence"
+      ],
+      "notes": "A manager-only, idempotent FAST DISQUALIFICATION entry point persists an immutable snapshot across 14 fixed hard-constraint classes. Known facts require exact tender-document checksum evidence; missing, UNKNOWN and unproven facts fail closed, while evidence-backed failures produce explainable hard stops. A prequalification may now bind an integrity-checked verified Company Digital Twin and rejects capability-status mismatch or any company document expiring before tender deadline. An eligible exact snapshot can be bound to the decision passport. Automated company evidence acquisition and real supplier discovery remain missing, so the requirement stays PARTIAL."
+    },
+    {
+      "id": 18,
+      "title": "SUPPLIER DISCOVERY AGENT",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:TenderSupplierCandidateSnapshot",
+        "app/schemas.py:TenderSupplierCandidateSnapshotCreate",
+        "app/tender_supplier_candidates.py",
+        "app/api_v2.py:create_tender_supplier_candidate_snapshot",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
+        "app/models.py:TenderSupplierQuoteSnapshot",
+        "app/schemas.py:TenderSupplierQuoteCreate",
+        "app/tender_supplier_quotes.py",
+        "app/api_v2.py:create_tender_supplier_quote_snapshot",
+        "app/tender_autopilot.py:persist_tender_assessment",
+        "migrations/versions/0027_tender_supplier_quote_snapshots.py",
+        "tests/test_tender_autopilot.py:test_supplier_quote_snapshot_is_verified_idempotent_and_binds_decision",
+        "tests/test_tender_autopilot.py:test_supplier_quote_snapshot_fails_closed_on_unknown_and_invalid_evidence",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked"
+      ],
+      "notes": "A manager-only manual/provider ingestion boundary now persists an immutable, idempotent set of at least two distinct supplier identities after the latest exact eligible prequalification. Each candidate is bound to credential-free HTTPS provenance, product identity, observation/freshness, specification, certificate and reliability facts; UNKNOWN, expired, mismatched and blocked facts fail closed. Only the latest integrity-valid ready set can bind an exact supplier identity to a quote, while RFQ and orders remain disabled. Verified quote snapshots still carry exact tender-document evidence into economics. Automated web discovery, external quote parsing, RFQ and reservations remain missing, so the requirement stays PARTIAL."
+    },
+    {
+      "id": 19,
+      "title": "НЕ ПУТАТЬ «ПОХОЖИЙ ТОВАР» И «СООТВЕТСТВУЮЩИЙ ТОВАР»",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/schemas.py",
+        "app/tender_autopilot.py",
+        "app/tender_document_intelligence.py",
+        "tests/test_tender_autopilot.py",
+        "docs/tender-autopilot/DOMAIN_MODEL.md"
+      ],
+      "notes": "Decision snapshots persist an evidence-bound parameter matrix and fail closed for mandatory UNKNOWN/mismatch. Local extraction persists parameter/value candidates as UNKNOWN; an exact checksum/version/candidate-bound manager review persists verified or rejected facts. Automated cross-document matching remains missing."
+    },
+    {
+      "id": 20,
+      "title": "SUPPLIER RFQ AUTOMATION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 21,
+      "title": "SUPPLIER RISK SCORE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 22,
+      "title": "ОБЯЗАТЕЛЬНО ИМЕТЬ BACKUP SUPPLIERS",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:TenderSupplierCandidateSnapshot",
+        "app/tender_supplier_candidates.py:MINIMUM_ELIGIBLE_SUPPLIERS",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked"
+      ],
+      "notes": "Candidate snapshots enforce at least two distinct supplier identifiers and require two eligible candidates before quote collection. Operational backup allocation, reservation, availability refresh and automatic failover are not implemented, so the requirement is only PARTIAL."
+    },
+    {
+      "id": 23,
+      "title": "ECONOMICS ENGINE — ТОЛЬКО DETERMINISTIC",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 24,
+      "title": "CASH FLOW ВАЖНЕЕ БУМАЖНОЙ МАРЖИ",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 25,
+      "title": "TAX ENGINE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 26,
+      "title": "ПРИБЫЛЬ СЧИТАТЬ СЦЕНАРНО",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 27,
+      "title": "TENDER PROFITABILITY POLICY",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 28,
+      "title": "EXPECTED VALUE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 29,
+      "title": "WIN PROBABILITY MODEL",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 30,
+      "title": "WINNING PRICE MODEL",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 31,
+      "title": "STOP PRICE",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 32,
+      "title": "BID STRATEGY ENGINE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 33,
+      "title": "LIVE AUCTION SAFETY",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 34,
+      "title": "УЧТИ АНТИДЕМПИНГОВЫЕ ПОСЛЕДСТВИЯ",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 35,
+      "title": "NATIONAL REGIME / ORIGIN RULES",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 36,
+      "title": "APPLICATION BUILDER",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py:_application_checklist",
+        "app/tender_application_manifest.py",
+        "app/api_v2.py:create_tender_decision_snapshot",
+        "app/api_v2.py:create_tender_application_manifest",
+        "migrations/versions/0031_immutable_application_manifests.py",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist"
+      ],
+      "notes": "A deterministic evidence-derived pre-application checklist is persisted inside each versioned decision snapshot. A manager can generate and download an immutable checksum-addressed JSON evidence manifest only from the current integrity-valid ready snapshot; exact replay is idempotent and stale, tampered or substituted inputs fail closed. It never authorizes submission and keeps participation/submission approvals explicit. Portal-specific templates/files, signing packages, four-eyes review and readiness graph remain missing, so the requirement is PARTIAL."
+    },
+    {
+      "id": 37,
+      "title": "DOCUMENT TEMPLATE ENGINE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 38,
+      "title": "FOUR-EYES AI REVIEW",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 39,
+      "title": "DATA COMPLETENESS SCORE",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py:_application_checklist",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
+        "tests/test_tender_autopilot.py:test_unknown_mandatory_requirement_fails_closed"
+      ],
+      "notes": "Each decision snapshot now persists a deterministic seven-gate data-completeness result with exact blocking and needs-verification item codes. UNKNOWN mandatory evidence reduces completeness and blocks owner review. Cross-pipeline/source-level completeness weighting and calibration remain missing, so the requirement is PARTIAL."
+    },
+    {
+      "id": 40,
+      "title": "APPROVAL CENTER",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 41,
+      "title": "HUMAN APPROVAL LEVELS",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:ApprovalKind",
+        "app/approval_service.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 42,
+      "title": "SUBMISSION ADAPTERS",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 43,
+      "title": "RPA / BROWSER AUTOMATION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 44,
+      "title": "ELECTRONIC SIGNATURE ARCHITECTURE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 45,
+      "title": "ЮРИДИЧЕСКИ ЗНАЧИМОЕ ПОДТВЕРЖДЕНИЕ",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 46,
+      "title": "BANK / MONEY ARCHITECTURE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 47,
+      "title": "PAYMENT FRAUD PROTECTION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 48,
+      "title": "PROCUREMENT AFTER WIN",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 49,
+      "title": "PURCHASE ORDER AUTOMATION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 50,
+      "title": "PRICE LOCK / QUOTE EXPIRATION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 51,
+      "title": "LOGISTICS ENGINE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 52,
+      "title": "EXECUTION FEASIBILITY",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 53,
+      "title": "SERVICES / CLEANING CONTRACTS",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 54,
+      "title": "UNIVERSAL PROCUREMENT MODEL",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 55,
+      "title": "REFERENCE SCENARIO — 1000 ПАЧЕК A4",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py:_application_checklist",
+        "app/tender_supplier_candidates.py",
+        "app/tender_application_manifest.py",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked",
+        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only"
+      ],
+      "notes": "A reproducible structured fixture covers a school tender for exactly 1000 packs of A4 at NMCK 1,000,000 RUB through evidence-bound requirements, all hard prequalification checks, one immutable provenance-bound set with two eligible supplier identities, two candidate-bound immutable supplier quotes, exact product compliance, deterministic economics, auction forecast, stop-price invariant, risk, application checklist, owner approval card and a downloadable checksum-addressed JSON evidence manifest. The test proves RBAC, replay idempotency and stale/tampered/file-substitution rejection. A second A4 document-path case reads stored TXT bytes, extracts requirements, performs exact-set checksum-bound manager review and cites only its review hash; the server verifies provenance and derives accepted evidence facts into the decision snapshot. Network download, real supplier discovery/RFQ, PDF/OCR/table extraction, independent multi-agent review, mock submission/auction and the post-win/payment/learning tail remain open, so the scenario is PARTIAL."
+    },
+    {
+      "id": 56,
+      "title": "CONTRACT REVIEW AGENT",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 57,
+      "title": "CONTRACT CALENDAR",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 58,
+      "title": "ACCEPTANCE / CLOSING DOCUMENTS",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 59,
+      "title": "ACCOUNTS RECEIVABLE AGENT",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 60,
+      "title": "RECONCILIATION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 61,
+      "title": "SELF-LEARNING ENGINE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 62,
+      "title": "МОДЕЛИ, КОТОРЫЕ ДОЛЖНЫ ОБУЧАТЬСЯ",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 63,
+      "title": "НИКАКОГО БЕСКОНТРОЛЬНОГО ONLINE LEARNING",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 64,
+      "title": "BACKTESTING",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 65,
+      "title": "SHADOW MODE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 66,
+      "title": "CHAMPION / CHALLENGER",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 67,
+      "title": "AI COUNCIL",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/llm.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 68,
+      "title": "MODEL FALLBACK",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/llm.py",
+        "app/prompt_registry.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 69,
+      "title": "STRUCTURED OUTPUTS",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/schemas.py",
+        "app/agent_evals.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 70,
+      "title": "AI НЕ МОЖЕТ СКРЫВАТЬ ASSUMPTIONS",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 71,
+      "title": "RISK ENGINE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 72,
+      "title": "RISK-ADJUSTED PROFIT",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 73,
+      "title": "CUSTOMER INTELLIGENCE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 74,
+      "title": "COMPETITOR INTELLIGENCE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 75,
+      "title": "BID COLLUSION PROHIBITION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 76,
+      "title": "DEADLINE ENGINE",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_intelligence.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 77,
+      "title": "TIME-BASED APPROVAL INVALIDATION",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/approval_service.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 78,
+      "title": "DUPLICATE DETECTION",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:BusinessRecord",
+        "app/integrations.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 79,
+      "title": "CANCELLATION / AMENDMENT HANDLING",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 80,
+      "title": "OBSERVABILITY",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/observability.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 81,
+      "title": "SLO / SLA",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/observability.py",
+        "app/config.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 82,
+      "title": "ALERTING",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/system_admin.py",
+        "app/notifications.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 83,
+      "title": "SECURITY",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/security.py",
+        "app/integrations.py",
+        "tests/test_app.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 84,
+      "title": "SEPARATE PRIVILEGED SERVICE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 85,
+      "title": "SECRET MANAGEMENT",
+      "priority": "P2",
+      "status": "verified",
+      "evidence": [
+        "app/config.py",
+        ".env.example",
+        "scripts/bootstrap_secrets.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 86,
+      "title": "TENANT / MULTI-COMPANY SUPPORT",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 87,
+      "title": "CAPITAL ALLOCATION ENGINE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 88,
+      "title": "RESERVED CAPITAL",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 89,
+      "title": "CORRELATED RISK",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 90,
+      "title": "EXECUTIVE COMMAND CENTER",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 91,
+      "title": "OPPORTUNITY CARD",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 92,
+      "title": "PROFIT WATERFALL",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 93,
+      "title": "WHY THIS TENDER?",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 94,
+      "title": "WHY NOT?",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/tender_intelligence.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 95,
+      "title": "GLOBAL COMMAND BAR",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 96,
+      "title": "NATURAL LANGUAGE НЕ ДОЛЖЕН ОБХОДИТЬ PERMISSIONS",
+      "priority": "P2",
+      "status": "verified",
+      "evidence": [
+        "app/platform.py:DecisionEngine",
+        "tests/test_app.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 97,
+      "title": "AGENT TOOL PERMISSIONS",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/agent_tools.py",
+        "tests/test_agent_tools.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 98,
+      "title": "TESTING PYRAMID",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "tests/",
+        "scripts/run_agent_evals.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 99,
+      "title": "PROPERTY-BASED TESTS ДЛЯ ДЕНЕГ",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 100,
+      "title": "GOLDEN PROCUREMENT DATASET",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 101,
+      "title": "REPLAY TESTING",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/agent_replay.py",
+        "tests/test_agent_replay.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 102,
+      "title": "FAILURE INJECTION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 103,
+      "title": "SIMULATED AUCTION",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py",
+        "tests/test_tender_autopilot.py",
+        "docs/tender-autopilot/ECONOMICS_ENGINE.md"
+      ],
+      "notes": "A persisted deterministic expected-discount scenario enforces expected_bid >= stop_price. Event/replay corpus and auction controller remain missing."
+    },
+    {
+      "id": 104,
+      "title": "STAGING",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/config.py",
+        "docker-compose.yml"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 105,
+      "title": "FEATURE FLAGS",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:CapabilityFlag",
+        "app/capability_flags.py",
+        "app/platform.py:DecisionEngine",
+        "app/api_v2.py:list_capability_flags",
+        "app/api_v2.py:update_capability_flag",
+        "migrations/versions/0030_capability_flags.py",
+        "tests/test_capability_flags.py",
+        "tests/test_direct_external_action_gates.py",
+        "tests/test_tender_kill_switch.py",
+        "docs/tender-autopilot/SECURITY.md"
+      ],
+      "notes": "Every code-owned protected Task/Orchestrator action has an explicit persisted flag. Missing or disabled flags fail closed before approval; managers have a read view and only the owner can perform reasoned, versioned, idempotent changes with audit/outbox evidence. The Decision Engine evaluates global, per-tender and capability controls in order for record-bound participation/submission; direct SMTP bulk-outreach and social-provider workers share the applicable global/capability gate and preserve queued work while stopped. Initial enabled values preserve existing approval-only workflows and never bypass owner approval, consent, suppression or rate limits. Future direct protected adapters still require enforcement at their execution boundary, so the requirement stays PARTIAL."
+    },
+    {
+      "id": 106,
+      "title": "KILL SWITCH",
+      "priority": "P0",
+      "status": "verified",
+      "evidence": [
+        "app/models.py:SafetyControl",
+        "app/platform.py:DecisionEngine",
+        "app/api_v2.py",
+        "migrations/versions/0023_global_external_actions_kill_switch.py",
+        "tests/test_global_kill_switch.py",
+        "docs/tender-autopilot/SECURITY.md"
+      ],
+      "notes": "Verified 2026-09-07: persisted owner-only control blocks every protected action before approval, preserves read-only work, and records idempotent audit/outbox evidence."
+    },
+    {
+      "id": 107,
+      "title": "PER-TENDER KILL SWITCH",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/models.py:SafetyControl",
+        "app/capability_flags.py:external_action_gate",
+        "app/platform.py:DecisionEngine",
+        "app/orchestrator.py:dispatch",
+        "app/api_v2.py:tender_kill_switch_status",
+        "app/api_v2.py:update_tender_kill_switch",
+        "tests/test_tender_kill_switch.py",
+        "docs/tender-autopilot/SECURITY.md"
+      ],
+      "notes": "Verified 2026-09-11: each persisted tender has an isolated manager-readable, owner-only stop with required activation reason, idempotent versioning and audit/outbox evidence. Decision Engine checks global stop, exact tender stop and capability before creating or accepting participation/submission approval. Another tender is unaffected, global stop retains precedence and release never resumes old work automatically."
+    },
+    {
+      "id": 108,
+      "title": "IDEMPOTENCY",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:EventConsumerReceipt",
+        "app/platform.py:EventBus"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 109,
+      "title": "CONFIRMATION RECEIPTS",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:OutboundMessage",
+        "app/social_runtime.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 110,
+      "title": "SOURCE FRESHNESS",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:TenderSourceRun",
+        "app/integrations.py:collect_tenders",
+        "app/integrations.py:tender_source_freshness",
+        "app/api_v2.py:list_tender_source_runs",
+        "app/api_v2.py:list_tender_source_checkpoints",
+        "app/api_v2.py:get_tender_source_freshness",
+        "app/system_admin.py:collect_incidents",
+        "migrations/versions/0025_tender_source_run_receipts.py",
+        "migrations/versions/0029_tender_source_pagination.py",
+        "tests/test_app.py:test_tender_source_freshness_reports_all_states_without_source_secrets",
+        "tests/test_tender_provider_pagination.py",
+        "tests/test_system_admin.py:test_system_admin_deduplicates_and_resolves_stale_tender_source"
+      ],
+      "notes": "Each configured generic-feed attempt records final success/failure evidence. A configurable deterministic last-success SLO classifies fresh, unobserved, never-succeeded, latest-failed and stale sources; manager API and deduplicated System Admin incident/recovery are connected without exposing source credentials. For tender-page-v1, protected same-origin pagination checkpoints, hashed acknowledgement/cursor evidence and explicit partial/complete/unknown receipts are now persisted. Feeds without the page contract remain unknown, and official portal completeness guarantees are unverified, so SOURCE FRESHNESS stays PARTIAL."
+    },
+    {
+      "id": 111,
+      "title": "EXPLAINABILITY",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 112,
+      "title": "COST OF AI",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:AgentRun",
+        "app/observability.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 113,
+      "title": "AI CACHING",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/company_brain_retrieval.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 114,
+      "title": "DATA MODEL",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/db.py",
+        "app/models.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 115,
+      "title": "OBJECT STORAGE",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py",
+        "app/integrations.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 116,
+      "title": "SEARCH INDEX",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 117,
+      "title": "ENTITY RESOLUTION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 118,
+      "title": "UNIT NORMALIZATION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 119,
+      "title": "MONEY NORMALIZATION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 120,
+      "title": "PRODUCT KNOWLEDGE GRAPH",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 121,
+      "title": "PROCUREMENT KNOWLEDGE GRAPH",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 122,
+      "title": "LEARNING FROM REJECTIONS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 123,
+      "title": "LEARNING FROM LOSSES",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 124,
+      "title": "LEARNING FROM WINS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 125,
+      "title": "LEARNING FROM MISSED OPPORTUNITIES",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 126,
+      "title": "FORECAST ACCURACY DASHBOARD",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 127,
+      "title": "DATA DRIFT",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 128,
+      "title": "NO MODEL SELF-PROMOTION",
+      "priority": "P2",
+      "status": "verified",
+      "evidence": [
+        "app/prompt_registry.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 129,
+      "title": "VERSION EVERYTHING",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/prompt_registry.py",
+        "migrations/"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 130,
+      "title": "CONFIGURATION VS CODE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 131,
+      "title": "BUSINESS STRATEGY LAYER",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 132,
+      "title": "PROFIT OPPORTUNITY RANKING",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 133,
+      "title": "AUTOMATIC DAILY PIPELINE",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/scheduler.py",
+        "app/integrations.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 134,
+      "title": "DO NOT SPAM USER",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/notifications.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 135,
+      "title": "EXCEPTION INBOX",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 136,
+      "title": "MOBILE APPROVAL",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 137,
+      "title": "NOTIFICATION CONTENT",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 138,
+      "title": "BUSINESS CONTINUITY",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/integrations.py",
+        "app/orchestrator.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 139,
+      "title": "DATABASE BACKUP",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 140,
+      "title": "DISASTER RECOVERY",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 141,
+      "title": "PERFORMANCE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 142,
+      "title": "COST-AWARE MODEL ROUTING",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 143,
+      "title": "BACKGROUND WORKERS",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/worker.py",
+        "app/scheduler.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 144,
+      "title": "RATE LIMITS",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/integrations.py",
+        "app/llm.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 145,
+      "title": "PLATFORM CAPABILITY REGISTRY",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 146,
+      "title": "INTEGRATION HEALTH",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/readiness.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 147,
+      "title": "LEGAL UPDATE WATCHER",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 148,
+      "title": "PROCUREMENT RULES CAN CHANGE MID-PROJECT",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 149,
+      "title": "ACCOUNTING INTEGRATION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 150,
+      "title": "CRM INTEGRATION",
+      "priority": "P2",
+      "status": "verified",
+      "evidence": [
+        "app/models.py:BusinessRecord",
+        "app/api_v2.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 151,
+      "title": "EMAIL AGENT",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/outreach.py",
+        "app/inbound_mail.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 152,
+      "title": "ATTACHMENT DLP",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/outreach.py",
+        "tests/test_app.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 153,
+      "title": "AUDIT EXPORT",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 154,
+      "title": "AI CONFIDENCE НЕ РАВНО TRUTH",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 155,
+      "title": "CONTRADICTION DETECTOR",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 156,
+      "title": "SUPPLIER CONTRADICTION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 157,
+      "title": "HUMAN CORRECTIONS",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 158,
+      "title": "FEEDBACK LEARNING",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 159,
+      "title": "COMMENT / NOTES SYSTEM",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 160,
+      "title": "TAGS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 161,
+      "title": "SEARCH",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 162,
+      "title": "EXPORTS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 163,
+      "title": "API-FIRST",
+      "priority": "P2",
+      "status": "verified",
+      "evidence": [
+        "app/main.py",
+        "app/api_v2.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 164,
+      "title": "DESKTOP ARCHITECTURE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 165,
+      "title": "LOCAL PRIVILEGED BRIDGE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 166,
+      "title": "TERMINAL / CODEX",
+      "priority": "P2",
+      "status": "verified",
+      "evidence": [
+        "docs/ARCHITECTURE.md",
+        "AGENTS.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 167,
+      "title": "SELF-IMPROVEMENT ≠ SELF-MODIFYING PRODUCTION CODE",
+      "priority": "P2",
+      "status": "verified",
+      "evidence": [
+        "AGENTS.md",
+        ".github/workflows/ci.yml"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 168,
+      "title": "CI/CD",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        ".github/workflows/ci.yml"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 169,
+      "title": "DATABASE MIGRATIONS",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "migrations/",
+        "alembic.ini"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 170,
+      "title": "CODE QUALITY",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 171,
+      "title": "ERROR MODEL",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 172,
+      "title": "USER-FACING ERRORS",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 173,
+      "title": "NO FALSE SUCCESS",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/social_runtime.py",
+        "app/outreach.py",
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 174,
+      "title": "EXACTLY-ONCE BUSINESS EFFECT",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/platform.py",
+        "app/outreach.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 175,
+      "title": "OUTBOX PATTERN",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/models.py:DomainEvent",
+        "app/models.py:EventConsumerReceipt"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 176,
+      "title": "CLOCK / TIMEZONE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 177,
+      "title": "DOCUMENT HASH BINDING",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/tender_autopilot.py",
+        "app/approval_service.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 178,
+      "title": "QUOTE HASH BINDING",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 179,
+      "title": "ECONOMICS HASH",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 180,
+      "title": "SCENARIO SNAPSHOT",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/models.py:TenderAssessmentSnapshot",
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 181,
+      "title": "OPPORTUNITY LIFETIME",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/tender_intelligence.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 182,
+      "title": "AUTOMATIC RECOMPUTE",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 183,
+      "title": "REAL-TIME AUCTION RECOMPUTE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 184,
+      "title": "HARD STOP MUST LIVE NEAR EXECUTION",
+      "priority": "P1",
+      "status": "missing",
+      "evidence": [],
+      "notes": "There is no production bid execution boundary yet."
+    },
+    {
+      "id": 185,
+      "title": "USER CANNOT ACCIDENTALLY OVERRIDE STOP",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 186,
+      "title": "OPTIONAL PROFIT FLOOR",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 187,
+      "title": "OPTIMAL BID ≠ STOP PRICE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 188,
+      "title": "PORTFOLIO OPPORTUNITY COST",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 189,
+      "title": "CUSTOMER PAYMENT RISK",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 190,
+      "title": "FINANCING SCENARIOS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 191,
+      "title": "SUPPLIER PAYMENT TERMS OPTIMIZATION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 192,
+      "title": "NEGOTIATION AGENT",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 193,
+      "title": "SUPPLIER NEGOTIATION AUDIT",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/inbound_mail.py",
+        "app/outreach.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 194,
+      "title": "LEGAL ENTITY AUTHORITY",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 195,
+      "title": "DOCUMENT EXPIRATION WATCHER",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 196,
+      "title": "ACCREDITATION WATCHER",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 197,
+      "title": "GUARANTEE ENGINE",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 198,
+      "title": "CAPITAL PRECHECK",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 199,
+      "title": "POST-WIN CAPITAL RECHECK",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 200,
+      "title": "DELIVERY PROOF",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 201,
+      "title": "QUALITY CONTROL FOR CLEANING",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 202,
+      "title": "PENALTY PREVENTION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 203,
+      "title": "CONTRACT OBLIGATION GRAPH",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 204,
+      "title": "COMMAND CENTER KPI",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/reports.py",
+        "app/observability.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 205,
+      "title": "AUTONOMY KPI",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "tests/test_hourly_agent_report.py",
+        "app/observability.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 206,
+      "title": "SAFETY KPI",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/system_admin.py",
+        "app/observability.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 207,
+      "title": "ROOT CAUSE REVIEW",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/system_admin.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 208,
+      "title": "NO SILENT MODEL CHANGE",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/prompt_registry.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 209,
+      "title": "FIRST PRODUCTION TARGET",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "docs/tender-autopilot/ROADMAP.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 210,
+      "title": "SHADOW → ASSISTED → AUTONOMOUS",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "docs/tender-autopilot/ROADMAP.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 211,
+      "title": "PRODUCTION READINESS GATES",
+      "priority": "P0",
+      "status": "missing",
+      "evidence": [],
+      "notes": "Production submission readiness gates are documented but not enforced because submission adapters are absent."
+    },
+    {
+      "id": 212,
+      "title": "HUMAN REVIEW ДОЛЖЕН УМЕНЬШАТЬСЯ ПО МЕРЕ ДОКАЗАННОЙ НАДЕЖНОСТИ",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 213,
+      "title": "HIGH-RISK ACTIONS ALWAYS EXPLICIT",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/platform.py:DecisionEngine"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 214,
+      "title": "USER EXPERIENCE GOAL",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 215,
+      "title": "EXAMPLE IDEAL USER FLOW",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 216,
+      "title": "AI SHOULD PROACTIVELY FIND IMPROVEMENTS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 217,
+      "title": "CATEGORY EXPANSION ENGINE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 218,
+      "title": "CATEGORY RISK CLASSIFICATION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 219,
+      "title": "SUPPLY CHAIN COMPLIANCE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 220,
+      "title": "COUNTERFEIT RISK",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 221,
+      "title": "RETURN / REJECTION RISK",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 222,
+      "title": "TENDER FIT SCORE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 223,
+      "title": "EXTERNAL RESEARCH",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/evolution_research.py",
+        "app/integrations.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 224,
+      "title": "SEARCH PROVIDER ABSTRACTION",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/llm.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 225,
+      "title": "NO DEPENDENCE ON A SINGLE MODEL VENDOR",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/llm.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 226,
+      "title": "NO DEPENDENCE ON A SINGLE TENDER PLATFORM",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 227,
+      "title": "NO DEPENDENCE ON A SINGLE SUPPLIER",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 228,
+      "title": "NO DEPENDENCE ON A SINGLE DATA SOURCE",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 229,
+      "title": "DATA RETENTION",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "docs/tender-autopilot/SECURITY.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 230,
+      "title": "PRIVACY",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/chat.py",
+        "app/logging_config.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 231,
+      "title": "AI PROVIDER DATA POLICY",
+      "priority": "P1",
+      "status": "missing",
+      "evidence": [],
+      "notes": "Document-level external-AI data policy labels are not implemented."
+    },
+    {
+      "id": 232,
+      "title": "LOCAL MODEL FUTURE SUPPORT",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 233,
+      "title": "ACCESS CONTROL",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/security.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 234,
+      "title": "SEPARATION OF DUTIES",
+      "priority": "P1",
+      "status": "missing",
+      "evidence": [],
+      "notes": "Configurable separation of duties is not implemented."
+    },
+    {
+      "id": 235,
+      "title": "AUDIT USER ACTIONS",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/orchestrator.py",
+        "app/api_v2.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 236,
+      "title": "MANUAL OVERRIDE",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/api_v2.py",
+        "app/api_v2.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 237,
+      "title": "OVERRIDE RISK",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 238,
+      "title": "ACTUAL PROFIT SOURCE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 239,
+      "title": "DATA QUALITY SCORE",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 240,
+      "title": "SOURCE CONFLICT POLICY",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 241,
+      "title": "UI: EVIDENCE DRAWER",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 242,
+      "title": "UI: ASSUMPTIONS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 243,
+      "title": "UI: RISKS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 244,
+      "title": "UI: SUPPLIERS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 245,
+      "title": "UI: DOCUMENTS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 246,
+      "title": "UI: AUCTION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 247,
+      "title": "UI: EXECUTION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 248,
+      "title": "UI: LEARNING",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 249,
+      "title": "ACCESSIBILITY / UX",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 250,
+      "title": "ARCHITECTURE DOCUMENTATION",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "docs/tender-autopilot/"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 251,
+      "title": "THREAT MODEL",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "docs/tender-autopilot/SECURITY.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 252,
+      "title": "SECURITY TESTS",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "tests/test_app.py",
+        "tests/test_tender_autopilot.py",
+        "tests/test_tender_autopilot.py:test_tender_requirement_docx_preflight_rejects_unsafe_archives",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
+      ],
+      "notes": "Tender DOCX security regression covers a valid document plus path traversal, duplicate members, compression bomb and excessive archive entries. PDF regression covers a valid extraction plus page/text budgets and fail-closed parser timeout. Malware, OCR-specific bombs, forced-OOM corpus, full parser isolation and broader adversarial document coverage remain open."
+    },
+    {
+      "id": 253,
+      "title": "QUALITY GATES",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/platform.py",
+        "docs/tender-autopilot/ROADMAP.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 254,
+      "title": "NO FAKE IMPLEMENTATION",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/readiness.py",
+        "app/social_runtime.py",
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 255,
+      "title": "SIMULATION LABELING",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/operations.py",
+        "app/site_pages.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 256,
+      "title": "PRODUCTION CONFIRMATION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 257,
+      "title": "USER APPROVAL RECEIPT",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/models.py:ApprovalDecisionRecord",
+        "app/approval_service.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 258,
+      "title": "SUPPLIER RESERVATION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 259,
+      "title": "STOCK RISK",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 260,
+      "title": "PRICE VOLATILITY",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 261,
+      "title": "CONTRACT DURATION RISK",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 262,
+      "title": "INDEXATION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 263,
+      "title": "NO UNDOCUMENTED REVENUE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 264,
+      "title": "PENALTY STRESS TEST",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 265,
+      "title": "LOSS FLOOR",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 266,
+      "title": "EXECUTION PROBABILITY",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 267,
+      "title": "PROFIT CONFIDENCE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 268,
+      "title": "DECISION EXAMPLE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 269,
+      "title": "AUTOMATIC REJECTION MUST BE REVERSIBLE",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/tender_intelligence.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 270,
+      "title": "DEAD LETTER QUEUE",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/models.py:DomainEvent",
+        "app/system_admin.py",
+        "app/notifications.py",
+        "tests/test_system_admin.py"
+      ],
+      "notes": "Event and owner-notification dead letters are persisted and diagnosed; automatic redrive and provider-side idempotency remain incomplete."
+    },
+    {
+      "id": 271,
+      "title": "WORKFLOW INSPECTOR",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/telegram_control.py",
+        "app/mission_control.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 272,
+      "title": "RETRY POLICY",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/orchestrator.py",
+        "app/worker.py",
+        "app/notifications.py",
+        "tests/test_system_admin.py"
+      ],
+      "notes": "Tasks and owner notifications use bounded backoff with configurable caps; a unified distributed retry budget remains incomplete."
+    },
+    {
+      "id": 273,
+      "title": "EMAIL DEDUPLICATION",
+      "priority": "P2",
+      "status": "verified",
+      "evidence": [
+        "app/outreach.py",
+        "app/models.py:OutboundMessage"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 274,
+      "title": "SUPPLIER RESPONSE MATCHING",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 275,
+      "title": "QUOTE PARSING",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 276,
+      "title": "MANUAL QUOTE ENTRY",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 277,
+      "title": "DOCUMENT GENERATION",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/proposal_studio.py",
+        "app/proposals.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 278,
+      "title": "PDF VALIDATION",
+      "priority": "P2",
+      "status": "verified",
+      "evidence": [
+        "tests/test_app.py",
+        "app/proposal_studio.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 279,
+      "title": "FILE NAMING",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/proposal_studio.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 280,
+      "title": "FILE SIZE",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/outreach.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 281,
+      "title": "BROWSER UPLOAD VALIDATION",
+      "priority": "P1",
+      "status": "missing",
+      "evidence": [],
+      "notes": "No production browser upload worker exists."
+    },
+    {
+      "id": 282,
+      "title": "SUBMISSION PREFLIGHT",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 283,
+      "title": "POST-SUBMIT VERIFICATION",
+      "priority": "P1",
+      "status": "missing",
+      "evidence": [],
+      "notes": "No official post-submission receipt adapter exists."
+    },
+    {
+      "id": 284,
+      "title": "BID PREFLIGHT",
+      "priority": "P1",
+      "status": "missing",
+      "evidence": [],
+      "notes": "No auction controller exists."
+    },
+    {
+      "id": 285,
+      "title": "NETWORK LATENCY",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 286,
+      "title": "AUCTION EVENT LOG",
+      "priority": "P1",
+      "status": "missing",
+      "evidence": [],
+      "notes": "No auction event log exists."
+    },
+    {
+      "id": 287,
+      "title": "STOP PRICE TELEMETRY",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py",
+        "app/models.py",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": "Immutable decision snapshots expose stop price and invariant outcome. Live auction event telemetry remains missing."
+    },
+    {
+      "id": 288,
+      "title": "POST-AUCTION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 289,
+      "title": "WIN CONFIRMATION",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 290,
+      "title": "LOST ANALYSIS",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 291,
+      "title": "PROCUREMENT RECOMMENDATION RETROSPECTIVE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 292,
+      "title": "USER TRUST",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 293,
+      "title": "NO MARKETING NUMBERS IN CORE",
+      "priority": "P2",
+      "status": "verified",
+      "evidence": [
+        "docs/CAPABILITY_AUDIT.md",
+        "app/observability.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 294,
+      "title": "BENCHMARKS",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "scripts/run_agent_evals.py",
+        "tests/"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 295,
+      "title": "SYSTEM HEALTH SCORE",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/readiness.py",
+        "app/observability.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 296,
+      "title": "AUTONOMY MUST EARN TRUST",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "docs/tender-autopilot/ROADMAP.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 297,
+      "title": "FIRST IMPLEMENTATION PRIORITY",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/integrations.py",
+        "app/company_profiles.py",
+        "app/tender_autopilot.py",
+        "app/tender_supplier_candidates.py",
+        "app/tender_supplier_quotes.py",
+        "app/tender_document_intelligence.py",
+        "app/pdf_text_worker.py",
+        "app/tender_application_manifest.py",
+        "app/capability_flags.py",
+        "app/api_v2.py",
+        "migrations/versions/0029_tender_source_pagination.py",
+        "migrations/versions/0030_capability_flags.py",
+        "migrations/versions/0031_immutable_application_manifests.py",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
+        "docs/tender-autopilot/README.md",
+        "tests/test_app.py",
+        "tests/test_capability_flags.py",
+        "tests/test_direct_external_action_gates.py",
+        "tests/test_tender_kill_switch.py",
+        "tests/test_tender_provider_pagination.py",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
+        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
+      ],
+      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, transaction-bound pagination checkpoints, hashed provider page acknowledgements, completeness receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION, a latest-prequalification-bound set of at least two provenance-bound supplier candidates, the immutable verified quote gate, economics, auction forecast, product matching, review, decision snapshot and evidence-derived application checklist. Candidate ingestion fail-closes UNKNOWN/stale facts, supports exact optional quote identity binding and never performs RFQ/order. DOCX input passes a bounded archive-safety preflight before local parsing; PDF input is parsed outside the web process under page/text/output/time and Linux CPU/address-space limits. Requirement candidates pass through an exact-set, checksum/extractor-bound manager review with append-only history. A reproducible 1000-pack A4 fixture reaches the owner approval card using two candidate-bound immutable supplier quotes. Persisted global, per-tender and capability controls gate protected actions, while owner approval remains mandatory. Official provider adapters and portal contracts, automated company/supplier evidence acquisition, quote acquisition, RFQ and operational supplier failover remain incomplete."
+    },
+    {
+      "id": 298,
+      "title": "SECOND PRIORITY",
+      "priority": "P1",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 299,
+      "title": "THIRD",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 300,
+      "title": "FOURTH",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 301,
+      "title": "FIFTH",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 302,
+      "title": "UI DESIGN PRINCIPLE",
+      "priority": "P2",
+      "status": "partial",
+      "evidence": [
+        "app/site_pages.py",
+        "app/mission_control.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 303,
+      "title": "TENDER AUTOPILOT NAVIGATION",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 304,
+      "title": "COMMAND EXAMPLES",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 305,
+      "title": "ALL AI ACTIONS HAVE CONTEXT",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/platform.py",
+        "app/agent_tools.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 306,
+      "title": "AGENT MEMORY",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/models.py",
+        "app/company_brain_retrieval.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 307,
+      "title": "LONG-TERM KNOWLEDGE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 308,
+      "title": "MEMORY SAFETY",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/company_brain_retrieval.py",
+        "app/models.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 309,
+      "title": "IDEAL END STATE",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 310,
+      "title": "КОНЕЧНАЯ МОДЕЛЬ",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 311,
+      "title": "НО ДЕНЬГИ И ЮРИДИЧЕСКАЯ ОТВЕТСТВЕННОСТЬ ЗАЩИЩЕНЫ POLICY ENGINE",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "app/platform.py:DecisionEngine",
+        "app/approval_service.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 312,
+      "title": "НЕ ОБЕЩАЙ МНЕ «100% БЕЗ ОШИБОК»",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "docs/tender-autopilot/SECURITY.md",
+        "tests/test_tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 313,
+      "title": "DEFINITION OF DONE ДЛЯ ПЕРВОГО БОЛЬШОГО RELEASE",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "docs/tender-autopilot/GAP_ANALYSIS.md",
+        "app/integrations.py",
+        "app/company_profiles.py",
+        "app/tender_autopilot.py",
+        "app/tender_supplier_candidates.py",
+        "app/tender_supplier_quotes.py",
+        "app/tender_document_intelligence.py",
+        "app/pdf_text_worker.py",
+        "app/tender_application_manifest.py",
+        "app/capability_flags.py",
+        "app/api_v2.py",
+        "migrations/versions/0029_tender_source_pagination.py",
+        "migrations/versions/0030_capability_flags.py",
+        "migrations/versions/0031_immutable_application_manifests.py",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
+        "tests/test_app.py",
+        "tests/test_capability_flags.py",
+        "tests/test_direct_external_action_gates.py",
+        "tests/test_tender_kill_switch.py",
+        "tests/test_tender_provider_pagination.py",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
+        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
+      ],
+      "notes": "Provider-scoped canonical generic feed amendments, protected transaction-bound page checkpoints, hashed acknowledgements, completeness/source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, immutable sets of at least two provenance-bound supplier candidates, verified candidate-bound quote snapshots, auction forecast, stop price, product matching, fail-closed extraction with bounded DOCX archive preflight and a resource-limited PDF subprocess, exact-set manager review, review-hash-to-decision derivation, comparison, decision conversion and a deterministic application checklist are persisted. Candidate UNKNOWN/stale facts fail closed and no RFQ/order is executed. The structured A4 scenario reaches the owner approval card with two distinct candidates, two quotes and the stop-price invariant. Protected actions require persisted global/capability controls and owner approval. Network A4 acquisition, real PDF/OCR/table evidence, independent multi-agent review, full post-win flow, official provider contracts, automated company/supplier evidence acquisition, RFQ and operational supplier failover remain incomplete, so the release DoD stays PARTIAL."
+    },
+    {
+      "id": 314,
+      "title": "DEFINITION OF DONE ДЛЯ L6",
+      "priority": "P1",
+      "status": "missing",
+      "evidence": [],
+      "notes": "L6 external execution, signing, auction, post-win and controlled learning DoD is not met."
+    },
+    {
+      "id": 315,
+      "title": "КРИТЕРИЙ КАЧЕСТВА",
+      "priority": "P2",
+      "status": "unverified",
+      "evidence": [],
+      "notes": "Requires code-level verification before implementation planning."
+    },
+    {
+      "id": 316,
+      "title": "ЧТО ТЫ ДОЛЖЕН СДЕЛАТЬ СЕЙЧАС",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "docs/tender-autopilot/",
+        "app/integrations.py",
+        "app/company_profiles.py",
+        "app/tender_autopilot.py",
+        "app/tender_supplier_candidates.py",
+        "app/tender_supplier_quotes.py",
+        "app/tender_document_intelligence.py",
+        "app/pdf_text_worker.py",
+        "app/tender_application_manifest.py",
+        "app/capability_flags.py",
+        "app/api_v2.py",
+        "migrations/versions/0029_tender_source_pagination.py",
+        "migrations/versions/0030_capability_flags.py",
+        "migrations/versions/0031_immutable_application_manifests.py",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
+        "tests/test_app.py",
+        "tests/test_capability_flags.py",
+        "tests/test_direct_external_action_gates.py",
+        "tests/test_tender_kill_switch.py",
+        "tests/test_tender_provider_pagination.py",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
+        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
+      ],
+      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, transaction-bound provider pagination checkpoints and hashed completeness evidence, persisted global/capability gates plus an isolated per-tender stop, bounded DOCX preflight, resource-limited fail-closed PDF parsing, immutable Company Digital Twin, fast prequalification, immutable latest-prequalification-bound supplier candidate sets requiring at least two eligible identities, optional exact quote-candidate binding, verified quote snapshots, exact-set checksum-bound requirement review, server-side fact derivation, a deterministic application checklist and reproducible A4 evidence through the approval card. Candidate ingestion cannot execute RFQ/order. It remains partial until the first-release DoD is met."
+    },
+    {
+      "id": 317,
+      "title": "ПЕРВЫЙ VERTICAL SLICE",
+      "priority": "P0",
+      "status": "partial",
+      "evidence": [
+        "app/integrations.py",
+        "app/company_profiles.py",
+        "app/tender_autopilot.py",
+        "app/tender_supplier_candidates.py",
+        "app/tender_supplier_quotes.py",
+        "app/tender_document_intelligence.py",
+        "app/pdf_text_worker.py",
+        "app/tender_application_manifest.py",
+        "app/capability_flags.py",
+        "app/api_v2.py",
+        "migrations/versions/0029_tender_source_pagination.py",
+        "migrations/versions/0030_capability_flags.py",
+        "migrations/versions/0031_immutable_application_manifests.py",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
+        "tests/test_app.py",
+        "tests/test_capability_flags.py",
+        "tests/test_direct_external_action_gates.py",
+        "tests/test_tender_kill_switch.py",
+        "tests/test_tender_provider_pagination.py",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
+        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
+      ],
+      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with protected resumable page checkpoints, hashed acknowledgements, explicit completeness/source-run receipts and freshness incidents, document-byte versions, bounded DOCX archive preflight, resource-limited fail-closed PDF parsing, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION, an immutable current candidate set requiring at least two eligible provenance-bound suppliers, candidate-bound quote snapshots, deterministic auction forecast, product compliance gates, exact-set checksum-bound requirement review, server-side fact derivation, hash-bound decision inputs and a persisted deterministic application checklist. The 1000-pack A4 fixture exercises two candidates and two exact-bound quotes through an owner approval card without external effects. Protected actions require persisted controls and owner approval. Network A4 acquisition, real PDF/OCR/table evidence, independent multi-agent review, remaining direct-entry coverage, extended Company Digital Twin verification, official adapters/contracts and automated supplier discovery/RFQ/failover remain open."
+    },
+    {
+      "id": 318,
+      "title": "РЕФАКТОРИТЬ ТОЛЬКО С ТЕСТАМИ",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "AGENTS.md",
+        "tests/"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 319,
+      "title": "НЕ ЛОМАЙ СУЩЕСТВУЮЩИЙ CLEANING AI OS",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        ".github/workflows/ci.yml",
+        "tests/"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 320,
+      "title": "ПОДГОТОВЬ СИСТЕМУ К CLAUDE + CODEX + CHATGPT + PERPLEXITY",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/llm.py",
+        "app/prompt_registry.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 321,
+      "title": "MODEL BENCHMARKING",
+      "priority": "P1",
+      "status": "missing",
+      "evidence": [],
+      "notes": "No procurement provider benchmark suite exists."
+    },
+    {
+      "id": 322,
+      "title": "CONSENSUS POLICY",
+      "priority": "P1",
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 323,
+      "title": "FINAL PRINCIPLE",
+      "priority": "P1",
+      "status": "verified",
+      "evidence": [
+        "docs/tender-autopilot/ARCHITECTURE.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": 324,
+      "title": "ТВОЯ ФИНАЛЬНАЯ ЦЕЛЬ",
+      "priority": "P2",
+      "status": "missing",
+      "evidence": [],
+      "notes": "Proprietary intelligence from completed procurement outcomes has not been established."
+    },
+    {
+      "id": 325,
+      "title": "NORTH STAR",
+      "priority": "P2",
+      "status": "missing",
+      "evidence": [],
+      "notes": "The end-state owner workflow and realized-profit dashboard are not complete."
+    }
+  ]
+}
