@@ -53,9 +53,13 @@
       "id": 5,
       "title": "НИКАКИХ AI-ГАЛЛЮЦИНАЦИЙ В ЗАЯВКАХ",
       "priority": "P0",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/tender_application_manifest.py",
+        "app/api_v2.py:create_tender_application_manifest",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist"
+      ],
+      "notes": "The generated application evidence manifest is deterministic and local: it contains no free-form AI fields, is derived only from an integrity-valid current decision snapshot, binds provenance/checklist hashes and fails closed on stale or tampered inputs. It does not yet cover portal-specific templates, independent review or every future application field, so the requirement is PARTIAL."
     },
     {
       "id": 6,
@@ -381,10 +385,13 @@
       "status": "partial",
       "evidence": [
         "app/tender_autopilot.py:_application_checklist",
+        "app/tender_application_manifest.py",
         "app/api_v2.py:create_tender_decision_snapshot",
+        "app/api_v2.py:create_tender_application_manifest",
+        "migrations/versions/0031_immutable_application_manifests.py",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist"
       ],
-      "notes": "A deterministic evidence-derived pre-application checklist is persisted inside each versioned decision snapshot and exposed through the existing tender API and approval card. It never authorizes submission and keeps participation/submission approvals explicit. Document generation, template assembly, signing packages and portal-specific application builders remain missing, so the requirement is PARTIAL."
+      "notes": "A deterministic evidence-derived pre-application checklist is persisted inside each versioned decision snapshot. A manager can generate and download an immutable checksum-addressed JSON evidence manifest only from the current integrity-valid ready snapshot; exact replay is idempotent and stale, tampered or substituted inputs fail closed. It never authorizes submission and keeps participation/submission approvals explicit. Portal-specific templates/files, signing packages, four-eyes review and readiness graph remain missing, so the requirement is PARTIAL."
     },
     {
       "id": 37,
@@ -544,10 +551,11 @@
       "status": "partial",
       "evidence": [
         "app/tender_autopilot.py:_application_checklist",
+        "app/tender_application_manifest.py",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
         "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only"
       ],
-      "notes": "A reproducible structured fixture covers a school tender for exactly 1000 packs of A4 at NMCK 1,000,000 RUB through evidence-bound requirements, all hard prequalification checks, two immutable supplier quotes, exact product compliance, deterministic economics, auction forecast, stop-price invariant, risk, application checklist and owner approval card. A second A4 document-path case reads stored TXT bytes, extracts requirements, performs exact-set checksum-bound manager review and cites only its review hash; the server verifies provenance and derives accepted evidence facts into the decision snapshot. Network download, PDF/OCR/table extraction, independent multi-agent review, mock submission/auction and the post-win/payment/learning tail remain open, so the scenario is PARTIAL."
+      "notes": "A reproducible structured fixture covers a school tender for exactly 1000 packs of A4 at NMCK 1,000,000 RUB through evidence-bound requirements, all hard prequalification checks, two immutable supplier quotes, exact product compliance, deterministic economics, auction forecast, stop-price invariant, risk, application checklist, owner approval card and a downloadable checksum-addressed JSON evidence manifest. The test proves RBAC, replay idempotency and stale/tampered/file-substitution rejection. A second A4 document-path case reads stored TXT bytes, extracts requirements, performs exact-set checksum-bound manager review and cites only its review hash; the server verifies provenance and derives accepted evidence facts into the decision snapshot. Network download, PDF/OCR/table extraction, independent multi-agent review, mock submission/auction and the post-win/payment/learning tail remain open, so the scenario is PARTIAL."
     },
     {
       "id": 56,
@@ -2783,10 +2791,12 @@
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/pdf_text_worker.py",
+        "app/tender_application_manifest.py",
         "app/capability_flags.py",
         "app/api_v2.py",
         "migrations/versions/0029_tender_source_pagination.py",
         "migrations/versions/0030_capability_flags.py",
+        "migrations/versions/0031_immutable_application_manifests.py",
         "docs/tender-autopilot/README.md",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
@@ -2950,10 +2960,12 @@
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/pdf_text_worker.py",
+        "app/tender_application_manifest.py",
         "app/capability_flags.py",
         "app/api_v2.py",
         "migrations/versions/0029_tender_source_pagination.py",
         "migrations/versions/0030_capability_flags.py",
+        "migrations/versions/0031_immutable_application_manifests.py",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
         "tests/test_direct_external_action_gates.py",
@@ -2994,10 +3006,12 @@
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/pdf_text_worker.py",
+        "app/tender_application_manifest.py",
         "app/capability_flags.py",
         "app/api_v2.py",
         "migrations/versions/0029_tender_source_pagination.py",
         "migrations/versions/0030_capability_flags.py",
+        "migrations/versions/0031_immutable_application_manifests.py",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
         "tests/test_direct_external_action_gates.py",
@@ -3021,10 +3035,12 @@
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/pdf_text_worker.py",
+        "app/tender_application_manifest.py",
         "app/capability_flags.py",
         "app/api_v2.py",
         "migrations/versions/0029_tender_source_pagination.py",
         "migrations/versions/0030_capability_flags.py",
+        "migrations/versions/0031_immutable_application_manifests.py",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
         "tests/test_direct_external_action_gates.py",

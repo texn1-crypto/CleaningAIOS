@@ -19,7 +19,7 @@
 | Immutable decision history | EXISTS | PostgreSQL trigger запрещает UPDATE/DELETE snapshot |
 | Owner participation approval | EXISTS | Существующий Approval Engine, task bound to snapshot hash |
 | Submission approval | EXISTS | Policy gate существует; реального platform executor нет |
-| Application builder | PARTIAL | Versioned decision snapshot now persists a deterministic seven-gate application checklist, exact blocking/verification item codes, completeness percent and checklist hash in the approval card. It never grants participation/submission. Templates, generated package, four-eyes review and portal readiness graph remain missing |
+| Application builder | PARTIAL | A manager can generate and download a deterministic checksum-addressed JSON evidence manifest only from the current integrity-valid 100%-complete decision snapshot. The manifest is stored as a generated `TenderDocument`, carries source/review/quote/economics/checklist hashes, is replay-idempotent, and is immutable in PostgreSQL. It explicitly denies automatic submission and keeps both owner participation and separate submission approvals pending. Portal templates/files, four-eyes review, signing package and readiness graph remain missing |
 | Official submission adapters | MISSING | Feature должен оставаться OFF |
 | Signing/МЧД/ЭЦП | MISSING | Требуется local privileged bridge и отдельный threat model |
 | Auction simulator/autobid | PARTIAL | Decision snapshot моделирует owner-provided expected discount и fail-closed invariant `expected_bid >= stop_price`; event/replay corpus и autobid controller отсутствуют |

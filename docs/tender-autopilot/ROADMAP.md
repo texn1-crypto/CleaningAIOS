@@ -30,8 +30,11 @@
    supplier discovery, RFQ idempotency, external quote parsing, backup/reservation.
 5. **Application readiness — in progress.** A versioned seven-gate checklist,
    exact missing/blocking codes, completeness percent and checklist hash are
-   persisted in the decision snapshot. Далее: templates, generated package,
-   four-eyes review and explicit missing-item remediation.
+   persisted in the decision snapshot. For the current integrity-valid ready
+   snapshot, a manager can generate and download an immutable checksum-addressed
+   JSON evidence manifest; exact replay returns the same artifact and stale or
+   tampered inputs fail closed. Далее: portal templates/files, four-eyes review,
+   signing package and explicit missing-item remediation.
 6. **Assisted submission.** The persisted protected-action capability registry now
    gates Task/Orchestrator execution before approval plus the direct SMTP outreach
    and social-publication worker boundaries. Record-bound participation/submission

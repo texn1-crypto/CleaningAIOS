@@ -224,6 +224,16 @@ needs-verification codes, процент полноты и собственны�
 approval card. Отдельный пункт участия всегда остаётся `pending_owner_action` до
 решения владельца; checklist никогда не разрешает автоматическую подачу.
 
+`POST /api/tenders/{record_id}/decision-snapshots/{snapshot_id}/application-manifest`
+создаёт только для текущего integrity-valid snapshot детерминированный JSON-черновик
+пакета доказательств. Он сохраняется как checksum-addressed generated document,
+повтор генерирует тот же artifact, а PostgreSQL запрещает изменение или удаление
+его записи. `GET /api/tender-application-manifests/{document_id}/download` перед
+выдачей заново проверяет storage boundary, SHA-256 и привязки snapshot/checklist.
+Оба endpoint требуют роли manager. В manifest явно записано, что automatic
+submission запрещён, owner participation approval и отдельный submission approval
+не получены; отправки на ЭТП, подписи и оплаты этот контур не выполняет.
+
 Автоматический regression scenario «1000 пачек A4 для школы, НМЦК 1 000 000 ₽»
 проводит structured fixture через обязательные требования, полный hard-check
 prequalification, две immutable supplier quotes, product compliance, Decimal

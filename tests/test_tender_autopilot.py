@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from copy import deepcopy
+from pathlib import Path
 
 from sqlalchemy import func, select
 
@@ -943,7 +945,10 @@ def test_tender_decision_snapshot_is_decimal_evidence_bound_and_idempotent(clien
     assert task["payload"]["assessment_input_hash"] == body["input_hash"]
 
 
-def test_a4_1000_pack_reference_scenario_reaches_application_checklist(client):
+def test_a4_1000_pack_reference_scenario_reaches_application_checklist(
+    client, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
     tender = client.post(
         "/api/records",
         headers=MANAGER,
@@ -1180,6 +1185,115 @@ def test_a4_1000_pack_reference_scenario_reaches_application_checklist(client):
         headers={"X-Role": "viewer"},
     ).json()
     assert persisted[0]["result"]["application_checklist"] == checklist
+
+    manifest_url = (
+        f"/api/tenders/{tender['id']}/decision-snapshots/"
+        f"{snapshot['id']}/application-manifest"
+    )
+    forbidden = client.post(manifest_url, headers={"X-Role": "operator"})
+    assert forbidden.status_code == 403
+
+    generated = client.post(manifest_url, headers=MANAGER)
+    assert generated.status_code == 201
+    manifest = generated.json()
+    assert manifest["created"] is True
+    assert manifest["manifest_version"] == (
+        "tender-application-evidence-manifest-v1"
+    )
+    assert manifest["assessment_snapshot_id"] == snapshot["id"]
+    assert manifest["assessment_input_hash"] == snapshot["input_hash"]
+    assert manifest["application_checklist_hash"] == checklist["checklist_hash"]
+    assert manifest["automatic_submission_allowed"] is False
+    assert manifest["owner_participation_approval_required"] is True
+    assert manifest["separate_submission_approval_required"] is True
+
+    download_url = (
+        "/api/tender-application-manifests/"
+        f"{manifest['document_id']}/download"
+    )
+    denied_download = client.get(download_url, headers={"X-Role": "viewer"})
+    assert denied_download.status_code == 403
+    downloaded = client.get(download_url, headers=MANAGER)
+    assert downloaded.status_code == 200
+    assert hashlib.sha256(downloaded.content).hexdigest() == manifest["manifest_hash"]
+    package = json.loads(downloaded.content)
+    assert package["package_status"] == "requires_owner_participation_approval"
+    assert package["generation"] == {
+        "external_ai_used": False,
+        "free_form_ai_fields_allowed": False,
+        "mode": "deterministic_local",
+    }
+    assert package["tender"]["external_id"] == "golden-a4-1000-packs"
+    assert package["requirements"]["provenance"] == "manager_structured_evidence"
+    assert package["authorization"] == {
+        "automatic_submission_allowed": False,
+        "owner_participation_approval_required": True,
+        "participation_approved": False,
+        "payment_approved": False,
+        "separate_submission_approval_required": True,
+        "signature_approved": False,
+        "submission_approved": False,
+    }
+
+    replay_manifest = client.post(manifest_url, headers=MANAGER)
+    assert replay_manifest.status_code == 201
+    assert replay_manifest.json() == {**manifest, "created": False}
+
+    with SessionLocal() as db:
+        stored_manifest = db.get(TenderDocument, manifest["document_id"])
+        assert stored_manifest is not None
+        assert stored_manifest.status == "generated"
+        assert stored_manifest.analysis["manifest_hash"] == manifest["manifest_hash"]
+        assert db.scalar(
+            select(func.count())
+            .select_from(DomainEvent)
+            .where(
+                DomainEvent.event_type
+                == "tender.application_manifest_generated",
+                DomainEvent.aggregate_id == str(tender["id"]),
+            )
+        ) == 1
+
+    revised_payload = deepcopy(decision_payload)
+    revised_payload["maximum_risk_score"] = 40
+    revised = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=revised_payload,
+    )
+    assert revised.status_code == 201
+    assert revised.json()["status"] == "ready_for_owner_review"
+
+    stale = client.post(manifest_url, headers=MANAGER)
+    assert stale.status_code == 422
+    assert stale.json()["detail"] == "Tender assessment snapshot is stale"
+
+    revised_manifest_url = (
+        f"/api/tenders/{tender['id']}/decision-snapshots/"
+        f"{revised.json()['id']}/application-manifest"
+    )
+    with SessionLocal() as db:
+        revised_snapshot = db.get(TenderAssessmentSnapshot, revised.json()["id"])
+        assert revised_snapshot is not None
+        tampered_input = deepcopy(revised_snapshot.input_snapshot)
+        tampered_input["forged_application_field"] = "unsupported"
+        revised_snapshot.input_snapshot = tampered_input
+        db.commit()
+    tampered = client.post(revised_manifest_url, headers=MANAGER)
+    assert tampered.status_code == 422
+    assert tampered.json()["detail"] == (
+        "Tender assessment snapshot integrity check failed"
+    )
+
+    with SessionLocal() as db:
+        stored_manifest = db.get(TenderDocument, manifest["document_id"])
+        assert stored_manifest is not None
+        Path(stored_manifest.storage_path).write_text("{}", encoding="utf-8")
+    corrupted = client.get(download_url, headers=MANAGER)
+    assert corrupted.status_code == 422
+    assert corrupted.json()["detail"] == (
+        "Tender application manifest checksum mismatch"
+    )
 
 
 def test_unknown_mandatory_requirement_fails_closed(client):

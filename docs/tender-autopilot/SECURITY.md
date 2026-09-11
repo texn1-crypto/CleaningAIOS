@@ -3,7 +3,7 @@
 | Threat | Boundary / control | Remaining work |
 |---|---|---|
 | Prompt injection in tender docs | Documents are untrusted evidence; no tool instructions | Add adversarial golden corpus |
-| Document substitution | Exact document ID + SHA-256 binding; snapshot hash | Signed object manifest |
+| Document substitution | Exact document ID + SHA-256 binding and snapshot hash; generated application evidence manifest is checksum-addressed, storage-boundary checked, snapshot/checklist-bound and immutable in PostgreSQL | Object-store signing/retention and portal-specific package signature |
 | Approval replay | Versioned, expiring Approval Engine; snapshot hash in task | Per-action short-lived execution token |
 | Stop-price bypass | Backend deterministic calculation, no LLM arithmetic | Enforce again inside future bid adapter |
 | SSRF | Safe URL validation and redirect recheck | Provider-specific allowlists |

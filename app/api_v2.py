@@ -81,6 +81,12 @@ from .tender_supplier_quotes import (
     persist_supplier_quote_snapshot,
     supplier_quote_snapshot_view,
 )
+from .tender_application_manifest import (
+    TenderApplicationManifestError,
+    application_manifest_view,
+    persist_application_manifest,
+    verify_application_manifest_artifact,
+)
 from .tender_document_intelligence import (
     TenderDocumentExtractionError,
     TenderDocumentReviewError,
@@ -1513,6 +1519,90 @@ def create_tender_decision_snapshot(
         }
     )
     return response
+
+
+@router.post(
+    "/tenders/{record_id}/decision-snapshots/{snapshot_id}/application-manifest",
+    status_code=201,
+)
+def create_tender_application_manifest(
+    record_id: int,
+    snapshot_id: int,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    tender = db.get(BusinessRecord, record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(404, "Tender not found")
+    snapshot = db.get(TenderAssessmentSnapshot, snapshot_id)
+    if snapshot is None or snapshot.record_id != record_id:
+        raise HTTPException(404, "Tender assessment snapshot not found")
+    try:
+        document, manifest, created = persist_application_manifest(
+            db,
+            tender,
+            snapshot,
+            actor=actor.subject,
+        )
+    except TenderApplicationManifestError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event_bus.publish(
+        db,
+        "tender.application_manifest_generated",
+        "tender",
+        str(record_id),
+        {
+            "document_id": document.id,
+            "assessment_snapshot_id": snapshot.id,
+            "assessment_input_hash": snapshot.input_hash,
+            "manifest_hash": document.checksum,
+            "automatic_submission_allowed": False,
+            "created": created,
+        },
+        idempotency_key=(
+            f"tender:{record_id}:application-manifest:{snapshot.input_hash}"
+        ),
+        actor=actor.subject,
+    )
+    audit(
+        db,
+        actor.subject,
+        "tender.application_manifest_generated",
+        "tender_document",
+        str(document.id),
+        {
+            "tender_id": record_id,
+            "assessment_snapshot_id": snapshot.id,
+            "assessment_input_hash": snapshot.input_hash,
+            "manifest_hash": document.checksum,
+            "created": created,
+        },
+    )
+    db.commit()
+    db.refresh(document)
+    return application_manifest_view(document, manifest, created=created)
+
+
+@router.get("/tender-application-manifests/{document_id}/download")
+def download_tender_application_manifest(
+    document_id: int,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    document = db.get(TenderDocument, document_id)
+    if document is None:
+        raise HTTPException(404, "Tender application manifest not found")
+    try:
+        path, _manifest = verify_application_manifest_artifact(document)
+    except TenderApplicationManifestError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="application/json",
+        filename=document.name,
+    )
 
 
 @router.post("/tender-sources/collect")

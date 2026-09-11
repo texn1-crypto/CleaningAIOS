@@ -33,6 +33,11 @@ prequalification snapshot реализует `needs_verification`, `ineligible` 
 Только последнее состояние может породить task `tender_participation`. Исполнение
 этой task готовит пакет; оно не переводит закупку в `submitted`.
 
+Для текущего `ready_for_owner_review` snapshot manager может сохранить
+checksum-addressed JSON evidence manifest. Это неизменяемый черновик, а не переход
+состояния: все approval-флаги остаются false, `automatic_submission_allowed=false`,
+и tender не становится `PARTICIPATION_APPROVED`, `PACKAGE_READY` или `SUBMITTED`.
+
 ## Guards
 
 - Deadline открыт и привязан к source snapshot.
