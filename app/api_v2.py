@@ -1449,6 +1449,9 @@ def create_tender_decision_snapshot(
                 "assessment_snapshot_id": snapshot.id,
                 "assessment_input_hash": snapshot.input_hash,
                 "economics_input_hash": result["economics_input_hash"],
+                "application_checklist_hash": result[
+                    "application_checklist"
+                ]["checklist_hash"],
             }
 
     event_bus.publish(
@@ -1465,6 +1468,9 @@ def create_tender_decision_snapshot(
                 payload.prequalification_snapshot_hash
             ),
             "supplier_quote_snapshot_hash": payload.supplier_quote_snapshot_hash,
+            "application_checklist_hash": result[
+                "application_checklist"
+            ]["checklist_hash"],
             "participation_review_task_id": (
                 participation_task.id if participation_task else None
             ),
@@ -1483,6 +1489,9 @@ def create_tender_decision_snapshot(
             "status": snapshot.status,
             "input_hash": snapshot.input_hash,
             "supplier_quote_snapshot_hash": payload.supplier_quote_snapshot_hash,
+            "application_checklist_hash": result[
+                "application_checklist"
+            ]["checklist_hash"],
             "created": created,
         },
     )

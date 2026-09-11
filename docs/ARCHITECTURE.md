@@ -15,8 +15,10 @@
 
 Tender Autopilot extends these same layers. Its current production foundation is an
 append-only, evidence-bound decision snapshot with Decimal economics and a guarded
-participation approval card. Target architecture, state machine, domain model,
-security boundaries and the honest L6 gap analysis live in
+participation approval card. The snapshot now carries a versioned, deterministic
+application checklist with exact missing/blocking gates and a hash bound into that
+card; it remains advisory and cannot authorize submission. Target architecture,
+state machine, domain model, security boundaries and the honest L6 gap analysis live in
 [`docs/tender-autopilot/`](tender-autopilot/README.md).
 
 Request Analyst evaluates each owner Telegram message before normal execution. A

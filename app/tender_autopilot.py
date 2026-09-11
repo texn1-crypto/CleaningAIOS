@@ -30,7 +30,8 @@ from .tender_supplier_quotes import (
 )
 
 
-RULES_VERSION = "tender-decision-v3"
+RULES_VERSION = "tender-decision-v4"
+APPLICATION_CHECKLIST_VERSION = "tender-application-checklist-v1"
 MONEY_QUANTUM = Decimal("0.01")
 PERCENT_QUANTUM = Decimal("0.01")
 
@@ -254,6 +255,274 @@ def _digest(value: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _application_checklist(
+    *,
+    assessment_input_hash: str,
+    assessment_status: str,
+    source: dict[str, Any],
+    payload: TenderDecisionSnapshotCreate,
+    product_match: str,
+    economics_valid: bool,
+    economic_hard_stops: list[str],
+    stop_price: Decimal | None,
+    risk_score: int,
+    verification_gaps: list[str],
+    hard_stops: list[str],
+) -> dict[str, Any]:
+    """Build a deterministic, evidence-derived pre-application checklist.
+
+    This is deliberately not a submission authorization. It summarizes only
+    persisted assessment facts and keeps owner participation approval and the
+    separate submission approval explicit.
+    """
+
+    gap_set = set(verification_gaps)
+    hard_stop_set = set(hard_stops)
+
+    def item(
+        code: str,
+        status: str,
+        *,
+        evidence: dict[str, Any],
+        reason_codes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "code": code,
+            "status": status,
+            "reason_codes": sorted(set(reason_codes or [])),
+            "evidence": evidence,
+        }
+
+    source_reasons = sorted(
+        reason for reason in gap_set if reason.startswith("source.")
+    )
+    source_complete = bool(
+        source.get("external_id")
+        and source.get("deadline_at")
+        and str(source.get("source_url") or "").startswith("https://")
+    )
+
+    requirement_reasons = sorted(
+        reason
+        for reason in gap_set | hard_stop_set
+        if reason.startswith("requirement:")
+    )
+    mandatory_requirements = [
+        fact for fact in payload.requirements if fact.mandatory
+    ]
+    requirements_complete = bool(mandatory_requirements) and all(
+        fact.status == "satisfied" and bool(fact.evidence)
+        for fact in mandatory_requirements
+    )
+
+    qualification_reasons = sorted(
+        reason
+        for reason in gap_set | hard_stop_set
+        if reason.startswith("qualification:")
+    )
+    qualification_complete = bool(payload.qualification_checks) and all(
+        fact.status == "satisfied" and bool(fact.evidence)
+        for fact in payload.qualification_checks
+    )
+
+    supplier_reasons = sorted(
+        reason
+        for reason in gap_set | hard_stop_set
+        if reason.startswith("supplier_")
+    )
+    supplier_complete = (
+        payload.supplier_quote.stock_status == "confirmed"
+        and bool(payload.supplier_quote.evidence)
+        and not supplier_reasons
+    )
+
+    product_reasons = sorted(
+        reason
+        for reason in gap_set | hard_stop_set
+        if reason.startswith("product_compliance:")
+        or reason.startswith("product_comparison_review:")
+    )
+    product_complete = product_match in {"verified", "not_applicable"}
+
+    economics_reasons = sorted(set(economic_hard_stops))
+    economics_complete = (
+        economics_valid and stop_price is not None and not economics_reasons
+    )
+    risk_complete = risk_score <= payload.maximum_risk_score
+
+    def evidence_status(
+        *,
+        complete: bool,
+        reasons: list[str],
+    ) -> str:
+        if any(reason in hard_stop_set for reason in reasons):
+            return "blocked"
+        if complete and not reasons:
+            return "complete"
+        return "needs_verification"
+
+    data_items = [
+        item(
+            "tender.source",
+            evidence_status(complete=source_complete, reasons=source_reasons),
+            evidence={
+                "record_id": source["record_id"],
+                "external_id_present": bool(source.get("external_id")),
+                "https_source_present": str(
+                    source.get("source_url") or ""
+                ).startswith("https://"),
+                "deadline_present": bool(source.get("deadline_at")),
+            },
+            reason_codes=source_reasons,
+        ),
+        item(
+            "tender.mandatory_requirements",
+            evidence_status(
+                complete=requirements_complete,
+                reasons=requirement_reasons,
+            ),
+            evidence={
+                "total": len(payload.requirements),
+                "mandatory": len(mandatory_requirements),
+                "evidence_document_ids": sorted(
+                    {
+                        ref.document_id
+                        for fact in mandatory_requirements
+                        for ref in fact.evidence
+                    }
+                ),
+            },
+            reason_codes=requirement_reasons,
+        ),
+        item(
+            "company.qualification",
+            evidence_status(
+                complete=qualification_complete,
+                reasons=qualification_reasons,
+            ),
+            evidence={
+                "total": len(payload.qualification_checks),
+                "prequalification_snapshot_hash": (
+                    payload.prequalification_snapshot_hash or ""
+                ),
+                "evidence_document_ids": sorted(
+                    {
+                        ref.document_id
+                        for fact in payload.qualification_checks
+                        for ref in fact.evidence
+                    }
+                ),
+            },
+            reason_codes=qualification_reasons,
+        ),
+        item(
+            "supplier.quote",
+            evidence_status(
+                complete=supplier_complete,
+                reasons=supplier_reasons,
+            ),
+            evidence={
+                "quote_reference": payload.supplier_quote.quote_reference,
+                "stock_status": payload.supplier_quote.stock_status,
+                "valid_until": _iso(payload.supplier_quote.valid_until),
+                "supplier_quote_snapshot_hash": (
+                    payload.supplier_quote_snapshot_hash or ""
+                ),
+                "evidence_document_ids": sorted(
+                    {ref.document_id for ref in payload.supplier_quote.evidence}
+                ),
+            },
+            reason_codes=supplier_reasons,
+        ),
+        item(
+            "product.compliance",
+            evidence_status(
+                complete=product_complete,
+                reasons=product_reasons,
+            ),
+            evidence={
+                "required": payload.product_compliance_required,
+                "product_match": product_match,
+                "parameter_count": len(payload.product_compliance),
+                "comparison_review_hash": (
+                    payload.product_comparison_review_hash or ""
+                ),
+                "evidence_document_ids": sorted(
+                    {
+                        ref.document_id
+                        for fact in payload.product_compliance
+                        for ref in fact.evidence
+                    }
+                ),
+            },
+            reason_codes=product_reasons,
+        ),
+        item(
+            "economics.stop_price",
+            (
+                "blocked"
+                if economics_reasons
+                else "complete"
+                if economics_complete
+                else "needs_verification"
+            ),
+            evidence={
+                "economics_valid": economics_valid,
+                "stop_price": _money(stop_price) if stop_price is not None else None,
+            },
+            reason_codes=economics_reasons,
+        ),
+        item(
+            "risk.policy",
+            "complete" if risk_complete else "blocked",
+            evidence={
+                "score": risk_score,
+                "maximum_allowed": payload.maximum_risk_score,
+            },
+            reason_codes=([] if risk_complete else ["risk_score_above_maximum"]),
+        ),
+    ]
+    complete_count = sum(entry["status"] == "complete" for entry in data_items)
+    data_total = len(data_items)
+    ready_for_owner_review = (
+        assessment_status == "ready_for_owner_review"
+        and complete_count == data_total
+    )
+    owner_item = item(
+        "owner.participation_approval",
+        (
+            "pending_owner_action"
+            if ready_for_owner_review
+            else "blocked_by_assessment"
+        ),
+        evidence={
+            "action_kind": "tender_participation",
+            "assessment_input_hash": assessment_input_hash,
+            "separate_submission_approval_required": True,
+        },
+    )
+    checklist_core = {
+        "version": APPLICATION_CHECKLIST_VERSION,
+        "assessment_input_hash": assessment_input_hash,
+        "assessment_status": assessment_status,
+        "data_complete_count": complete_count,
+        "data_total": data_total,
+        "data_completeness_percent": complete_count * 100 // data_total,
+        "ready_for_owner_review": ready_for_owner_review,
+        "blocking_item_codes": [
+            entry["code"] for entry in data_items if entry["status"] == "blocked"
+        ],
+        "verification_item_codes": [
+            entry["code"]
+            for entry in data_items
+            if entry["status"] == "needs_verification"
+        ],
+        "items": [*data_items, owner_item],
+        "automatic_submission_allowed": False,
+    }
+    return {**checklist_core, "checklist_hash": _digest(checklist_core)}
+
+
 def build_tender_assessment(
     tender: BusinessRecord,
     documents: list[TenderDocument],
@@ -325,6 +594,8 @@ def build_tender_assessment(
             risk_factors.append(f"optional_requirement:{fact.code}:unknown")
         if fact.status == "satisfied" and not fact.evidence:
             verification_gaps.append(f"requirement:{fact.code}:evidence_missing")
+    if not any(fact.mandatory for fact in payload.requirements):
+        verification_gaps.append("requirement:mandatory_set:missing")
 
     for fact in payload.qualification_checks:
         if fact.status == "not_satisfied":
@@ -496,7 +767,6 @@ def build_tender_assessment(
     else:
         status, recommendation = "ready_for_owner_review", "consider_participation"
 
-    participation_review_available = status == "ready_for_owner_review"
     economics_input = canonical["economics"]
     referenced_document_ids = sorted(
         {
@@ -504,7 +774,28 @@ def build_tender_assessment(
             for fact in [*payload.requirements, *payload.qualification_checks]
             for ref in fact.evidence
         }
+        | {
+            ref.document_id
+            for fact in payload.product_compliance
+            for ref in fact.evidence
+        }
         | {ref.document_id for ref in payload.supplier_quote.evidence}
+    )
+    application_checklist = _application_checklist(
+        assessment_input_hash=input_hash,
+        assessment_status=status,
+        source=source,
+        payload=payload,
+        product_match=product_match,
+        economics_valid=economics_valid,
+        economic_hard_stops=economic_hard_stops,
+        stop_price=stop_price,
+        risk_score=risk_score,
+        verification_gaps=verification_gaps,
+        hard_stops=hard_stops,
+    )
+    participation_review_available = bool(
+        application_checklist["ready_for_owner_review"]
     )
     result = {
         "status": status,
@@ -642,6 +933,7 @@ def build_tender_assessment(
             "evidence_document_ids": referenced_document_ids,
             "rules_version": RULES_VERSION,
         },
+        "application_checklist": application_checklist,
         "approval_card": {
             "title": tender.title,
             "expected_net_profit": base["net_profit"],
@@ -652,6 +944,12 @@ def build_tender_assessment(
             "supplier": quote.supplier_name,
             "status": status,
             "input_hash": input_hash,
+            "application_checklist_hash": application_checklist[
+                "checklist_hash"
+            ],
+            "data_completeness_percent": application_checklist[
+                "data_completeness_percent"
+            ],
         },
         "participation_review_available": participation_review_available,
         "owner_participation_approval_required": True,

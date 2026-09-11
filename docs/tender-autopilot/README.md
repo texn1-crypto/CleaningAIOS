@@ -192,6 +192,21 @@ extractor не объявляет товары соответствующими 
 `product_comparison_review:needs_verification`. Это по-прежнему лишь паспорт
 решения: участие и подача требуют отдельных owner approvals.
 
+Каждый новый decision snapshot версии `tender-decision-v4` также сохраняет
+детерминированный `application_checklist`. Семь data gates показывают готовность
+источника, обязательных требований, квалификации, котировки, соответствия товара,
+экономики/stop price и risk policy. Checklist содержит точные blocking и
+needs-verification codes, процент полноты и собственный hash, который включён в
+approval card. Отдельный пункт участия всегда остаётся `pending_owner_action` до
+решения владельца; checklist никогда не разрешает автоматическую подачу.
+
+Автоматический regression scenario «1000 пачек A4 для школы, НМЦК 1 000 000 ₽»
+проводит structured fixture через обязательные требования, полный hard-check
+prequalification, две immutable supplier quotes, product compliance, Decimal
+economics, auction forecast, stop-price invariant, risk, checklist и approval card.
+Это пока PARTIAL evidence: реальная загрузка/извлечение документов, multi-agent
+review, submission/auction и post-win tail ещё не покрыты.
+
 ## Честная граница готовности
 
 Все защищённые action kinds имеют явные PostgreSQL `CapabilityFlag`. Manager-only

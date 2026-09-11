@@ -4,7 +4,9 @@
 только после тестов, observability и runbook.
 
 1. **Decision foundation — in progress.** Immutable fast-prequalification and
-   decision snapshots, Decimal economics, evidence binding, approval card. Далее:
+   decision snapshots, Decimal economics, evidence binding, a deterministic
+   application checklist and approval card. The 1000-pack A4 structured fixture
+   now reaches this boundary with two immutable supplier quotes. Далее:
    extend Company Digital Twin with registry verification, role/signature/insurance
    and contract-history evidence, move legacy evaluator to the same engine and
    introduce conflict records.
@@ -24,7 +26,9 @@
    Digital Twin, manual/imported quote registry, freshness and exact prequalification/
    decision binding are connected. Далее: automated company registry verification,
    supplier discovery, RFQ idempotency, external quote parsing, backup/reservation.
-5. **Application readiness.** Requirement graph, templates, package hash,
+5. **Application readiness — in progress.** A versioned seven-gate checklist,
+   exact missing/blocking codes, completeness percent and checklist hash are
+   persisted in the decision snapshot. Далее: templates, generated package,
    four-eyes review and explicit missing-item remediation.
 6. **Assisted submission.** The persisted protected-action capability registry now
    gates Task/Orchestrator execution before approval plus the direct SMTP outreach

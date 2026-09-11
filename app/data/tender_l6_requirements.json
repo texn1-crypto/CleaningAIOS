@@ -376,9 +376,13 @@
       "id": 36,
       "title": "APPLICATION BUILDER",
       "priority": "P1",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py:_application_checklist",
+        "app/api_v2.py:create_tender_decision_snapshot",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist"
+      ],
+      "notes": "A deterministic evidence-derived pre-application checklist is persisted inside each versioned decision snapshot and exposed through the existing tender API and approval card. It never authorizes submission and keeps participation/submission approvals explicit. Document generation, template assembly, signing packages and portal-specific application builders remain missing, so the requirement is PARTIAL."
     },
     {
       "id": 37,
@@ -400,9 +404,13 @@
       "id": 39,
       "title": "DATA COMPLETENESS SCORE",
       "priority": "P1",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py:_application_checklist",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
+        "tests/test_tender_autopilot.py:test_unknown_mandatory_requirement_fails_closed"
+      ],
+      "notes": "Each decision snapshot now persists a deterministic seven-gate data-completeness result with exact blocking and needs-verification item codes. UNKNOWN mandatory evidence reduces completeness and blocks owner review. Cross-pipeline/source-level completeness weighting and calibration remain missing, so the requirement is PARTIAL."
     },
     {
       "id": 40,
@@ -531,9 +539,12 @@
       "id": 55,
       "title": "REFERENCE SCENARIO — 1000 ПАЧЕК A4",
       "priority": "P0",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/tender_autopilot.py:_application_checklist",
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist"
+      ],
+      "notes": "A reproducible structured fixture now covers a school tender for exactly 1000 packs of A4 at NMCK 1,000,000 RUB through evidence-bound requirements, all hard prequalification checks, two immutable supplier quotes, exact product compliance, deterministic economics, auction forecast, stop-price invariant, risk, application checklist and owner approval card. Real document download/extraction, multi-agent review, mock submission/auction and the entire post-win/payment/learning tail remain open, so the scenario is PARTIAL."
     },
     {
       "id": 56,
@@ -2776,9 +2787,9 @@
         "tests/test_direct_external_action_gates.py",
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
-        "tests/test_tender_autopilot.py"
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist"
       ],
-      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, transaction-bound pagination checkpoints, hashed provider page acknowledgements, completeness receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION and the immutable verified supplier quote gate, economics, auction forecast, product matching, review and decision snapshot. Persisted global, per-tender and capability controls gate record-bound participation/submission before approval; direct SMTP/social workers share the applicable global/capability gate, while owner approval remains mandatory. Official provider adapters and portal contracts, automated company/supplier evidence acquisition, quote acquisition and RFQ remain incomplete."
+      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, transaction-bound pagination checkpoints, hashed provider page acknowledgements, completeness receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION and the immutable verified supplier quote gate, economics, auction forecast, product matching, review, decision snapshot and evidence-derived application checklist. A reproducible 1000-pack A4 structured fixture reaches the owner approval card using two immutable supplier quotes. Persisted global, per-tender and capability controls gate record-bound participation/submission before approval; direct SMTP/social workers share the applicable global/capability gate, while owner approval remains mandatory. Official provider adapters and portal contracts, automated company/supplier evidence acquisition, quote acquisition and RFQ remain incomplete."
     },
     {
       "id": 298,
@@ -2939,9 +2950,9 @@
         "tests/test_direct_external_action_gates.py",
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
-        "tests/test_tender_autopilot.py"
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist"
       ],
-      "notes": "Provider-scoped canonical generic feed amendments, protected transaction-bound page checkpoints, hashed acknowledgements, completeness/source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction, manager review, comparison and decision conversion are persisted. Protected Task/Orchestrator actions require the persisted global/capability controls before approval, and record-bound participation/submission also enforces an isolated per-tender stop; direct SMTP outreach and social publication workers enforce the applicable global/capability gate. The Company Digital Twin and remaining direct-entry coverage are still partial; official provider adapters and verified portal contracts, automated company/supplier evidence acquisition and RFQ, broader document controls and A4 E2E remain incomplete."
+      "notes": "Provider-scoped canonical generic feed amendments, protected transaction-bound page checkpoints, hashed acknowledgements, completeness/source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction, manager review, comparison, decision conversion and a deterministic application checklist are persisted. A reproducible 1000-pack A4 structured fixture now reaches the owner approval card with two supplier quotes and the stop-price invariant. Protected Task/Orchestrator actions require the persisted global/capability controls before approval, and record-bound participation/submission also enforces an isolated per-tender stop; direct SMTP outreach and social publication workers enforce the applicable global/capability gate. Real A4 document acquisition/extraction, multi-agent review, full post-win flow, official provider contracts, automated company/supplier evidence acquisition and RFQ remain incomplete, so the release DoD stays PARTIAL."
     },
     {
       "id": 314,
@@ -2980,9 +2991,9 @@
         "tests/test_direct_external_action_gates.py",
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
-        "tests/test_tender_autopilot.py"
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist"
       ],
-      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, transaction-bound provider pagination checkpoints and hashed completeness evidence, persisted global/capability gates plus an isolated per-tender stop before participation/submission approval, direct SMTP/social enforcement of the applicable global/capability layers, immutable Company Digital Twin, fast-prequalification, verified supplier quote snapshots and regression evidence. It remains partial until the first-release DoD is met."
+      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, transaction-bound provider pagination checkpoints and hashed completeness evidence, persisted global/capability gates plus an isolated per-tender stop before participation/submission approval, direct SMTP/social enforcement of the applicable global/capability layers, immutable Company Digital Twin, fast-prequalification, verified supplier quote snapshots, a deterministic application checklist and a reproducible A4 fixture through the approval card. It remains partial until the first-release DoD is met."
     },
     {
       "id": 317,
@@ -3004,9 +3015,9 @@
         "tests/test_direct_external_action_gates.py",
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
-        "tests/test_tender_autopilot.py"
+        "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist"
       ],
-      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with protected resumable page checkpoints, hashed acknowledgements, explicit completeness/source-run receipts and freshness incidents, document-byte versions, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact manager review, comparison and hash-bound decision inputs. Every protected Task/Orchestrator action requires persisted global/capability controls before approval; record-bound participation/submission also has an isolated per-tender stop, and direct SMTP/social workers enforce the applicable global/capability layers. Remaining direct-entry coverage, extended/automated Company Digital Twin verification, official provider adapters/contracts, automated supplier discovery/quote acquisition and RFQ remain open."
+      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with protected resumable page checkpoints, hashed acknowledgements, explicit completeness/source-run receipts and freshness incidents, document-byte versions, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact manager review, comparison, hash-bound decision inputs and a persisted deterministic application checklist. The 1000-pack A4 structured fixture exercises two supplier quotes through an owner approval card without external effects. Every protected Task/Orchestrator action requires persisted global/capability controls before approval; record-bound participation/submission also has an isolated per-tender stop. Real A4 document acquisition/extraction, multi-agent review, remaining direct-entry coverage, extended/automated Company Digital Twin verification, official provider adapters/contracts and automated supplier discovery/RFQ remain open."
     },
     {
       "id": 318,

@@ -943,6 +943,245 @@ def test_tender_decision_snapshot_is_decimal_evidence_bound_and_idempotent(clien
     assert task["payload"]["assessment_input_hash"] == body["input_hash"]
 
 
+def test_a4_1000_pack_reference_scenario_reaches_application_checklist(client):
+    tender = client.post(
+        "/api/records",
+        headers=MANAGER,
+        json={
+            "record_type": "tender",
+            "external_id": "golden-a4-1000-packs",
+            "title": "Поставка 1000 пачек бумаги A4 для школы",
+            "deadline_at": "2040-01-10T12:00:00Z",
+            "data": {
+                "source_url": "https://procurement.example.invalid/a4-1000",
+                "platform": "fixture",
+                "region": "Санкт-Петербург",
+                "quantity": 1000,
+                "unit": "pack",
+                "nmck": "1000000.00",
+            },
+        },
+    ).json()
+    documents = {}
+    for name, checksum, kind in (
+        ("a4-specification.pdf", "a" * 64, "requirements"),
+        ("a4-quote-1.pdf", "b" * 64, "supplier_quote"),
+        ("a4-quote-2.pdf", "c" * 64, "supplier_quote"),
+    ):
+        response = client.post(
+            f"/api/tenders/{tender['id']}/documents",
+            headers=MANAGER,
+            json={
+                "name": name,
+                "source_url": f"https://documents.example.invalid/{name}",
+                "checksum": checksum,
+                "analysis": {"kind": kind, "extraction_mode": "fixture"},
+            },
+        )
+        assert response.status_code == 201
+        documents[name] = response.json()["id"]
+
+    specification_id = documents["a4-specification.pdf"]
+    checks = _prequalification_checks(specification_id)
+    prequalification = client.post(
+        f"/api/tenders/{tender['id']}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": checks},
+    ).json()
+    assert prequalification["status"] == "eligible"
+
+    quote_snapshots = []
+    for sequence, document_name, total_cost, unit_price in (
+        (1, "a4-quote-1.pdf", "520000.00", "520.00"),
+        (2, "a4-quote-2.pdf", "500000.00", "500.00"),
+    ):
+        quote_payload = _supplier_quote_payload(
+            prequalification["input_hash"],
+            documents[document_name],
+        )
+        quote_payload.update(
+            {
+                "supplier_name": f"ООО Поставщик бумаги {sequence}",
+                "supplier_identifier": f"780100000{sequence}",
+                "quote_reference": f"A4-QUOTE-{sequence}",
+                "product_sku": f"A4-80-500-{sequence}",
+                "unit_price": unit_price,
+                "total_cost": total_cost,
+            }
+        )
+        quote_payload["evidence"][0]["document_checksum"] = (
+            "b" * 64 if sequence == 1 else "c" * 64
+        )
+        response = client.post(
+            f"/api/tenders/{tender['id']}/supplier-quote-snapshots",
+            headers=MANAGER,
+            json=quote_payload,
+        )
+        assert response.status_code == 201
+        assert response.json()["status"] == "verified"
+        quote_snapshots.append((quote_payload, response.json()))
+
+    selected_quote, selected_snapshot = quote_snapshots[1]
+    selected_evidence = selected_quote["evidence"]
+    decision_payload = {
+        "requirements": [
+            {
+                "code": "product.paper_format",
+                "description": "Формат бумаги A4",
+                "mandatory": True,
+                "status": "satisfied",
+                "evidence": [
+                    {
+                        "document_id": specification_id,
+                        "document_checksum": "a" * 64,
+                        "locator": "page 2, row 1",
+                        "excerpt": "Формат A4",
+                    }
+                ],
+            },
+            {
+                "code": "product.quantity",
+                "description": "Количество 1000 пачек",
+                "mandatory": True,
+                "status": "satisfied",
+                "evidence": [
+                    {
+                        "document_id": specification_id,
+                        "document_checksum": "a" * 64,
+                        "locator": "page 2, row 2",
+                        "excerpt": "1000 пачек, не коробок",
+                    }
+                ],
+            },
+        ],
+        "qualification_checks": checks,
+        "prequalification_snapshot_hash": prequalification["input_hash"],
+        "supplier_quote_snapshot_hash": selected_snapshot["input_hash"],
+        "product_compliance_required": True,
+        "product_compliance": [
+            {
+                "code": code,
+                "parameter": parameter,
+                "required_value": required,
+                "offered_value": offered,
+                "mandatory": True,
+                "match_status": "match",
+                "confidence": "1.0000",
+                "evidence": [
+                    {
+                        "document_id": specification_id,
+                        "document_checksum": "a" * 64,
+                        "locator": f"requirement:{code}",
+                        "excerpt": f"Требуется {required}",
+                    },
+                    {
+                        **selected_evidence[0],
+                        "locator": f"offer:{code}",
+                        "excerpt": f"Предложено {offered}",
+                    },
+                ],
+            }
+            for code, parameter, required, offered in (
+                ("paper.format", "Формат", "A4", "A4"),
+                ("paper.sheets", "Листов в пачке", "500", "500"),
+                ("paper.grammage", "Плотность", "80 г/м²", "80 г/м²"),
+            )
+        ],
+        "supplier_quote": {
+            key: selected_quote[key]
+            for key in (
+                "supplier_name",
+                "quote_reference",
+                "total_cost",
+                "currency",
+                "vat_included",
+                "stock_status",
+                "valid_until",
+                "evidence",
+            )
+        },
+        "contract_value": "1000000.00",
+        "contract_months": 1,
+        "payroll_cost": "0.00",
+        "logistics_cost": "30000.00",
+        "other_direct_cost": "10000.00",
+        "onboarding_cost": "0.00",
+        "application_security": "10000.00",
+        "performance_security": "50000.00",
+        "available_working_capital": "800000.00",
+        "payment_delay_days": 30,
+        "tax_percent": "6.00",
+        "contingency_percent": "5.00",
+        "minimum_margin_percent": "10.00",
+        "conservative_cost_increase_percent": "15.00",
+        "conservative_revenue_decrease_percent": "0.00",
+        "auction_expected_discount_percent": "5.00",
+        "maximum_risk_score": 35,
+    }
+    response = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=decision_payload,
+    )
+    assert response.status_code == 201
+    snapshot = response.json()
+    assert snapshot["status"] == "ready_for_owner_review"
+    assert snapshot["result"]["automatic_submission_allowed"] is False
+    assert snapshot["participation_review_task_id"] is not None
+
+    checklist = snapshot["result"]["application_checklist"]
+    assert checklist["version"] == "tender-application-checklist-v1"
+    assert checklist["assessment_input_hash"] == snapshot["input_hash"]
+    assert checklist["data_complete_count"] == checklist["data_total"] == 7
+    assert checklist["data_completeness_percent"] == 100
+    assert checklist["ready_for_owner_review"] is True
+    assert checklist["blocking_item_codes"] == []
+    assert checklist["verification_item_codes"] == []
+    assert checklist["automatic_submission_allowed"] is False
+    assert {entry["code"] for entry in checklist["items"]} == {
+        "tender.source",
+        "tender.mandatory_requirements",
+        "company.qualification",
+        "supplier.quote",
+        "product.compliance",
+        "economics.stop_price",
+        "risk.policy",
+        "owner.participation_approval",
+    }
+    owner_item = next(
+        entry
+        for entry in checklist["items"]
+        if entry["code"] == "owner.participation_approval"
+    )
+    assert owner_item["status"] == "pending_owner_action"
+    assert snapshot["result"]["approval_card"]["application_checklist_hash"] == (
+        checklist["checklist_hash"]
+    )
+    assert snapshot["result"]["approval_card"]["data_completeness_percent"] == 100
+    participation_task = next(
+        row
+        for row in client.get("/api/tasks", headers=MANAGER).json()
+        if row["id"] == snapshot["participation_review_task_id"]
+    )
+    assert participation_task["payload"]["application_checklist_hash"] == (
+        checklist["checklist_hash"]
+    )
+
+    replay = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=decision_payload,
+    ).json()
+    assert replay["created"] is False
+    assert replay["id"] == snapshot["id"]
+    assert replay["result"]["application_checklist"] == checklist
+    persisted = client.get(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers={"X-Role": "viewer"},
+    ).json()
+    assert persisted[0]["result"]["application_checklist"] == checklist
+
+
 def test_unknown_mandatory_requirement_fails_closed(client):
     tender_id, specification_id, quote_id = _create_tender_with_evidence(
         client, "unknown"
@@ -964,6 +1203,30 @@ def test_unknown_mandatory_requirement_fails_closed(client):
     assert body["result"]["participation_review_available"] is False
     assert body["participation_review_task_id"] is None
     assert body["result"]["automatic_submission_allowed"] is False
+    checklist = body["result"]["application_checklist"]
+    assert checklist["ready_for_owner_review"] is False
+    assert checklist["data_completeness_percent"] < 100
+    assert "tender.mandatory_requirements" in checklist[
+        "verification_item_codes"
+    ]
+    assert next(
+        entry
+        for entry in checklist["items"]
+        if entry["code"] == "owner.participation_approval"
+    )["status"] == "blocked_by_assessment"
+
+    no_mandatory_payload = _assessment_payload(specification_id, quote_id)
+    no_mandatory_payload["requirements"][0]["mandatory"] = False
+    no_mandatory = client.post(
+        f"/api/tenders/{tender_id}/decision-snapshots",
+        headers=MANAGER,
+        json=no_mandatory_payload,
+    ).json()
+    assert no_mandatory["status"] == "needs_verification"
+    assert "requirement:mandatory_set:missing" in no_mandatory["result"][
+        "verification_gaps"
+    ]
+    assert no_mandatory["participation_review_task_id"] is None
 
 
 def test_tender_snapshot_rejects_document_substitution(client):
