@@ -7,7 +7,7 @@
 | Approval replay | Versioned, expiring Approval Engine; snapshot hash in task | Per-action short-lived execution token |
 | Stop-price bypass | Backend deterministic calculation, no LLM arithmetic | Enforce again inside future bid adapter |
 | SSRF | Safe URL validation and redirect recheck | Provider-specific allowlists |
-| Malware/ZIP bomb/path traversal | Storage boundary and size limit exist | Sandbox, AV, archive limits and corpus |
+| Malware/ZIP bomb/path traversal | Storage boundary, byte limit and DOCX preflight enforce entry/expanded-size/compression-ratio bounds and reject traversal, duplicate, encrypted, linked or unsupported members before local parsing | Isolated parser sandbox, AV, PDF bomb controls and broader corpus |
 | Secret/PII leakage to AI | Provider scopes and redaction policy | Document-level `LOCAL_ONLY` enforcement |
 | Account/session theft | No autonomous ETP session today | Isolated worker, vault, MFA human takeover |
 | Supplier/invoice fraud | Evidence-bound quote plus immutable masked company-profile fingerprint | Automated registry verification and bank-detail change hold |

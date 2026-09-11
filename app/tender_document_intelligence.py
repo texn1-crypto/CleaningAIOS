@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import stat
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
-from zipfile import BadZipFile, ZipFile
+from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 from docx import Document
 from pypdf import PdfReader
@@ -24,6 +25,10 @@ SUPPORTED_SUFFIXES = {".docx", ".md", ".pdf", ".txt"}
 MAX_SEGMENTS = 20_000
 MAX_CANDIDATES = 500
 MAX_PRODUCT_PARAMETERS = 500
+MAX_DOCX_ENTRIES = 4_096
+MAX_DOCX_ENTRY_BYTES = 100_000_000
+MAX_DOCX_UNCOMPRESSED_BYTES = 250_000_000
+MAX_DOCX_COMPRESSION_RATIO = 200.0
 
 _REQUIREMENT_MARKERS = (
     "обязан",
@@ -119,6 +124,83 @@ def _clean_text(value: str) -> str:
     return " ".join(value.replace("\x00", " ").split()).strip(" |•-\t")
 
 
+def _validate_docx_archive(path: Path) -> None:
+    """Reject ambiguous or resource-exhausting OPC containers before parsing."""
+
+    try:
+        with ZipFile(path) as archive:
+            members = archive.infolist()
+            if len(members) > MAX_DOCX_ENTRIES:
+                raise TenderDocumentExtractionError(
+                    "Tender DOCX archive has too many entries"
+                )
+            seen_names: set[str] = set()
+            total_uncompressed = 0
+            for member in members:
+                name = member.filename
+                normalized_name = name.replace("\\", "/")
+                parts = PurePosixPath(normalized_name).parts
+                folded_name = normalized_name.casefold()
+                if (
+                    not name
+                    or "\x00" in name
+                    or name != normalized_name
+                    or PurePosixPath(normalized_name).is_absolute()
+                    or ".." in parts
+                ):
+                    raise TenderDocumentExtractionError(
+                        "Tender DOCX archive contains an unsafe member path"
+                    )
+                if folded_name in seen_names:
+                    raise TenderDocumentExtractionError(
+                        "Tender DOCX archive contains duplicate member names"
+                    )
+                seen_names.add(folded_name)
+                if member.flag_bits & 0x1:
+                    raise TenderDocumentExtractionError(
+                        "Tender DOCX archive contains encrypted members"
+                    )
+                unix_mode = member.external_attr >> 16
+                if unix_mode and stat.S_ISLNK(unix_mode):
+                    raise TenderDocumentExtractionError(
+                        "Tender DOCX archive contains symbolic links"
+                    )
+                if member.compress_type not in {ZIP_STORED, ZIP_DEFLATED}:
+                    raise TenderDocumentExtractionError(
+                        "Tender DOCX archive uses unsupported compression"
+                    )
+                if member.is_dir():
+                    continue
+                if member.file_size > MAX_DOCX_ENTRY_BYTES:
+                    raise TenderDocumentExtractionError(
+                        "Tender DOCX archive entry exceeds the expansion limit"
+                    )
+                total_uncompressed += member.file_size
+                if total_uncompressed > MAX_DOCX_UNCOMPRESSED_BYTES:
+                    raise TenderDocumentExtractionError(
+                        "Tender DOCX archive exceeds the expansion limit"
+                    )
+                if member.file_size and (
+                    member.compress_size <= 0
+                    or member.file_size / member.compress_size
+                    > MAX_DOCX_COMPRESSION_RATIO
+                ):
+                    raise TenderDocumentExtractionError(
+                        "Tender DOCX archive compression ratio exceeds the safety limit"
+                    )
+            required_parts = {"[content_types].xml", "word/document.xml"}
+            if not required_parts.issubset(seen_names):
+                raise TenderDocumentExtractionError(
+                    "Tender document MIME does not match DOCX"
+                )
+    except TenderDocumentExtractionError:
+        raise
+    except BadZipFile as exc:
+        raise TenderDocumentExtractionError(
+            "Tender document MIME does not match DOCX"
+        ) from exc
+
+
 def _segments(path: Path) -> list[tuple[str, str]]:
     suffix = path.suffix.lower()
     result: list[tuple[str, str]] = []
@@ -131,16 +213,7 @@ def _segments(path: Path) -> list[tuple[str, str]]:
                 for paragraph_number, raw in enumerate((page.extract_text() or "").splitlines(), start=1):
                     result.append((f"page {page_number}, line {paragraph_number}", raw))
         elif suffix == ".docx":
-            try:
-                with ZipFile(path) as archive:
-                    if "word/document.xml" not in archive.namelist():
-                        raise TenderDocumentExtractionError(
-                            "Tender document MIME does not match DOCX"
-                        )
-            except BadZipFile as exc:
-                raise TenderDocumentExtractionError(
-                    "Tender document MIME does not match DOCX"
-                ) from exc
+            _validate_docx_archive(path)
             source = Document(str(path))
             for paragraph_number, paragraph in enumerate(source.paragraphs, start=1):
                 result.append((f"paragraph {paragraph_number}", paragraph.text))

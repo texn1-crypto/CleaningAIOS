@@ -1665,6 +1665,118 @@ def test_tender_requirement_extraction_rejects_untrusted_storage_and_viewer(
     assert rejected.json()["detail"] == "Tender document is outside protected storage"
 
 
+def test_tender_requirement_docx_preflight_rejects_unsafe_archives(
+    client, tmp_path, monkeypatch
+):
+    import warnings
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    from docx import Document
+
+    from app import tender_document_intelligence as intelligence
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+
+    def register(path):
+        tender = client.post(
+            "/api/records",
+            headers=MANAGER,
+            json={
+                "record_type": "tender",
+                "external_id": f"docx-archive-safety-{path.stem}",
+                "title": f"Проверка безопасности DOCX: {path.stem}",
+                "data": {},
+            },
+        ).json()
+        return client.post(
+            f"/api/tenders/{tender['id']}/documents",
+            headers=MANAGER,
+            json={
+                "name": path.name,
+                "content_type": (
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                "storage_path": str(path),
+                "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "analysis": {"kind": "requirements"},
+            },
+        ).json()
+
+    valid_path = tmp_path / "valid.docx"
+    valid_document = Document()
+    valid_document.add_paragraph("Исполнитель должен выполнить уборку помещений.")
+    valid_document.save(valid_path)
+    unsafe_path = tmp_path / "unsafe-path.docx"
+    with ZipFile(unsafe_path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", "<document/>")
+        archive.writestr("../outside.xml", "unsafe")
+    duplicate_path = tmp_path / "duplicate.docx"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with ZipFile(duplicate_path, "w", ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", "<Types/>")
+            archive.writestr("word/document.xml", "<document/>")
+            archive.writestr("word/document.xml", "<changed/>")
+    bomb_path = tmp_path / "compression-bomb.docx"
+    with ZipFile(bomb_path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", "A" * 2_000_000)
+    entry_limit_path = tmp_path / "entry-limit.docx"
+    entry_limit_path.write_bytes(valid_path.read_bytes())
+
+    valid = register(valid_path)
+    unsafe = register(unsafe_path)
+    duplicate = register(duplicate_path)
+    bomb = register(bomb_path)
+    entry_limit = register(entry_limit_path)
+
+    valid_extraction = client.post(
+        f"/api/tender-documents/{valid['id']}/requirements/extract",
+        headers=MANAGER,
+    )
+    assert valid_extraction.status_code == 200
+    assert valid_extraction.json()["candidate_count"] == 1
+
+    unsafe_result = client.post(
+        f"/api/tender-documents/{unsafe['id']}/requirements/extract",
+        headers=MANAGER,
+    )
+    assert unsafe_result.status_code == 422
+    assert unsafe_result.json()["detail"] == (
+        "Tender DOCX archive contains an unsafe member path"
+    )
+
+    duplicate_result = client.post(
+        f"/api/tender-documents/{duplicate['id']}/requirements/extract",
+        headers=MANAGER,
+    )
+    assert duplicate_result.status_code == 422
+    assert duplicate_result.json()["detail"] == (
+        "Tender DOCX archive contains duplicate member names"
+    )
+
+    bomb_result = client.post(
+        f"/api/tender-documents/{bomb['id']}/requirements/extract",
+        headers=MANAGER,
+    )
+    assert bomb_result.status_code == 422
+    assert bomb_result.json()["detail"] == (
+        "Tender DOCX archive compression ratio exceeds the safety limit"
+    )
+
+    monkeypatch.setattr(intelligence, "MAX_DOCX_ENTRIES", 1)
+    entry_limit_result = client.post(
+        f"/api/tender-documents/{entry_limit['id']}/requirements/extract",
+        headers=MANAGER,
+    )
+    assert entry_limit_result.status_code == 422
+    assert entry_limit_result.json()["detail"] == (
+        "Tender DOCX archive has too many entries"
+    )
+
+
 def test_supplier_product_specification_extraction_is_fail_closed_and_idempotent(
     client, tmp_path, monkeypatch
 ):
