@@ -151,6 +151,15 @@ checksum документа, locator и excerpt, сохраняется в `Tend
 получает tools и не может автоматически разрешить участие или подачу. Повтор
 для того же checksum и версии extractor идемпотентен.
 
+`POST /api/tender-documents/{document_id}/requirements/review` принимает
+решение менеджера по полному набору извлечённых требований. Review связан с
+checksum документа, версией extractor, хешем полного набора кандидатов и
+`candidate_hash` каждой строки; stale, неполный и дублирующий набор отклоняется.
+Принятые факты сохраняют исходные evidence, отклонённым требуется причина, а
+каждая новая версия остаётся в append-only history внутри
+`TenderDocument.analysis`. `review_hash` фиксируется в audit/outbox, точный
+повтор идемпотентен. Проверка не разрешает eligibility, участие или подачу.
+
 `POST /api/tender-documents/{document_id}/product-specification/extract`
 аналогично выделяет пары «параметр — значение» из документа требований или
 спецификации поставщика. Роль документа берётся только из явной классификации,
@@ -204,8 +213,11 @@ approval card. Отдельный пункт участия всегда ост�
 проводит structured fixture через обязательные требования, полный hard-check
 prequalification, две immutable supplier quotes, product compliance, Decimal
 economics, auction forecast, stop-price invariant, risk, checklist и approval card.
-Это пока PARTIAL evidence: реальная загрузка/извлечение документов, multi-agent
-review, submission/auction и post-win tail ещё не покрыты.
+Дополнительный A4 document-path test читает реальные байты TXT из защищённого
+хранилища, извлекает требования, проводит exact-set checksum-bound manager review
+и использует принятые evidence-факты в decision snapshot. Это пока PARTIAL
+evidence: сетевой download A4-пакета, PDF/OCR/table extraction, независимый
+multi-agent review, submission/auction и post-win tail ещё не покрыты.
 
 ## Честная граница готовности
 

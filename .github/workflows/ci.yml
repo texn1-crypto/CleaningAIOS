@@ -20,6 +20,7 @@ jobs:
           mypy --strict --follow-imports=skip app/tender_prequalification.py
           mypy --strict --follow-imports=skip app/tender_supplier_quotes.py
           mypy --strict --follow-imports=skip app/tender_autopilot.py
+          mypy --strict --follow-imports=skip app/tender_document_intelligence.py
       - name: Agent behavior evals
         run: python scripts/run_agent_evals.py
       - name: Dependency vulnerability audit

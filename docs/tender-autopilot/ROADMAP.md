@@ -19,8 +19,10 @@
    with stable provider keys, portal-specific cursor/completeness verification and a
    normalized procurement model.
 3. **Document intelligence — in progress.** Checksum-bound local PDF/DOCX/TXT
-   extraction now produces evidence-linked UNKNOWN candidates. Далее: immutable
-   reviewer workflow, MIME/AV/archive sandbox, OCR/table map and
+   extraction now produces evidence-linked UNKNOWN candidates; requirement and
+   product-specification manager reviews bind checksum/extractor/exact candidate
+   sets and preserve versioned history. Далее: independent four-eyes AI review,
+   MIME/AV/archive sandbox, OCR/table map and
    a broader prompt-injection corpus.
 4. **Qualification/suppliers — in progress.** Immutable evidence-bound Company
    Digital Twin, manual/imported quote registry, freshness and exact prequalification/

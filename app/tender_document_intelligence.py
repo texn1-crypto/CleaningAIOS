@@ -15,7 +15,8 @@ from .config import settings
 from .models import BusinessRecord, TenderDocument
 
 
-EXTRACTOR_VERSION = "tender-requirements-v1"
+EXTRACTOR_VERSION = "tender-requirements-v2"
+REQUIREMENT_REVIEW_VERSION = "tender-requirement-review-v1"
 PRODUCT_SPEC_EXTRACTOR_VERSION = "tender-product-specification-v2"
 PRODUCT_COMPARISON_VERSION = "tender-product-comparison-v1"
 PRODUCT_COMPARISON_REVIEW_VERSION = "tender-product-comparison-review-v1"
@@ -1089,8 +1090,14 @@ def extract_requirement_candidates(document: TenderDocument) -> tuple[dict[str, 
             continue
         seen.add(fingerprint)
         requirement_type = _requirement_type(normalized)
+        candidate_hash = hashlib.sha256(
+            (
+                f"{document.checksum.lower()}:{fingerprint}:{locator}"
+            ).encode("utf-8")
+        ).hexdigest()
         candidates.append(
             {
+                "candidate_hash": candidate_hash,
                 "code": f"{requirement_type}.{fingerprint[:12]}",
                 "type": requirement_type,
                 "description": excerpt,
@@ -1142,6 +1149,197 @@ def extract_requirement_candidates(document: TenderDocument) -> tuple[dict[str, 
         "extracted_at": datetime.now(timezone.utc).isoformat(),
     }
     document.analysis = {**(document.analysis or {}), "requirement_extraction": result}
+    document.status = "analyzed"
+    document.analyzed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    return result, True
+
+
+def review_requirement_candidates(
+    document: TenderDocument,
+    *,
+    document_checksum: str,
+    extractor_version: str,
+    decisions: list[dict[str, Any]],
+    reviewed_by: str,
+) -> tuple[dict[str, Any], bool]:
+    """Review the exact extracted requirement set without trusting document text.
+
+    The review binds the document checksum, extractor version and every candidate.
+    Accepted facts keep their original evidence, and every distinct review is
+    retained in append-only document analysis history.
+    """
+
+    analysis = document.analysis if isinstance(document.analysis, dict) else {}
+    extraction = analysis.get("requirement_extraction")
+    if not isinstance(extraction, dict):
+        raise TenderDocumentReviewError(
+            "Tender requirements must be extracted before review"
+        )
+    actual_checksum = str(document.checksum or "").lower()
+    if document_checksum.lower() != actual_checksum:
+        raise TenderDocumentReviewError("Tender requirement checksum is stale")
+    if extraction.get("document_checksum") != actual_checksum:
+        raise TenderDocumentReviewError("Extracted tender requirements are stale")
+    if extractor_version != extraction.get("extractor_version"):
+        raise TenderDocumentReviewError("Tender requirement extractor version is stale")
+
+    candidates = extraction.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise TenderDocumentReviewError("Tender requirement extraction has no candidates")
+    candidate_map = {
+        str(candidate.get("candidate_hash") or ""): candidate
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("candidate_hash")
+    }
+    if len(candidate_map) != len(candidates):
+        raise TenderDocumentReviewError(
+            "Tender requirement candidate identity is unavailable"
+        )
+    expected_hashes = set(candidate_map)
+    submitted_hashes = [
+        str(decision.get("candidate_hash") or "") for decision in decisions
+    ]
+    if len(submitted_hashes) != len(set(submitted_hashes)):
+        raise TenderDocumentReviewError(
+            "Tender requirement review has duplicate decisions"
+        )
+    if set(submitted_hashes) != expected_hashes:
+        raise TenderDocumentReviewError(
+            "Tender requirement review must cover the exact extracted candidate set"
+        )
+
+    canonical_decisions: list[dict[str, Any]] = []
+    reviewed_candidates: list[dict[str, Any]] = []
+    accepted_codes: set[str] = set()
+    for decision in sorted(decisions, key=lambda item: str(item["candidate_hash"])):
+        candidate_hash = str(decision["candidate_hash"])
+        candidate = candidate_map[candidate_hash]
+        accepted = bool(decision.get("accepted"))
+        reason = str(decision.get("reason") or "").strip()
+        if not accepted and not reason:
+            raise TenderDocumentReviewError(
+                "Rejected tender requirement candidates require a reason"
+            )
+        code = str(
+            decision.get("corrected_code") or candidate.get("code") or ""
+        ).strip()
+        description = str(
+            decision.get("corrected_description")
+            or candidate.get("description")
+            or ""
+        ).strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]{0,127}", code):
+            raise TenderDocumentReviewError("Reviewed tender requirement code is invalid")
+        if not description:
+            raise TenderDocumentReviewError(
+                "Reviewed tender requirement description is required"
+            )
+        mandatory_override = decision.get("mandatory")
+        mandatory = (
+            bool(candidate.get("mandatory"))
+            if mandatory_override is None
+            else bool(mandatory_override)
+        )
+        compliance_status = str(decision.get("compliance_status") or "unknown")
+        if compliance_status not in {"satisfied", "not_satisfied", "unknown"}:
+            raise TenderDocumentReviewError(
+                "Reviewed tender requirement compliance status is invalid"
+            )
+        if accepted and code in accepted_codes:
+            raise TenderDocumentReviewError(
+                "Accepted tender requirements must have unique codes"
+            )
+        if accepted:
+            accepted_codes.add(code)
+        canonical_decisions.append(
+            {
+                "candidate_hash": candidate_hash,
+                "accepted": accepted,
+                "corrected_code": code,
+                "corrected_description": description,
+                "mandatory": mandatory,
+                "compliance_status": compliance_status,
+                "reason": reason,
+            }
+        )
+        reviewed_candidates.append(
+            {
+                "candidate_hash": candidate_hash,
+                "code": code,
+                "type": candidate.get("type"),
+                "description": description,
+                "mandatory": mandatory,
+                "status": compliance_status,
+                "review_outcome": "accepted" if accepted else "rejected",
+                "verification_status": "verified" if accepted else "rejected",
+                "reason": reason,
+                "evidence": candidate.get("evidence") or [],
+                "data_class": "verified" if accepted else "rejected",
+            }
+        )
+
+    candidate_set_hash = hashlib.sha256(
+        ":".join(sorted(expected_hashes)).encode("utf-8")
+    ).hexdigest()
+    canonical = {
+        "version": REQUIREMENT_REVIEW_VERSION,
+        "document_id": document.id,
+        "document_checksum": actual_checksum,
+        "extractor_version": extractor_version,
+        "candidate_set_hash": candidate_set_hash,
+        "decisions": canonical_decisions,
+    }
+    review_hash = hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    raw_history = analysis.get("requirement_reviews") or []
+    if not isinstance(raw_history, list):
+        raise TenderDocumentReviewError(
+            "Stored tender requirement review history is invalid"
+        )
+    for previous in raw_history:
+        if isinstance(previous, dict) and previous.get("review_hash") == review_hash:
+            return previous, False
+
+    accepted_count = sum(
+        candidate["review_outcome"] == "accepted"
+        for candidate in reviewed_candidates
+    )
+    rejected_count = len(reviewed_candidates) - accepted_count
+    unknown_count = sum(
+        candidate["review_outcome"] == "accepted"
+        and candidate["status"] == "unknown"
+        for candidate in reviewed_candidates
+    )
+    result: dict[str, Any] = {
+        "version": REQUIREMENT_REVIEW_VERSION,
+        "review_version": len(raw_history) + 1,
+        "review_hash": review_hash,
+        "candidate_set_hash": candidate_set_hash,
+        "document_checksum": actual_checksum,
+        "extractor_version": extractor_version,
+        "status": "needs_verification" if unknown_count else "reviewed",
+        "candidate_count": len(reviewed_candidates),
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+        "unknown_compliance_count": unknown_count,
+        "requirements": reviewed_candidates,
+        "reviewed_by": reviewed_by,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "eligible_for_assessment_draft": accepted_count > 0,
+        "automatic_eligibility_allowed": False,
+        "automatic_submission_allowed": False,
+    }
+    document.analysis = {
+        **analysis,
+        "requirement_review": result,
+        "requirement_reviews": [*raw_history, result],
+    }
     document.status = "analyzed"
     document.analyzed_at = datetime.now(timezone.utc).replace(tzinfo=None)
     return result, True

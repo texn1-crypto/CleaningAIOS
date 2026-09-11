@@ -1287,7 +1287,6 @@ def test_tender_requirement_extraction_is_evidence_bound_fail_closed_and_idempot
             "checksum": checksum,
         },
     ).json()
-
     first = client.post(
         f"/api/tender-documents/{document['id']}/requirements/extract",
         headers=MANAGER,
@@ -1306,6 +1305,10 @@ def test_tender_requirement_extraction_is_evidence_bound_fail_closed_and_idempot
     assert {item["verification_status"] for item in result["candidates"]} == {
         "needs_verification"
     }
+    assert all(
+        len(candidate["candidate_hash"]) == 64
+        for candidate in result["candidates"]
+    )
     assert all(
         candidate["evidence"][0]["document_checksum"] == checksum
         for candidate in result["candidates"]
@@ -1337,6 +1340,198 @@ def test_tender_requirement_extraction_is_evidence_bound_fail_closed_and_idempot
                 DomainEvent.aggregate_id == str(tender["id"]),
             )
         ) == 1
+
+
+def test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+    source = tmp_path / "a4-requirements.txt"
+    source.write_text(
+        "Участник должен поставить 1000 пачек бумаги формата A4.\n"
+        "Товар должен содержать 500 листов в пачке плотностью 80 г/м².\n",
+        encoding="utf-8",
+    )
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    tender = client.post(
+        "/api/records",
+        headers=MANAGER,
+        json={
+            "record_type": "tender",
+            "external_id": "a4-requirement-review",
+            "title": "Поставка 1000 пачек бумаги A4 для школы",
+            "deadline_at": "2040-01-10T12:00:00Z",
+            "data": {"source_url": "https://procurement.example.invalid/a4"},
+        },
+    ).json()
+    document = client.post(
+        f"/api/tenders/{tender['id']}/documents",
+        headers=MANAGER,
+        json={
+            "name": source.name,
+            "content_type": "text/plain",
+            "storage_path": str(source),
+            "checksum": checksum,
+            "analysis": {"kind": "requirements"},
+        },
+    ).json()
+    quote_document = client.post(
+        f"/api/tenders/{tender['id']}/documents",
+        headers=MANAGER,
+        json={
+            "name": "a4-supplier-quote.pdf",
+            "source_url": "https://supplier.example.invalid/a4-quote.pdf",
+            "checksum": "b" * 64,
+            "analysis": {"kind": "supplier_quote", "extraction_mode": "fixture"},
+        },
+    ).json()
+    extraction = client.post(
+        f"/api/tender-documents/{document['id']}/requirements/extract",
+        headers=MANAGER,
+    ).json()
+    assert extraction["candidate_count"] == 2
+    decisions = [
+        {
+            "candidate_hash": candidate["candidate_hash"],
+            "accepted": True,
+            "compliance_status": "satisfied",
+            "reason": "Проверено менеджером по исходному документу",
+        }
+        for candidate in extraction["candidates"]
+    ]
+    payload = {
+        "document_checksum": checksum,
+        "extractor_version": extraction["extractor_version"],
+        "decisions": decisions,
+    }
+
+    forbidden = client.post(
+        f"/api/tender-documents/{document['id']}/requirements/review",
+        headers={"X-Role": "operator"},
+        json=payload,
+    )
+    assert forbidden.status_code == 403
+
+    missing_candidate = client.post(
+        f"/api/tender-documents/{document['id']}/requirements/review",
+        headers=MANAGER,
+        json={**payload, "decisions": decisions[:1]},
+    )
+    assert missing_candidate.status_code == 422
+    assert "exact extracted candidate set" in missing_candidate.json()["detail"]
+
+    rejected_without_reason = deepcopy(decisions)
+    rejected_without_reason[0]["accepted"] = False
+    rejected_without_reason[0]["reason"] = ""
+    rejected = client.post(
+        f"/api/tender-documents/{document['id']}/requirements/review",
+        headers=MANAGER,
+        json={**payload, "decisions": rejected_without_reason},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == (
+        "Rejected tender requirement candidates require a reason"
+    )
+
+    stale = client.post(
+        f"/api/tender-documents/{document['id']}/requirements/review",
+        headers=MANAGER,
+        json={**payload, "document_checksum": "f" * 64},
+    )
+    assert stale.status_code == 422
+    assert stale.json()["detail"] == "Tender requirement checksum is stale"
+
+    first = client.post(
+        f"/api/tender-documents/{document['id']}/requirements/review",
+        headers=MANAGER,
+        json=payload,
+    )
+    assert first.status_code == 200
+    review = first.json()
+    assert review["created"] is True
+    assert review["version"] == "tender-requirement-review-v1"
+    assert review["review_version"] == 1
+    assert review["status"] == "reviewed"
+    assert review["accepted_count"] == 2
+    assert review["rejected_count"] == 0
+    assert review["unknown_compliance_count"] == 0
+    assert review["eligible_for_assessment_draft"] is True
+    assert review["automatic_eligibility_allowed"] is False
+    assert review["automatic_submission_allowed"] is False
+    assert all(
+        item["verification_status"] == "verified"
+        and item["status"] == "satisfied"
+        and item["evidence"][0]["document_checksum"] == checksum
+        for item in review["requirements"]
+    )
+
+    assessment_payload = _assessment_payload(
+        document["id"], quote_document["id"]
+    )
+    assessment_payload["requirements"] = [
+        {
+            key: requirement[key]
+            for key in ("code", "description", "mandatory", "status", "evidence")
+        }
+        for requirement in review["requirements"]
+        if requirement["review_outcome"] == "accepted"
+    ]
+    for check in assessment_payload["qualification_checks"]:
+        check["evidence"][0]["document_checksum"] = checksum
+    assessment = client.post(
+        f"/api/tenders/{tender['id']}/decision-snapshots",
+        headers=MANAGER,
+        json=assessment_payload,
+    )
+    assert assessment.status_code == 201
+    assert assessment.json()["status"] == "ready_for_owner_review"
+    assert assessment.json()["result"]["requirements"] == {
+        "total": 2,
+        "mandatory": 2,
+        "satisfied": 2,
+        "unknown": 0,
+        "not_satisfied": 0,
+    }
+
+    replay = client.post(
+        f"/api/tender-documents/{document['id']}/requirements/review",
+        headers=MANAGER,
+        json=payload,
+    ).json()
+    assert replay == {**review, "created": False}
+
+    changed_decisions = deepcopy(decisions)
+    changed_decisions[1]["compliance_status"] = "unknown"
+    changed_decisions[1]["reason"] = "Требуется проверка соответствия компании"
+    changed = client.post(
+        f"/api/tender-documents/{document['id']}/requirements/review",
+        headers=MANAGER,
+        json={**payload, "decisions": changed_decisions},
+    ).json()
+    assert changed["created"] is True
+    assert changed["review_version"] == 2
+    assert changed["status"] == "needs_verification"
+    assert changed["unknown_compliance_count"] == 1
+    assert changed["review_hash"] != review["review_hash"]
+
+    with SessionLocal() as db:
+        persisted = db.get(TenderDocument, document["id"])
+        assert persisted is not None
+        assert persisted.analysis["requirement_review"]["review_hash"] == changed[
+            "review_hash"
+        ]
+        assert [
+            item["review_hash"]
+            for item in persisted.analysis["requirement_reviews"]
+        ] == [review["review_hash"], changed["review_hash"]]
+        assert db.scalar(
+            select(func.count())
+            .select_from(DomainEvent)
+            .where(
+                DomainEvent.event_type == "tender.requirements_reviewed",
+                DomainEvent.aggregate_id == str(tender["id"]),
+            )
+        ) == 2
 
 
 def test_tender_requirement_extraction_rejects_untrusted_storage_and_viewer(

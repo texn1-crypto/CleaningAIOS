@@ -367,6 +367,37 @@ class TenderProductSpecificationReviewCreate(BaseModel):
     )
 
 
+class TenderRequirementReviewDecision(BaseModel):
+    candidate_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    accepted: bool
+    corrected_code: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    corrected_description: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=2000,
+    )
+    mandatory: Optional[bool] = None
+    compliance_status: str = Field(
+        default="unknown",
+        pattern="^(satisfied|not_satisfied|unknown)$",
+    )
+    reason: str = Field(default="", max_length=1000)
+
+
+class TenderRequirementReviewCreate(BaseModel):
+    document_checksum: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+    extractor_version: str = Field(min_length=1, max_length=128)
+    decisions: list[TenderRequirementReviewDecision] = Field(
+        min_length=1,
+        max_length=500,
+    )
+
+
 class TenderProductComparisonReviewDecision(BaseModel):
     candidate_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     match_status: str = Field(pattern="^(match|mismatch|unknown)$")

@@ -10,8 +10,10 @@
 - `TenderDocument` — зарегистрированный оригинал/версия с source URL, storage path,
   MIME, checksum и analysis metadata. Product specification extraction хранится
   как `extracted/needs_verification`; отдельный review привязан к checksum,
-  extractor version, полному набору candidate hashes и actor. Проверенные факты
-  требований и предложения собираются в persisted draft-историю внутри
+  extractor version, полному набору candidate hashes и actor. Requirement review
+  использует ту же exact-set/checksum защиту, сохраняет исходные evidence и
+  append-only review history; UNKNOWN не превращается в автоматическое разрешение.
+  Проверенные факты требований и предложения собираются в persisted draft-историю внутри
   `BusinessRecord.data`, связанную с checksum и review hash каждого документа;
   draft остаётся `needs_verification` и не заменяет decision snapshot.
 - `TenderSourceRun` — final receipt каждой настроенной попытки collection: безопасная

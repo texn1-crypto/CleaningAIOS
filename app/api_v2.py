@@ -25,7 +25,7 @@ from .reports import build_ceo_brief
 from .orchestrator import audit, dispatch
 from .outreach import campaign_approval_payload, persist_campaign_attachments, queue_campaign, upsert_consent, validate_attachments, verified_recipients
 from .platform import approval_engine, event_bus
-from .schemas import CampaignLaunch, CapabilityFlagUpdate, CompanyProfileSnapshotCreate, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest, TenderPrequalificationCreate, TenderProductComparisonReviewCreate, TenderProductSpecificationReviewCreate, TenderSupplierQuoteCreate
+from .schemas import CampaignLaunch, CapabilityFlagUpdate, CompanyProfileSnapshotCreate, ContentItemCreate, CustomerRequestedCampaignDraft, DecisionOutcomeCreate, DeliveryEventCreate, ExternalActionsKillSwitchUpdate, GoalCreate, GoalProgressUpdate, ImportFile, ImprovementUpdate, InboxMessageCreate, InboxStatusUpdate, MailboxCreate, ManagementCompanyCampaignDraft, ManagementCompanyImport, OperatingEntityCreate, OperatingEntityUpdate, OutreachConsentUpsert, RequestAnalysisCreate, SimulationRequest, StructuredDecisionCreate, TemplateCreate, TenderDecisionSnapshotCreate, TenderDocumentCreate, TenderEvaluationRequest, TenderPrequalificationCreate, TenderProductComparisonReviewCreate, TenderProductSpecificationReviewCreate, TenderRequirementReviewCreate, TenderSupplierQuoteCreate
 from .security import Principal, principal, require_role
 from .chat import redact_sensitive_text
 from .approval_service import (
@@ -89,6 +89,7 @@ from .tender_document_intelligence import (
     extract_requirement_candidates,
     review_product_comparison_draft,
     review_product_specification_candidates,
+    review_requirement_candidates,
 )
 from .tender_requirements import (
     ALLOWED_PRIORITIES,
@@ -1729,6 +1730,73 @@ def extract_document_product_specification(
             "source_role": result["source_role"],
             "candidate_count": result["candidate_count"],
             "status": result["status"],
+            "created": created,
+        },
+    )
+    db.commit()
+    return {**result, "created": created}
+
+
+@router.post("/tender-documents/{document_id}/requirements/review")
+def review_document_requirements(
+    document_id: int,
+    payload: TenderRequirementReviewCreate,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    document = db.get(TenderDocument, document_id)
+    if not document:
+        raise HTTPException(404, "Tender document not found")
+    tender = db.get(BusinessRecord, document.record_id)
+    if not tender or tender.record_type != "tender":
+        raise HTTPException(409, "Tender document is not bound to a tender")
+    try:
+        result, created = review_requirement_candidates(
+            document,
+            document_checksum=payload.document_checksum,
+            extractor_version=payload.extractor_version,
+            decisions=[decision.model_dump() for decision in payload.decisions],
+            reviewed_by=actor.subject,
+        )
+    except TenderDocumentReviewError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event_bus.publish(
+        db,
+        "tender.requirements_reviewed",
+        "tender",
+        str(document.record_id),
+        {
+            "document_id": document.id,
+            "document_checksum": result["document_checksum"],
+            "extractor_version": result["extractor_version"],
+            "review_hash": result["review_hash"],
+            "candidate_set_hash": result["candidate_set_hash"],
+            "accepted_count": result["accepted_count"],
+            "rejected_count": result["rejected_count"],
+            "unknown_compliance_count": result["unknown_compliance_count"],
+            "created": created,
+        },
+        idempotency_key=(
+            f"tender-requirements-review:{document.id}:{result['review_hash']}"
+        ),
+        actor=actor.subject,
+    )
+    audit(
+        db,
+        actor.subject,
+        "tender.requirements_reviewed",
+        "tender_document",
+        str(document.id),
+        {
+            "tender_id": document.record_id,
+            "document_checksum": result["document_checksum"],
+            "extractor_version": result["extractor_version"],
+            "review_hash": result["review_hash"],
+            "candidate_set_hash": result["candidate_set_hash"],
+            "accepted_count": result["accepted_count"],
+            "rejected_count": result["rejected_count"],
+            "unknown_compliance_count": result["unknown_compliance_count"],
             "created": created,
         },
     )
