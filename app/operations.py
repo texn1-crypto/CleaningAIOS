@@ -134,7 +134,130 @@ def create_ceo_actions(db: Session) -> list[Task]:
     return unique
 
 
-CEO_STRATEGY_VERSION = "2026.09"
+CEO_STRATEGY_VERSION = "2026.09-growth-v2"
+
+CEO_GROWTH_MISSION = (
+    "Привлекать квалифицированные лиды и превращать их в подтверждённую "
+    "risk-adjusted прибыль, не ухудшая качество, законность и устойчивость бизнеса."
+)
+
+# Every registered role owns a measurable contribution to the same commercial
+# funnel. Supporting roles are intentionally tied to profit through reliability,
+# capacity or decision quality instead of being given artificial sales work.
+CEO_AGENT_GROWTH_STRATEGIES: dict[str, dict[str, str]] = {
+    "ceo": {
+        "lead_stage": "portfolio_allocation",
+        "profit_lever": "Капитал и внимание направляются в доказанно прибыльные сегменты.",
+        "hypothesis": "Еженедельное ранжирование по ожидаемой risk-adjusted прибыли уменьшит потери фокуса.",
+    },
+    "orchestrator": {
+        "lead_stage": "end_to_end_handoff",
+        "profit_lever": "Сокращение времени и потерь между обнаружением лида, оценкой и следующим действием.",
+        "hypothesis": "Контракт handoff с evidence и дедупликацией повысит долю лидов без потерянного следующего шага.",
+    },
+    "research": {
+        "lead_stage": "demand_discovery",
+        "profit_lever": "Больше проверяемых сигналов спроса в сегментах с подходящей экономикой.",
+        "hypothesis": "Ранжирование официальных источников по выходу квалифицированных возможностей повысит полезность обхода.",
+    },
+    "tender": {
+        "lead_stage": "tender_qualification",
+        "profit_lever": "Отбор тендеров с выполнимыми условиями и положительной ожидаемой маржой.",
+        "hypothesis": "Fail-closed decision passport до подготовки заявки уменьшит затраты на заведомо слабые тендеры.",
+    },
+    "sales": {
+        "lead_stage": "qualification_and_conversion",
+        "profit_lever": "Рост конверсии квалифицированных лидов в маржинальные договоры.",
+        "hypothesis": "Next-best-action по причине потери и потенциалу маржи повысит подтверждённую ценность воронки.",
+    },
+    "marketing": {
+        "lead_stage": "awareness_and_acquisition",
+        "profit_lever": "Рост квалифицированных заявок из каналов с измеряемой стоимостью привлечения.",
+        "hypothesis": "Один атрибутируемый эксперимент за цикл быстрее выявит каналы с положительной экономикой.",
+    },
+    "hr": {
+        "lead_stage": "delivery_capacity",
+        "profit_lever": "Готовность персонала позволяет принимать прибыльные контракты без срыва качества.",
+        "hypothesis": "Прогноз дефицита смен до коммерческого предложения снизит риск штрафов и отказов от контрактов.",
+    },
+    "finance": {
+        "lead_stage": "unit_economics_gate",
+        "profit_lever": "Защита маржи, оборотного капитала и лимита допустимого риска.",
+        "hypothesis": "Единый margin gate до предложения отсечёт выручку, которая разрушает денежный поток.",
+    },
+    "growth_officer": {
+        "lead_stage": "segment_and_region_expansion",
+        "profit_lever": "Масштабирование только воспроизводимых сегментов с положительной экономикой.",
+        "hypothesis": "Портфель малых сегментных экспериментов выявит следующий рычаг роста дешевле широкого запуска.",
+    },
+    "meta_brain": {
+        "lead_stage": "decision_quality_optimization",
+        "profit_lever": "Повышение доли решений агентов, которые приводят к измеримому коммерческому результату.",
+        "hypothesis": "Evals по outcome, а не по активности, сократят повторяющиеся ошибки и бесполезные задачи.",
+    },
+    "evolution_researcher": {
+        "lead_stage": "capability_improvement",
+        "profit_lever": "Внедрение только тех практик, чей ожидаемый эффект выше стоимости и риска изменения.",
+        "hypothesis": "Проверка одной практики по первичным источникам и eval до внедрения повысит ROI разработки.",
+    },
+    "lead_scout": {
+        "lead_stage": "public_lead_discovery",
+        "profit_lever": "Прирост проверенных организаций из разрешённых публичных источников.",
+        "hypothesis": "Оценка источников по доле новых дедуплицированных компаний повысит выход полезных лидов.",
+    },
+    "lead_coordinator": {
+        "lead_stage": "lead_normalization_and_routing",
+        "profit_lever": "Единая база без дублей и с provenance ускоряет квалификацию и безопасный handoff.",
+        "hypothesis": "Контроль обязательных полей и дедупликации до маршрутизации уменьшит повторную ручную работу.",
+    },
+    "management_lead_scout": {
+        "lead_stage": "management_company_discovery",
+        "profit_lever": "Покрытие УК и ТСЖ с регулярной потребностью в клининге.",
+        "hypothesis": "Сегментация по региону и масштабу объектов повысит долю релевантных УК и ТСЖ.",
+    },
+    "commercial_lead_scout": {
+        "lead_stage": "commercial_property_discovery",
+        "profit_lever": "Выявление БЦ, складов и ритейла с повторяемым объёмом уборки.",
+        "hypothesis": "Приоритет объектов с регулярной эксплуатационной нагрузкой повысит ожидаемый LTV лида.",
+    },
+    "tender_lead_scout": {
+        "lead_stage": "tender_signal_discovery",
+        "profit_lever": "Раннее выявление закупочного спроса до истечения времени на качественную оценку.",
+        "hypothesis": "Фильтр географии, сроков и предмета закупки повысит долю тендеров, пригодных для decision passport.",
+    },
+    "social_lead_scout": {
+        "lead_stage": "public_demand_signal_discovery",
+        "profit_lever": "Выявление открытых сигналов потребности без сбора частных данных и спама.",
+        "hypothesis": "Фильтр явного коммерческого намерения повысит точность социальных сигналов спроса.",
+    },
+    "system_admin": {
+        "lead_stage": "revenue_system_continuity",
+        "profit_lever": "Доступность сбора, воронки и отчётов предотвращает потерю лидов и времени продаж.",
+        "hypothesis": "Fingerprint инцидента и проверка восстановления снизят повторяемость revenue-impacting сбоев.",
+    },
+    "request_analyst": {
+        "lead_stage": "owner_intent_to_execution",
+        "profit_lever": "Полное превращение коммерческого намерения владельца в проверяемый результат.",
+        "hypothesis": "Классификация execution gap до создания improvement уменьшит дубли и ускорит полезные изменения.",
+    },
+    "copywriter": {
+        "lead_stage": "message_conversion",
+        "profit_lever": "Повышение конверсии утверждённых коммерческих материалов без самовольной отправки.",
+        "hypothesis": "Версионирование оффера по сегменту и возражению позволит измерять вклад текста в конверсию.",
+    },
+    "creative": {
+        "lead_stage": "visual_conversion",
+        "profit_lever": "Повторно используемые визуальные материалы ускоряют запуск проверяемых кампаний.",
+        "hypothesis": "Единые шаблоны с visual QA снизят стоимость производства и улучшат согласованность материалов.",
+    },
+}
+
+CEO_SELF_IMPROVEMENT_PROTOCOL = {
+    "cycle": ["baseline", "hypothesis", "safe_experiment", "evidence", "keep_revise_or_stop"],
+    "evidence_rule": "Решение меняется только по сохранённым outcome/evidence, а не по числу созданных задач.",
+    "experiment_rule": "За цикл меняется одна проверяемая переменная; внешний эффект требует действующих guardrails.",
+    "stop_rule": "Остановить или пересмотреть гипотезу при подтверждённом вреде, отрицательной экономике или повторном сбое.",
+}
 
 
 CEO_DEVELOPMENT_BACKLOG = (
@@ -344,43 +467,90 @@ def execute_ceo_strategy_checkpoint(
     *,
     task: Task,
 ) -> dict[str, Any]:
-    """Produce a deterministic, evidence-backed checkpoint for any agent lane."""
+    """Produce a deterministic growth checkpoint with a closed learning loop."""
     previous = db.scalars(
         select(Task)
         .where(Task.agent_type == task.agent_type, Task.id != task.id)
         .order_by(Task.id.desc())
         .limit(100)
     ).all()
-    terminal = [row for row in previous if row.status in {"done", "failed", "blocked"}]
+    previous_checkpoints = [
+        row
+        for row in previous
+        if (row.payload or {}).get("origin") == "ceo_continuous_backlog"
+    ]
+    terminal = [
+        row
+        for row in previous
+        if row.status in {"done", "failed", "blocked"}
+        and (row.payload or {}).get("origin") != "ceo_continuous_backlog"
+    ][:20]
     failed = [row.id for row in terminal if row.status == "failed"]
     blocked = [row.id for row in terminal if row.status == "blocked"]
     completed = [row.id for row in terminal if row.status == "done"]
-    state = "at_risk" if failed or blocked else "operating" if completed else "baseline"
+    measured = len(terminal)
+    completion_rate = round(len(completed) * 100 / measured, 2) if measured else None
+    if failed or blocked:
+        state = "at_risk"
+        strategy_decision = "repair_before_next_experiment"
+    elif not measured:
+        state = "baseline"
+        strategy_decision = "establish_baseline"
+    elif completion_rate is not None and completion_rate >= 80:
+        state = "operating"
+        strategy_decision = "keep_and_test_next_hypothesis"
+    else:
+        state = "needs_revision"
+        strategy_decision = "revise_one_variable"
     payload = task.payload or {}
+    previous_decision = None
+    if previous_checkpoints:
+        previous_decision = (previous_checkpoints[0].result or {}).get("strategy_decision")
+    next_experiment = str(payload.get("deliverable") or "Выполнить следующий проверяемый шаг.")
     return {
         "status": state,
         "strategy_version": payload.get("strategy_version"),
+        "business_mission": payload.get("business_mission"),
         "scope": payload.get("scope"),
         "horizon": payload.get("horizon"),
         "objective": payload.get("objective"),
         "deliverable": payload.get("deliverable"),
         "success_metric": payload.get("success_metric"),
+        "lead_stage": payload.get("lead_stage"),
+        "profit_lever": payload.get("profit_lever"),
+        "strategy_hypothesis": payload.get("strategy_hypothesis"),
+        "strategy_decision": strategy_decision,
+        "previous_strategy_decision": previous_decision,
         "completed_task_count": len(completed),
         "failed_task_count": len(failed),
         "blocked_task_count": len(blocked),
+        "measured_task_count": measured,
+        "completion_rate_percent": completion_rate,
         "next_action": (
             "Передать подтверждённые сбои системному администратору и дождаться повторной проверки."
             if state == "at_risk"
-            else str(payload.get("deliverable") or "Выполнить следующий проверяемый шаг.")
+            else next_experiment
         ),
+        "self_improvement": {
+            "protocol": payload.get("self_improvement_protocol"),
+            "observation_task_ids": [row.id for row in terminal],
+            "baseline_completion_rate_percent": completion_rate,
+            "hypothesis": payload.get("strategy_hypothesis"),
+            "decision": strategy_decision,
+            "next_safe_experiment": next_experiment,
+        },
         "external_actions_executed": False,
         "evidence": [{
             "type": "ceo_strategy_checkpoint",
             "agent_type": task.agent_type,
-            "inspected_task_ids": [row.id for row in terminal[:20]],
+            "inspected_task_ids": [row.id for row in terminal],
             "completed": len(completed),
             "failed": len(failed),
             "blocked": len(blocked),
+            "completion_rate_percent": completion_rate,
+            "strategy_decision": strategy_decision,
+            "lead_stage": payload.get("lead_stage"),
+            "profit_lever": payload.get("profit_lever"),
         }],
     }
 
@@ -404,13 +574,33 @@ def review_ceo_strategy_portfolio(
         latest_by_title.setdefault(row.title, row)
     missing_titles = sorted(set(expected_titles) - set(latest_by_title))
     missing = sorted({expected_titles[title] for title in missing_titles})
+    def has_growth_evidence(row: Task) -> bool:
+        result = row.result or {}
+        learning = result.get("self_improvement")
+        return bool(
+            result.get("evidence")
+            and result.get("lead_stage")
+            and result.get("profit_lever")
+            and result.get("strategy_decision")
+            and isinstance(learning, dict)
+            and learning.get("hypothesis")
+            and learning.get("decision")
+            and learning.get("next_safe_experiment")
+        )
+
     at_risk_rows = [
         row
         for title, row in latest_by_title.items()
         if title in expected_titles
         and (
             row.status in {"failed", "blocked"}
-            or (row.status == "done" and not bool((row.result or {}).get("evidence")))
+            or (
+                row.status == "done"
+                and (
+                    not has_growth_evidence(row)
+                    or (row.result or {}).get("status") == "at_risk"
+                )
+            )
         )
     ]
     at_risk = sorted({row.agent_type for row in at_risk_rows})
@@ -424,7 +614,8 @@ def review_ceo_strategy_portfolio(
         for agent in expected_agents
         if all(
             latest_by_title[title].status == "done"
-            and bool((latest_by_title[title].result or {}).get("evidence"))
+            and has_growth_evidence(latest_by_title[title])
+            and (latest_by_title[title].result or {}).get("status") != "at_risk"
             for title, expected_agent in expected_titles.items()
             if expected_agent == agent and title in latest_by_title
         )
@@ -505,6 +696,7 @@ def maintain_ceo_development_backlog(
     cadence = max(1, min(int(cadence_hours), 7 * 24))
     created: list[Task] = []
     for template in CEO_DEVELOPMENT_BACKLOG:
+        strategy = CEO_AGENT_GROWTH_STRATEGIES[str(template["agent_type"])]
         latest = db.scalar(
             select(Task).where(Task.title == template["title"]).order_by(Task.id.desc())
         )
@@ -516,6 +708,11 @@ def maintain_ceo_development_backlog(
             "objective": template["objective"],
             "deliverable": template["deliverable"],
             "success_metric": template["success_metric"],
+            "business_mission": CEO_GROWTH_MISSION,
+            "lead_stage": strategy["lead_stage"],
+            "profit_lever": strategy["profit_lever"],
+            "strategy_hypothesis": strategy["hypothesis"],
+            "self_improvement_protocol": CEO_SELF_IMPROVEMENT_PROTOCOL,
             "origin": "ceo_continuous_backlog",
             "advisory_only": True,
             "external_actions_require_owner_approval": True,

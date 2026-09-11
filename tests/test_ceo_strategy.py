@@ -8,7 +8,11 @@ from app.agents import AGENTS
 from app.db import Base
 from app.models import AuditLog, Task
 from app.operations import (
+    CEO_AGENT_GROWTH_STRATEGIES,
     CEO_DEVELOPMENT_BACKLOG,
+    CEO_GROWTH_MISSION,
+    CEO_SELF_IMPROVEMENT_PROTOCOL,
+    CEO_STRATEGY_VERSION,
     maintain_ceo_development_backlog,
     review_ceo_strategy_portfolio,
 )
@@ -35,12 +39,20 @@ def test_every_registered_agent_executes_an_evidence_backed_strategy_checkpoint(
             cadence_hours=24,
         )
         assert {task.agent_type for task in tasks} == set(AGENTS)
+        assert set(CEO_AGENT_GROWTH_STRATEGIES) == set(AGENTS)
 
         for task in tasks:
             result = dispatch(db, task)
             assert task.status == "done"
             assert result["external_actions_executed"] is False
+            assert result["business_mission"] == CEO_GROWTH_MISSION
             assert result["success_metric"]
+            assert result["lead_stage"]
+            assert result["profit_lever"]
+            assert result["strategy_hypothesis"]
+            assert result["strategy_decision"] == "establish_baseline"
+            assert result["self_improvement"]["protocol"] == CEO_SELF_IMPROVEMENT_PROTOCOL
+            assert result["self_improvement"]["next_safe_experiment"]
             assert result["evidence"][0]["type"] == "ceo_strategy_checkpoint"
         db.commit()
 
@@ -69,8 +81,12 @@ def test_legacy_future_strategy_task_is_upgraded_in_place_with_audit():
 
         upgraded = db.get(Task, legacy_id)
         assert upgraded is not None
-        assert upgraded.payload["strategy_version"] == "2026.09"
+        assert upgraded.payload["strategy_version"] == CEO_STRATEGY_VERSION
         assert upgraded.payload["action"] == "ceo_strategic_checkpoint"
+        assert upgraded.payload["business_mission"] == CEO_GROWTH_MISSION
+        assert upgraded.payload["lead_stage"]
+        assert upgraded.payload["profit_lever"]
+        assert upgraded.payload["strategy_hypothesis"]
         assert upgraded.run_after == now
         assert sum(task.title == template["title"] for task in db.scalars(select(Task)).all()) == 1
         assert upgraded in maintained
@@ -81,7 +97,56 @@ def test_legacy_future_strategy_task_is_upgraded_in_place_with_audit():
             )
         )
         assert audit is not None
-        assert audit.details == {"from_version": "legacy", "to_version": "2026.09"}
+        assert audit.details == {
+            "from_version": "legacy",
+            "to_version": CEO_STRATEGY_VERSION,
+        }
+
+
+def test_strategy_checkpoint_revises_from_domain_outcomes_not_busywork():
+    session_factory = _session_factory()
+    now = datetime(2026, 9, 9, 9, 0)
+    with session_factory() as db:
+        successful = Task(
+            title="Qualified lead analysis",
+            agent_type="sales",
+            status="done",
+            result={"evidence": [{"type": "lead_pipeline"}]},
+        )
+        failed = Task(
+            title="CRM normalization",
+            agent_type="sales",
+            status="failed",
+            result={"error": "technical"},
+        )
+        old_checkpoint = Task(
+            title="Old strategic checkpoint",
+            agent_type="sales",
+            status="done",
+            payload={"origin": "ceo_continuous_backlog"},
+            result={"strategy_decision": "keep_and_test_next_hypothesis"},
+        )
+        db.add_all([successful, failed, old_checkpoint])
+        db.flush()
+        checkpoint = next(
+            task
+            for task in maintain_ceo_development_backlog(db, now=now, cadence_hours=24)
+            if task.agent_type == "sales"
+        )
+
+        result = dispatch(db, checkpoint)
+
+        assert result["status"] == "at_risk"
+        assert result["strategy_decision"] == "repair_before_next_experiment"
+        assert result["previous_strategy_decision"] == "keep_and_test_next_hypothesis"
+        assert result["measured_task_count"] == 2
+        assert result["completion_rate_percent"] == 50.0
+        assert old_checkpoint.id not in result["self_improvement"]["observation_task_ids"]
+        assert set(result["self_improvement"]["observation_task_ids"]) == {
+            successful.id,
+            failed.id,
+        }
+        assert result["external_actions_executed"] is False
 
 
 def test_ceo_review_deduplicates_system_admin_handoff_for_failed_lane():

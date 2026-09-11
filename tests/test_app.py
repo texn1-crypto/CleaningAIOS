@@ -3766,9 +3766,17 @@ def test_scheduler_creates_one_owner_report_per_window(monkeypatch):
         from app.agents import AGENTS
 
         assert {row.agent_type for row in development} == set(AGENTS)
-        assert all(row.payload["strategy_version"] == "2026.09" for row in development)
+        assert all(
+            row.payload["strategy_version"] == "2026.09-growth-v2"
+            for row in development
+        )
         assert all(row.payload["action"] == "ceo_strategic_checkpoint" for row in development)
         assert all(row.payload["success_metric"] for row in development)
+        assert all(row.payload["business_mission"] for row in development)
+        assert all(row.payload["lead_stage"] for row in development)
+        assert all(row.payload["profit_lever"] for row in development)
+        assert all(row.payload["strategy_hypothesis"] for row in development)
+        assert all(row.payload["self_improvement_protocol"] for row in development)
         strategy_reviews = [
             row for row in all_tasks if row.payload.get("action") == "review_strategic_portfolio"
         ]
@@ -3827,6 +3835,11 @@ def test_ceo_keeps_safe_deduplicated_development_backlog():
         assert all(row.payload["horizon"] for row in first)
         assert all(row.payload["deliverable"] for row in first)
         assert all(row.payload["success_metric"] for row in first)
+        assert all(row.payload["business_mission"] for row in first)
+        assert all(row.payload["lead_stage"] for row in first)
+        assert all(row.payload["profit_lever"] for row in first)
+        assert all(row.payload["strategy_hypothesis"] for row in first)
+        assert all(row.payload["self_improvement_protocol"] for row in first)
 
         for row in first:
             transition_task(db, row, "running", actor=row.agent_type, reason="test_execution")
