@@ -2,6 +2,7 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from threading import Barrier
 
 import httpx
@@ -439,6 +440,49 @@ def test_telegram_startup_retries_transient_network_failure(monkeypatch):
     assert len(applications) == 2
     assert sleeps == [2.0]
     assert loop_state == {"closed": False}
+
+
+def test_telegram_application_registers_safe_polling_error_handler(monkeypatch, caplog):
+    from telegram.error import NetworkError
+
+    from app import bot
+
+    monkeypatch.setattr(
+        bot.settings,
+        "telegram_bot_token",
+        "123456:secret-token-must-not-appear",
+    )
+    monkeypatch.setattr(bot.settings, "owner_telegram_id", "123")
+    application = bot.build_application()
+    assert bot.telegram_error_handler in application.error_handlers
+
+    caplog.set_level(logging.WARNING, logger="cleaningai.bot")
+    error = NetworkError(
+        "Bad Gateway for https://api.telegram.org/"
+        "bot123456:secret-token-must-not-appear/getUpdates"
+    )
+    asyncio.run(
+        bot.telegram_error_handler(
+            object(),
+            SimpleNamespace(error=error),
+        )
+    )
+
+    assert "telegram_transient_network_error type=NetworkError" in caplog.text
+    assert "secret-token-must-not-appear" not in caplog.text
+
+    caplog.clear()
+    asyncio.run(
+        bot.telegram_error_handler(
+            object(),
+            SimpleNamespace(
+                error=RuntimeError("unexpected secret-token-must-not-appear")
+            ),
+        )
+    )
+
+    assert "telegram_update_error type=RuntimeError" in caplog.text
+    assert "secret-token-must-not-appear" not in caplog.text
 
 
 def test_telegram_startup_retry_is_bounded(monkeypatch):

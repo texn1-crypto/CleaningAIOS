@@ -2047,6 +2047,7 @@ def build_application() -> Application:
         local_base = settings.telegram_bot_api_base_url.rstrip("/")
         builder = builder.base_url(f"{local_base}/bot").base_file_url(f"{local_base}/file/bot").local_mode(True)
     application = builder.build()
+    application.add_error_handler(telegram_error_handler)
     application.add_handler(CommandHandler("start", public_start), group=-1)
     application.add_handler(CommandHandler("estimate", lead_start), group=-1)
     application.add_handler(CommandHandler("cancel", lead_cancel_router), group=-1)
@@ -2081,6 +2082,32 @@ def build_application() -> Application:
         )
     )
     return application
+
+
+async def telegram_error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Classify polling errors without leaking request URLs or bot credentials."""
+    error = context.error
+    if isinstance(error, NetworkError):
+        log.warning(
+            "telegram_transient_network_error type=%s",
+            type(error).__name__,
+            extra={
+                "event": "telegram.polling.transient_error",
+                "outcome": "retrying",
+            },
+        )
+        return
+    log.error(
+        "telegram_update_error type=%s",
+        type(error).__name__ if error is not None else "UnknownError",
+        extra={
+            "event": "telegram.update.error",
+            "outcome": "handled",
+        },
+    )
 
 
 def run_polling_with_startup_retry() -> None:
