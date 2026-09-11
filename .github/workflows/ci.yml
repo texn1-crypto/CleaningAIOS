@@ -18,6 +18,7 @@ jobs:
           mypy --strict --follow-imports=skip app/agent_tools.py
           mypy --strict --follow-imports=skip app/company_profiles.py
           mypy --strict --follow-imports=skip app/tender_prequalification.py
+          mypy --strict --follow-imports=skip app/tender_supplier_candidates.py
           mypy --strict --follow-imports=skip app/tender_supplier_quotes.py
           mypy --strict --follow-imports=skip app/tender_autopilot.py
           mypy --strict --follow-imports=skip app/tender_document_intelligence.py

@@ -96,6 +96,18 @@ hard-constraint checks (лицензии, опыт, география, срок
 ранний срок документа — покрывать текущую дату и deadline тендера. Legacy unbound
 вход сохранён для обратной совместимости и явно обозначается в результате.
 
+`POST /api/tenders/{record_id}/supplier-candidate-snapshots` принимает только
+ручной/import/provider-boundary результат исследования после последней точной
+`eligible` prequalification. В одном append-only snapshot должно быть минимум два
+разных supplier identifier. Для каждого кандидата сохраняются организация, товар,
+производитель, страна, тип и credential-free HTTPS-ссылка источника, время
+наблюдения, freshness, соответствие спецификации, сертификат и reliability.
+UNKNOWN, expired, mismatch и blocked факты fail closed. Только текущий
+`ready_for_quote_collection` snapshot с двумя eligible кандидатами может быть
+связан с последующей котировкой; история доступна через соответствующий `GET`.
+Endpoint не обходит сайты, не отправляет RFQ, не резервирует и не заказывает товар:
+`automatic_rfq_allowed=false`, `automatic_order_allowed=false`.
+
 `POST /api/tenders/{record_id}/supplier-quote-snapshots` сохраняет ручную или
 импортированную котировку только после точного `eligible` prequalification hash.
 Snapshot содержит идентификатор поставщика, SKU/производителя, точные денежные и
@@ -107,6 +119,10 @@ checksum-bound evidence. Просроченная, неизвестная или
 её в economics. Snapshot append-only и идемпотентен, история доступна через
 соответствующий `GET`. Endpoint не ищет поставщика, не отправляет RFQ и не делает
 заказ.
+Опциональный `supplier_candidate_snapshot_hash` дополнительно требует текущий
+integrity-valid набор `ready_for_quote_collection` для того же тендера и
+prequalification, точное совпадение supplier name/identifier и неистёкший источник.
+Legacy quote без такой связи сохранён для обратной совместимости.
 
 `POST /api/tenders/{record_id}/decision-snapshots` принимает типизированные:
 

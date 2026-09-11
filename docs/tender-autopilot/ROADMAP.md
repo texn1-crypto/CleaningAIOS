@@ -25,9 +25,12 @@
    MIME/AV/archive sandbox, OCR/table map and
    a broader prompt-injection corpus.
 4. **Qualification/suppliers — in progress.** Immutable evidence-bound Company
-   Digital Twin, manual/imported quote registry, freshness and exact prequalification/
-   decision binding are connected. Далее: automated company registry verification,
-   supplier discovery, RFQ idempotency, external quote parsing, backup/reservation.
+   Digital Twin, a manual/provider ingestion boundary for at least two distinct
+   provenance-bound supplier candidates, manual/imported quote registry, freshness
+   and exact prequalification/candidate/decision binding are connected. Candidate
+   ingestion never executes RFQ or orders. Далее: automated company registry
+   verification, real discovery adapters, RFQ idempotency, external quote parsing
+   and operational backup/reservation/failover.
 5. **Application readiness — in progress.** A versioned seven-gate checklist,
    exact missing/blocking codes, completeness percent and checklist hash are
    persisted in the decision snapshot. For the current integrity-valid ready

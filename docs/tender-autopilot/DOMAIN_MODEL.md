@@ -33,6 +33,12 @@
   фиксированная taxonomy hard constraints, exact evidence checksums, explainable
   hard stops, verification gaps, rules version и actor. Только `eligible` snapshot
   разрешает переход к supplier discovery; сам snapshot не запускает внешние действия.
+- `TenderSupplierCandidateSnapshot` — append-only набор минимум из двух различных
+  supplier identities с product identity, credential-free HTTPS provenance,
+  observation/freshness и fail-closed specification/certificate/reliability facts.
+  Он привязан к последней eligible prequalification; только текущий integrity-valid
+  `ready_for_quote_collection` набор может опционально связать exact supplier с
+  quote. Snapshot не запускает RFQ, reservation или order.
 - `TenderAssessmentSnapshot` — append-only паспорт решения: canonical inputs,
   exact hashes, rules version, result и actor. Внутри snapshot хранится
   evidence-bound product compliance matrix; confidence остаётся только

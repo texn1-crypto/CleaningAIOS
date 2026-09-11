@@ -21,7 +21,10 @@ DISCOVERED -> NORMALIZED -> DOCUMENTS_READY -> REQUIREMENTS_READY
 Сейчас `BusinessRecord.status` остаётся backward-compatible projection. Новый
 prequalification snapshot реализует `needs_verification`, `ineligible` и
 `eligible`; только `eligible` выставляет внутренний guard
-`supplier_discovery_allowed`. Supplier quote snapshot после этого реализует
+`supplier_discovery_allowed`. Supplier candidate snapshot после этого реализует
+`needs_verification`, `rejected` и `ready_for_quote_collection`; последнее требует
+минимум двух разных eligible supplier identities, но не запускает RFQ или заказ.
+Supplier quote snapshot после этого реализует
 `needs_verification`, `rejected` и `verified`; только `verified` hash можно
 привязать к economics. Новый decision snapshot реализует состояния:
 
@@ -45,7 +48,9 @@ checksum-addressed JSON evidence manifest. Это неизменяемый че�
 - FAST DISQUALIFICATION использует полный фиксированный набор checks; missing,
   UNKNOWN или известный факт без evidence никогда не дают `eligible`.
 - Supplier quote принадлежит тому же tender и eligible prequalification snapshot;
-  exact checksum evidence и canonical inline quote совпадают с quote snapshot.
+  при наличии candidate binding он ссылается на текущий integrity-valid
+  `ready_for_quote_collection` snapshot и exact supplier identity. Exact checksum
+  evidence и canonical inline quote совпадают с quote snapshot.
 - Mandatory requirements и qualification имеют `satisfied` + evidence.
 - Supplier stock confirmed, quote не просрочен.
 - Economics inputs verified; base/conservative margin и capital проходят policy.

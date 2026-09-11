@@ -751,6 +751,9 @@ class TenderSupplierQuoteSnapshot(Base):
     )
     input_hash: Mapped[str] = mapped_column(String(64), index=True)
     prequalification_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    supplier_candidate_snapshot_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
     rules_version: Mapped[str] = mapped_column(
         String(64), default="tender-supplier-quote-v1"
     )
@@ -760,6 +763,46 @@ class TenderSupplierQuoteSnapshot(Base):
     quote_reference: Mapped[str] = mapped_column(String(255), index=True)
     quoted_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     valid_until: Mapped[datetime] = mapped_column(DateTime, index=True)
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    result_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_by: Mapped[str] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class TenderSupplierCandidateSnapshot(Base):
+    """Append-only set of provenance-bound suppliers eligible for quote collection."""
+
+    __tablename__ = "tender_supplier_candidate_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "record_id",
+            "input_hash",
+            name="uq_tender_supplier_candidate_input",
+        ),
+        CheckConstraint(
+            "status IN ('needs_verification', 'rejected', 'ready_for_quote_collection')",
+            name="ck_tender_supplier_candidate_status",
+        ),
+        CheckConstraint(
+            "candidate_count >= 2",
+            name="ck_tender_supplier_candidate_count",
+        ),
+        Index(
+            "ix_tender_supplier_candidate_prequalification",
+            "prequalification_snapshot_hash",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    record_id: Mapped[int] = mapped_column(
+        ForeignKey("business_records.id", ondelete="RESTRICT"), index=True
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), index=True)
+    prequalification_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    rules_version: Mapped[str] = mapped_column(
+        String(64), default="tender-supplier-candidates-v1"
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    candidate_count: Mapped[int] = mapped_column(Integer)
     input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
     result_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
     created_by: Mapped[str] = mapped_column(String(128), index=True)

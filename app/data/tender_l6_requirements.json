@@ -221,6 +221,11 @@
       "priority": "P0",
       "status": "partial",
       "evidence": [
+        "app/models.py:TenderSupplierCandidateSnapshot",
+        "app/schemas.py:TenderSupplierCandidateSnapshotCreate",
+        "app/tender_supplier_candidates.py",
+        "app/api_v2.py:create_tender_supplier_candidate_snapshot",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
         "app/models.py:TenderSupplierQuoteSnapshot",
         "app/schemas.py:TenderSupplierQuoteCreate",
         "app/tender_supplier_quotes.py",
@@ -228,9 +233,10 @@
         "app/tender_autopilot.py:persist_tender_assessment",
         "migrations/versions/0027_tender_supplier_quote_snapshots.py",
         "tests/test_tender_autopilot.py:test_supplier_quote_snapshot_is_verified_idempotent_and_binds_decision",
-        "tests/test_tender_autopilot.py:test_supplier_quote_snapshot_fails_closed_on_unknown_and_invalid_evidence"
+        "tests/test_tender_autopilot.py:test_supplier_quote_snapshot_fails_closed_on_unknown_and_invalid_evidence",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked"
       ],
-      "notes": "A manager-only manual/import entry point now persists an immutable, idempotent supplier quote snapshot after an exact eligible prequalification. The snapshot captures typed supplier/product/price/VAT/stock/delivery/payment/freshness/compliance/reliability fields with exact tender-document evidence. UNKNOWN, expired and incomplete quotes fail closed; only an integrity-checked verified quote hash matching the same prequalification and inline decision quote can feed economics. Automated supplier discovery, external quote parsing, RFQ, reservations and backups remain missing, so the requirement stays PARTIAL."
+      "notes": "A manager-only manual/provider ingestion boundary now persists an immutable, idempotent set of at least two distinct supplier identities after the latest exact eligible prequalification. Each candidate is bound to credential-free HTTPS provenance, product identity, observation/freshness, specification, certificate and reliability facts; UNKNOWN, expired, mismatched and blocked facts fail closed. Only the latest integrity-valid ready set can bind an exact supplier identity to a quote, while RFQ and orders remain disabled. Verified quote snapshots still carry exact tender-document evidence into economics. Automated web discovery, external quote parsing, RFQ and reservations remain missing, so the requirement stays PARTIAL."
     },
     {
       "id": 19,
@@ -266,9 +272,14 @@
       "id": 22,
       "title": "ОБЯЗАТЕЛЬНО ИМЕТЬ BACKUP SUPPLIERS",
       "priority": "P1",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/models.py:TenderSupplierCandidateSnapshot",
+        "app/tender_supplier_candidates.py:MINIMUM_ELIGIBLE_SUPPLIERS",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked"
+      ],
+      "notes": "Candidate snapshots enforce at least two distinct supplier identifiers and require two eligible candidates before quote collection. Operational backup allocation, reservation, availability refresh and automatic failover are not implemented, so the requirement is only PARTIAL."
     },
     {
       "id": 23,
@@ -551,11 +562,13 @@
       "status": "partial",
       "evidence": [
         "app/tender_autopilot.py:_application_checklist",
+        "app/tender_supplier_candidates.py",
         "app/tender_application_manifest.py",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked",
         "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only"
       ],
-      "notes": "A reproducible structured fixture covers a school tender for exactly 1000 packs of A4 at NMCK 1,000,000 RUB through evidence-bound requirements, all hard prequalification checks, two immutable supplier quotes, exact product compliance, deterministic economics, auction forecast, stop-price invariant, risk, application checklist, owner approval card and a downloadable checksum-addressed JSON evidence manifest. The test proves RBAC, replay idempotency and stale/tampered/file-substitution rejection. A second A4 document-path case reads stored TXT bytes, extracts requirements, performs exact-set checksum-bound manager review and cites only its review hash; the server verifies provenance and derives accepted evidence facts into the decision snapshot. Network download, PDF/OCR/table extraction, independent multi-agent review, mock submission/auction and the post-win/payment/learning tail remain open, so the scenario is PARTIAL."
+      "notes": "A reproducible structured fixture covers a school tender for exactly 1000 packs of A4 at NMCK 1,000,000 RUB through evidence-bound requirements, all hard prequalification checks, one immutable provenance-bound set with two eligible supplier identities, two candidate-bound immutable supplier quotes, exact product compliance, deterministic economics, auction forecast, stop-price invariant, risk, application checklist, owner approval card and a downloadable checksum-addressed JSON evidence manifest. The test proves RBAC, replay idempotency and stale/tampered/file-substitution rejection. A second A4 document-path case reads stored TXT bytes, extracts requirements, performs exact-set checksum-bound manager review and cites only its review hash; the server verifies provenance and derives accepted evidence facts into the decision snapshot. Network download, real supplier discovery/RFQ, PDF/OCR/table extraction, independent multi-agent review, mock submission/auction and the post-win/payment/learning tail remain open, so the scenario is PARTIAL."
     },
     {
       "id": 56,
@@ -2788,6 +2801,7 @@
         "app/integrations.py",
         "app/company_profiles.py",
         "app/tender_autopilot.py",
+        "app/tender_supplier_candidates.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/pdf_text_worker.py",
@@ -2797,17 +2811,19 @@
         "migrations/versions/0029_tender_source_pagination.py",
         "migrations/versions/0030_capability_flags.py",
         "migrations/versions/0031_immutable_application_manifests.py",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
         "docs/tender-autopilot/README.md",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
         "tests/test_direct_external_action_gates.py",
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
         "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
         "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
       ],
-      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, transaction-bound pagination checkpoints, hashed provider page acknowledgements, completeness receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION and the immutable verified supplier quote gate, economics, auction forecast, product matching, review, decision snapshot and evidence-derived application checklist. DOCX input passes a bounded archive-safety preflight before local parsing; PDF input is parsed outside the web process under page/text/output/time and Linux CPU/address-space limits. Requirement candidates pass through an exact-set, checksum/extractor-bound manager review with append-only history; a decision cites review hashes and the server revalidates bytes, candidate set, decisions and evidence before deriving assessment facts. A reproducible 1000-pack A4 structured fixture reaches the owner approval card using two immutable supplier quotes. Persisted global, per-tender and capability controls gate record-bound participation/submission before approval; direct SMTP/social workers share the applicable global/capability gate, while owner approval remains mandatory. Official provider adapters and portal contracts, automated company/supplier evidence acquisition, quote acquisition and RFQ remain incomplete."
+      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, transaction-bound pagination checkpoints, hashed provider page acknowledgements, completeness receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION, a latest-prequalification-bound set of at least two provenance-bound supplier candidates, the immutable verified quote gate, economics, auction forecast, product matching, review, decision snapshot and evidence-derived application checklist. Candidate ingestion fail-closes UNKNOWN/stale facts, supports exact optional quote identity binding and never performs RFQ/order. DOCX input passes a bounded archive-safety preflight before local parsing; PDF input is parsed outside the web process under page/text/output/time and Linux CPU/address-space limits. Requirement candidates pass through an exact-set, checksum/extractor-bound manager review with append-only history. A reproducible 1000-pack A4 fixture reaches the owner approval card using two candidate-bound immutable supplier quotes. Persisted global, per-tender and capability controls gate protected actions, while owner approval remains mandatory. Official provider adapters and portal contracts, automated company/supplier evidence acquisition, quote acquisition, RFQ and operational supplier failover remain incomplete."
     },
     {
       "id": 298,
@@ -2957,6 +2973,7 @@
         "app/integrations.py",
         "app/company_profiles.py",
         "app/tender_autopilot.py",
+        "app/tender_supplier_candidates.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/pdf_text_worker.py",
@@ -2966,16 +2983,18 @@
         "migrations/versions/0029_tender_source_pagination.py",
         "migrations/versions/0030_capability_flags.py",
         "migrations/versions/0031_immutable_application_manifests.py",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
         "tests/test_direct_external_action_gates.py",
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
         "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
         "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
       ],
-      "notes": "Provider-scoped canonical generic feed amendments, protected transaction-bound page checkpoints, hashed acknowledgements, completeness/source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction with bounded DOCX archive preflight and a resource-limited PDF subprocess, exact-set manager review, review-hash-to-decision derivation, comparison, decision conversion and a deterministic application checklist are persisted. The A4 evidence includes stored requirement bytes through deterministic extraction and checksum-bound review; its decision now cites only the review hash and server-derived facts, while the structured scenario reaches the owner approval card with two supplier quotes and the stop-price invariant. Protected Task/Orchestrator actions require the persisted global/capability controls before approval, and record-bound participation/submission also enforces an isolated per-tender stop; direct SMTP outreach and social publication workers enforce the applicable global/capability gate. Network A4 document acquisition, real PDF/OCR/table extraction evidence, independent multi-agent review, full post-win flow, official provider contracts, automated company/supplier evidence acquisition and RFQ remain incomplete, so the release DoD stays PARTIAL."
+      "notes": "Provider-scoped canonical generic feed amendments, protected transaction-bound page checkpoints, hashed acknowledgements, completeness/source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, immutable sets of at least two provenance-bound supplier candidates, verified candidate-bound quote snapshots, auction forecast, stop price, product matching, fail-closed extraction with bounded DOCX archive preflight and a resource-limited PDF subprocess, exact-set manager review, review-hash-to-decision derivation, comparison, decision conversion and a deterministic application checklist are persisted. Candidate UNKNOWN/stale facts fail closed and no RFQ/order is executed. The structured A4 scenario reaches the owner approval card with two distinct candidates, two quotes and the stop-price invariant. Protected actions require persisted global/capability controls and owner approval. Network A4 acquisition, real PDF/OCR/table evidence, independent multi-agent review, full post-win flow, official provider contracts, automated company/supplier evidence acquisition, RFQ and operational supplier failover remain incomplete, so the release DoD stays PARTIAL."
     },
     {
       "id": 314,
@@ -3003,6 +3022,7 @@
         "app/integrations.py",
         "app/company_profiles.py",
         "app/tender_autopilot.py",
+        "app/tender_supplier_candidates.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/pdf_text_worker.py",
@@ -3012,16 +3032,18 @@
         "migrations/versions/0029_tender_source_pagination.py",
         "migrations/versions/0030_capability_flags.py",
         "migrations/versions/0031_immutable_application_manifests.py",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
         "tests/test_direct_external_action_gates.py",
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
         "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
         "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
       ],
-      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, transaction-bound provider pagination checkpoints and hashed completeness evidence, persisted global/capability gates plus an isolated per-tender stop before participation/submission approval, direct SMTP/social enforcement of the applicable global/capability layers, bounded DOCX archive preflight, resource-limited fail-closed PDF parsing, immutable Company Digital Twin, fast-prequalification, verified supplier quote snapshots, exact-set checksum-bound requirement review, server-side review-hash-to-decision fact derivation, a deterministic application checklist and reproducible A4 evidence through the approval card. It remains partial until the first-release DoD is met."
+      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, transaction-bound provider pagination checkpoints and hashed completeness evidence, persisted global/capability gates plus an isolated per-tender stop, bounded DOCX preflight, resource-limited fail-closed PDF parsing, immutable Company Digital Twin, fast prequalification, immutable latest-prequalification-bound supplier candidate sets requiring at least two eligible identities, optional exact quote-candidate binding, verified quote snapshots, exact-set checksum-bound requirement review, server-side fact derivation, a deterministic application checklist and reproducible A4 evidence through the approval card. Candidate ingestion cannot execute RFQ/order. It remains partial until the first-release DoD is met."
     },
     {
       "id": 317,
@@ -3032,6 +3054,7 @@
         "app/integrations.py",
         "app/company_profiles.py",
         "app/tender_autopilot.py",
+        "app/tender_supplier_candidates.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
         "app/pdf_text_worker.py",
@@ -3041,16 +3064,18 @@
         "migrations/versions/0029_tender_source_pagination.py",
         "migrations/versions/0030_capability_flags.py",
         "migrations/versions/0031_immutable_application_manifests.py",
+        "migrations/versions/0032_supplier_candidate_snapshots.py",
         "tests/test_app.py",
         "tests/test_capability_flags.py",
         "tests/test_direct_external_action_gates.py",
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
+        "tests/test_tender_autopilot.py:test_supplier_candidates_are_provenance_bound_and_quote_linked",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
         "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
         "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
       ],
-      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with protected resumable page checkpoints, hashed acknowledgements, explicit completeness/source-run receipts and freshness incidents, document-byte versions, bounded DOCX archive preflight before local parsing, resource-limited fail-closed PDF parsing outside the web process, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact-set checksum-bound requirement review, server-side fact derivation from current review hashes, product comparison review, hash-bound decision inputs and a persisted deterministic application checklist. A stored-byte A4 requirement case reaches assessment by citing only the manager review hash; stale, tampered, duplicate and mixed manual sources fail closed. The 1000-pack A4 structured fixture exercises two supplier quotes through an owner approval card without external effects. Every protected Task/Orchestrator action requires persisted global/capability controls before approval; record-bound participation/submission also has an isolated per-tender stop. Network A4 document acquisition, real PDF/OCR/table extraction evidence, independent multi-agent review, remaining direct-entry coverage, extended/automated Company Digital Twin verification, official provider adapters/contracts and automated supplier discovery/RFQ remain open."
+      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with protected resumable page checkpoints, hashed acknowledgements, explicit completeness/source-run receipts and freshness incidents, document-byte versions, bounded DOCX archive preflight, resource-limited fail-closed PDF parsing, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION, an immutable current candidate set requiring at least two eligible provenance-bound suppliers, candidate-bound quote snapshots, deterministic auction forecast, product compliance gates, exact-set checksum-bound requirement review, server-side fact derivation, hash-bound decision inputs and a persisted deterministic application checklist. The 1000-pack A4 fixture exercises two candidates and two exact-bound quotes through an owner approval card without external effects. Protected actions require persisted controls and owner approval. Network A4 acquisition, real PDF/OCR/table evidence, independent multi-agent review, remaining direct-entry coverage, extended Company Digital Twin verification, official adapters/contracts and automated supplier discovery/RFQ/failover remain open."
     },
     {
       "id": 318,

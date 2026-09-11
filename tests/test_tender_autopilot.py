@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -17,6 +18,7 @@ from app.models import (
     TenderDocument,
     TenderPrequalificationSnapshot,
     TenderSupplierQuoteSnapshot,
+    TenderSupplierCandidateSnapshot,
 )
 from app.tender_prequalification import REQUIRED_CHECKS
 
@@ -194,6 +196,36 @@ def _supplier_quote_payload(
                 "locator": "page 1",
                 "excerpt": "Итого 500 000 рублей, товар в наличии",
             }
+        ],
+    }
+
+
+def _supplier_candidate_payload(prequalification_hash: str) -> dict:
+    observed_at = datetime.now(timezone.utc) - timedelta(days=1)
+    valid_until = observed_at + timedelta(days=365)
+    return {
+        "prequalification_snapshot_hash": prequalification_hash,
+        "discovery_mode": "manual_research",
+        "candidates": [
+            {
+                "supplier_name": f"ООО Поставщик бумаги {sequence}",
+                "supplier_identifier": f"780100000{sequence}",
+                "product_name": "Бумага офисная A4, 80 г/м², 500 листов",
+                "product_sku": f"A4-80-500-{sequence}",
+                "manufacturer": "ООО Производитель бумаги",
+                "country": "Россия",
+                "source_kind": "distributor",
+                "source_url": (
+                    "https://supplier.example.invalid/catalog/"
+                    f"a4-80-500-{sequence}"
+                ),
+                "observed_at": observed_at.isoformat(),
+                "valid_until": valid_until.isoformat(),
+                "specification_match": "match",
+                "certificate_status": "valid",
+                "supplier_reliability": "trusted",
+            }
+            for sequence in (1, 2)
         ],
     }
 
@@ -620,6 +652,127 @@ def test_supplier_quote_snapshot_is_verified_idempotent_and_binds_decision(clien
         ) == 1
 
 
+def test_supplier_candidates_are_provenance_bound_and_quote_linked(client):
+    tender_id, specification_id, quote_id = _create_tender_with_evidence(
+        client,
+        "supplier-candidate-snapshot",
+    )
+    prequalification = client.post(
+        f"/api/tenders/{tender_id}/prequalification-snapshots",
+        headers=MANAGER,
+        json={"checks": _prequalification_checks(specification_id)},
+    ).json()
+    payload = _supplier_candidate_payload(prequalification["input_hash"])
+    endpoint = f"/api/tenders/{tender_id}/supplier-candidate-snapshots"
+
+    forbidden = client.post(endpoint, headers={"X-Role": "operator"}, json=payload)
+    assert forbidden.status_code == 403
+
+    duplicate = deepcopy(payload)
+    duplicate["candidates"][1]["supplier_identifier"] = duplicate["candidates"][
+        0
+    ]["supplier_identifier"]
+    duplicate_response = client.post(endpoint, headers=MANAGER, json=duplicate)
+    assert duplicate_response.status_code == 422
+    assert "must be unique" in duplicate_response.json()["detail"]
+
+    credential_bearing_source = deepcopy(payload)
+    credential_bearing_source["candidates"][0]["source_url"] += "?token=secret"
+    source_response = client.post(
+        endpoint,
+        headers=MANAGER,
+        json=credential_bearing_source,
+    )
+    assert source_response.status_code == 422
+    assert "credential-free HTTPS URL" in source_response.json()["detail"]
+
+    first = client.post(endpoint, headers=MANAGER, json=payload)
+    assert first.status_code == 201
+    candidate_snapshot = first.json()
+    assert candidate_snapshot["created"] is True
+    assert candidate_snapshot["is_current"] is True
+    assert candidate_snapshot["status"] == "ready_for_quote_collection"
+    assert candidate_snapshot["candidate_count"] == 2
+    assert candidate_snapshot["result"]["eligible_candidate_count"] == 2
+    assert candidate_snapshot["result"]["quote_collection_allowed"] is True
+    assert candidate_snapshot["result"]["automatic_rfq_allowed"] is False
+    assert candidate_snapshot["result"]["automatic_order_allowed"] is False
+
+    replay = client.post(endpoint, headers=MANAGER, json=payload)
+    assert replay.status_code == 201
+    assert replay.json()["id"] == candidate_snapshot["id"]
+    assert replay.json()["created"] is False
+    assert replay.json()["is_current"] is True
+
+    listed = client.get(endpoint, headers={"X-Role": "viewer"})
+    assert listed.status_code == 200
+    assert [row["id"] for row in listed.json()] == [candidate_snapshot["id"]]
+
+    mismatch_quote = _supplier_quote_payload(
+        prequalification["input_hash"], quote_id
+    )
+    mismatch_quote["supplier_candidate_snapshot_hash"] = candidate_snapshot[
+        "input_hash"
+    ]
+    mismatch = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=mismatch_quote,
+    )
+    assert mismatch.status_code == 422
+    assert "does not match" in mismatch.json()["detail"]
+
+    matched_quote = deepcopy(mismatch_quote)
+    matched_quote.update(
+        {
+            "supplier_name": "ООО Поставщик бумаги 1",
+            "supplier_identifier": "7801000001",
+            "product_sku": "A4-80-500-1",
+        }
+    )
+    matched = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=matched_quote,
+    )
+    assert matched.status_code == 201
+    assert matched.json()["status"] == "verified"
+    assert matched.json()["supplier_candidate_snapshot_hash"] == (
+        candidate_snapshot["input_hash"]
+    )
+
+    unverified_payload = deepcopy(payload)
+    unverified_payload["candidates"][1]["supplier_reliability"] = "unknown"
+    unverified = client.post(endpoint, headers=MANAGER, json=unverified_payload)
+    assert unverified.status_code == 201
+    assert unverified.json()["status"] == "needs_verification"
+    assert unverified.json()["result"]["quote_collection_allowed"] is False
+
+    unverified_quote = deepcopy(matched_quote)
+    unverified_quote["quote_reference"] = "QUOTE-UNVERIFIED-CANDIDATES"
+    unverified_quote["supplier_candidate_snapshot_hash"] = unverified.json()[
+        "input_hash"
+    ]
+    blocked_quote = client.post(
+        f"/api/tenders/{tender_id}/supplier-quote-snapshots",
+        headers=MANAGER,
+        json=unverified_quote,
+    )
+    assert blocked_quote.status_code == 422
+    assert "not eligible" in blocked_quote.json()["detail"]
+
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(func.count()).select_from(TenderSupplierCandidateSnapshot)
+        ) == 2
+        assert db.scalar(
+            select(func.count()).select_from(DomainEvent).where(
+                DomainEvent.event_type == "tender.supplier_candidates_recorded",
+                DomainEvent.aggregate_id == str(tender_id),
+            )
+        ) == 2
+
+
 def test_supplier_quote_snapshot_fails_closed_on_unknown_and_invalid_evidence(
     client,
 ):
@@ -995,6 +1148,17 @@ def test_a4_1000_pack_reference_scenario_reaches_application_checklist(
     ).json()
     assert prequalification["status"] == "eligible"
 
+    supplier_candidates = client.post(
+        f"/api/tenders/{tender['id']}/supplier-candidate-snapshots",
+        headers=MANAGER,
+        json=_supplier_candidate_payload(prequalification["input_hash"]),
+    )
+    assert supplier_candidates.status_code == 201
+    candidate_snapshot = supplier_candidates.json()
+    assert candidate_snapshot["status"] == "ready_for_quote_collection"
+    assert candidate_snapshot["result"]["eligible_candidate_count"] == 2
+    assert candidate_snapshot["result"]["automatic_rfq_allowed"] is False
+
     quote_snapshots = []
     for sequence, document_name, total_cost, unit_price in (
         (1, "a4-quote-1.pdf", "520000.00", "520.00"),
@@ -1006,6 +1170,9 @@ def test_a4_1000_pack_reference_scenario_reaches_application_checklist(
         )
         quote_payload.update(
             {
+                "supplier_candidate_snapshot_hash": candidate_snapshot[
+                    "input_hash"
+                ],
                 "supplier_name": f"ООО Поставщик бумаги {sequence}",
                 "supplier_identifier": f"780100000{sequence}",
                 "quote_reference": f"A4-QUOTE-{sequence}",

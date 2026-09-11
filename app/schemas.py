@@ -398,6 +398,41 @@ class TenderRequirementReviewCreate(BaseModel):
     )
 
 
+class TenderSupplierCandidate(BaseModel):
+    supplier_name: str = Field(min_length=2, max_length=255)
+    supplier_identifier: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+    )
+    product_name: str = Field(min_length=2, max_length=500)
+    product_sku: str = Field(min_length=1, max_length=128)
+    manufacturer: str = Field(min_length=2, max_length=255)
+    country: str = Field(min_length=2, max_length=128)
+    source_kind: str = Field(
+        pattern=(
+            "^(official_catalog|manufacturer|distributor|b2b_marketplace|"
+            "prior_supplier|manual_research)$"
+        )
+    )
+    source_url: str = Field(min_length=10, max_length=1024)
+    observed_at: datetime
+    valid_until: datetime
+    specification_match: str = Field(pattern="^(match|mismatch|unknown)$")
+    certificate_status: str = Field(
+        pattern="^(valid|not_required|missing|unknown)$"
+    )
+    supplier_reliability: str = Field(pattern="^(trusted|unknown|blocked)$")
+
+
+class TenderSupplierCandidateSnapshotCreate(BaseModel):
+    prequalification_snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    discovery_mode: str = Field(
+        pattern="^(manual_research|catalog_import|provider_adapter|prior_supplier)$"
+    )
+    candidates: list[TenderSupplierCandidate] = Field(min_length=2, max_length=100)
+
+
 class TenderProductComparisonReviewDecision(BaseModel):
     candidate_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     match_status: str = Field(pattern="^(match|mismatch|unknown)$")
@@ -425,6 +460,10 @@ class TenderSupplierQuoteInput(BaseModel):
 
 class TenderSupplierQuoteCreate(TenderSupplierQuoteInput):
     prequalification_snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    supplier_candidate_snapshot_hash: Optional[str] = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+    )
     supplier_identifier: str = Field(min_length=1, max_length=64)
     product_sku: str = Field(min_length=1, max_length=128)
     brand: str = Field(default="", max_length=128)

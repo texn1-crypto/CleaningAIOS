@@ -21,6 +21,7 @@ from .schemas import (
     TenderSupplierQuoteCreate,
     TenderSupplierQuoteInput,
 )
+from .tender_supplier_candidates import validate_quote_candidate_binding
 
 
 RULES_VERSION = "tender-supplier-quote-v1"
@@ -173,6 +174,10 @@ def build_supplier_quote_snapshot(
         },
         "decision_quote": quote,
     }
+    if payload.supplier_candidate_snapshot_hash is not None:
+        canonical["supplier_candidate_snapshot_hash"] = (
+            payload.supplier_candidate_snapshot_hash
+        )
     input_hash = _digest(canonical)
     current_time = _utc(now or datetime.now(timezone.utc))
     hard_stops: list[str] = []
@@ -234,6 +239,10 @@ def build_supplier_quote_snapshot(
         "economics_allowed": status == "verified",
         "rfq_or_order_automatic_execution_allowed": False,
     }
+    if payload.supplier_candidate_snapshot_hash is not None:
+        result["supplier_candidate_snapshot_hash"] = (
+            payload.supplier_candidate_snapshot_hash
+        )
     return canonical, result
 
 
@@ -254,6 +263,15 @@ def persist_supplier_quote_snapshot(
     )
     if prequalification is None:
         raise ValueError("Prequalification snapshot is unavailable")
+    validate_quote_candidate_binding(
+        db,
+        tender,
+        candidate_snapshot_hash=payload.supplier_candidate_snapshot_hash,
+        prequalification_snapshot_hash=prequalification.input_hash,
+        supplier_name=payload.supplier_name,
+        supplier_identifier=payload.supplier_identifier,
+        now=now,
+    )
     documents = list(
         db.scalars(
             select(TenderDocument)
@@ -280,6 +298,7 @@ def persist_supplier_quote_snapshot(
         record_id=tender.id,
         input_hash=result["input_hash"],
         prequalification_snapshot_hash=prequalification.input_hash,
+        supplier_candidate_snapshot_hash=payload.supplier_candidate_snapshot_hash,
         rules_version=RULES_VERSION,
         status=result["status"],
         supplier_name=payload.supplier_name.strip(),
@@ -316,6 +335,7 @@ def supplier_quote_snapshot_view(
         "record_id": row.record_id,
         "input_hash": row.input_hash,
         "prequalification_snapshot_hash": row.prequalification_snapshot_hash,
+        "supplier_candidate_snapshot_hash": row.supplier_candidate_snapshot_hash,
         "rules_version": row.rules_version,
         "status": row.status,
         "quote": row.input_snapshot.get("quote", {}),
@@ -334,4 +354,8 @@ def supplier_quote_snapshot_integrity_valid(
         and _digest(row.input_snapshot) == row.input_hash
         and result.get("input_hash") == row.input_hash
         and result.get("status") == row.status
+        and row.supplier_candidate_snapshot_hash
+        == row.input_snapshot.get("supplier_candidate_snapshot_hash")
+        and row.supplier_candidate_snapshot_hash
+        == result.get("supplier_candidate_snapshot_hash")
     )
