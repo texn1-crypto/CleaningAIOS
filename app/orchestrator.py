@@ -119,14 +119,26 @@ def dispatch(db: Session, task: Task) -> dict:
         block_reason = str(policy.get("reason") or "policy_blocked")
         safety_block = block_reason in {
             "global_kill_switch_active",
+            "tender_kill_switch_active",
             "capability_disabled",
         }
-        if block_reason == "global_kill_switch_active":
+        if block_reason in {
+            "global_kill_switch_active",
+            "tender_kill_switch_active",
+        }:
             safety_version = policy.get("kill_switch", {}).get("version", 0)
-            safety_transition_key = (
-                f"task:{task.id}:kill-switch:{safety_version}:blocked"
+            safety_scope = (
+                f"tender:{policy.get('tender_id')}"
+                if block_reason == "tender_kill_switch_active"
+                else "global"
             )
-            safety_event_key = f"task:{task.id}:kill-switch:{safety_version}"
+            safety_transition_key = (
+                f"task:{task.id}:kill-switch:{safety_scope}:"
+                f"{safety_version}:blocked"
+            )
+            safety_event_key = (
+                f"task:{task.id}:kill-switch:{safety_scope}:{safety_version}"
+            )
         else:
             safety_version = policy.get("capability_flag", {}).get("version", 0)
             safety_transition_key = (

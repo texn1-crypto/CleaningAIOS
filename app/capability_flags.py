@@ -19,18 +19,33 @@ PROTECTED_CAPABILITIES = (
     "tender_submission",
 )
 PROTECTED_CAPABILITY_SET = frozenset(PROTECTED_CAPABILITIES)
+TENDER_SCOPED_CAPABILITIES = frozenset(
+    {"tender_participation", "tender_submission"}
+)
 INITIAL_COMPATIBILITY_REASON = (
     "Initial compatibility flag; owner approval remains mandatory"
 )
 GLOBAL_EXTERNAL_ACTIONS_CONTROL = "global_external_actions"
+TENDER_EXTERNAL_ACTIONS_CONTROL_PREFIX = "tender_external_actions:"
 
 
-def external_action_gate(db: Session, capability_key: str) -> dict[str, Any]:
+def tender_external_actions_control_key(tender_id: int) -> str:
+    if isinstance(tender_id, bool) or tender_id <= 0:
+        raise ValueError("Tender ID must be a positive integer")
+    return f"{TENDER_EXTERNAL_ACTIONS_CONTROL_PREFIX}{tender_id}"
+
+
+def external_action_gate(
+    db: Session,
+    capability_key: str,
+    *,
+    tender_id: int | None = None,
+) -> dict[str, Any]:
     """Evaluate the shared persisted stop controls for an external action.
 
     Callers must still enforce action-specific approval, consent and rate limits.
-    This gate only adds the global stop and the exact capability flag, in that
-    order. A missing capability row fails closed.
+    This gate adds the global stop, an optional per-tender stop and the exact
+    capability flag, in that order. A missing capability row fails closed.
     """
 
     if capability_key not in PROTECTED_CAPABILITY_SET:
@@ -46,6 +61,22 @@ def external_action_gate(db: Session, capability_key: str) -> dict[str, Any]:
                 "reason": kill_switch.reason,
             },
         }
+    if tender_id is not None:
+        tender_control = db.get(
+            SafetyControl,
+            tender_external_actions_control_key(tender_id),
+        )
+        if tender_control is not None and tender_control.active:
+            return {
+                "allowed": False,
+                "reason": "tender_kill_switch_active",
+                "tender_id": tender_id,
+                "kill_switch": {
+                    "key": tender_control.key,
+                    "version": tender_control.version,
+                    "reason": tender_control.reason,
+                },
+            }
     capability_flag = db.get(CapabilityFlag, capability_key)
     if capability_flag is None or not capability_flag.enabled:
         return {

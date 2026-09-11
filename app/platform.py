@@ -10,7 +10,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .agents import AGENTS, heartbeat
-from .capability_flags import PROTECTED_CAPABILITY_SET, external_action_gate
+from .capability_flags import (
+    PROTECTED_CAPABILITY_SET,
+    TENDER_SCOPED_CAPABILITIES,
+    external_action_gate,
+)
 from .config import settings
 from .models import AgentRun, ApprovalRequest, CompanyKnowledge, DomainEvent, EventConsumerReceipt, Task
 from .task_state import record_task_created, transition_task
@@ -232,7 +236,20 @@ class DecisionEngine:
     def evaluate(self, db: Session, task: Task) -> dict[str, Any]:
         action_kind = task.payload.get("action_kind")
         if action_kind in approval_engine.protected_actions:
-            gate = external_action_gate(db, str(action_kind))
+            tender_id = None
+            if action_kind in TENDER_SCOPED_CAPABILITIES:
+                raw_tender_id = task.payload.get("record_id")
+                if (
+                    isinstance(raw_tender_id, int)
+                    and not isinstance(raw_tender_id, bool)
+                    and raw_tender_id > 0
+                ):
+                    tender_id = raw_tender_id
+            gate = external_action_gate(
+                db,
+                str(action_kind),
+                tender_id=tender_id,
+            )
             if not gate["allowed"]:
                 return {**gate, "approval_id": None}
             supplied_id = task.payload.get("approval_id")

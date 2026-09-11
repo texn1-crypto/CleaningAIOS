@@ -56,5 +56,21 @@ worker returns before selecting or transmitting queued content when either stop 
 active or the required capability row is missing; queued work is therefore preserved
 for a later authorized run. Approval, verified consent/suppression and rate-limit
 checks remain separate mandatory controls. Other direct protected entry points and
-per-tender controls still require enforcement evidence before the feature-flag
-requirement can be called complete.
+future resource-scoped controls still require enforcement evidence before the
+feature-flag requirement can be called complete.
+
+## Per-tender kill switch
+
+Every persisted tender has an independent stop at
+`GET /api/tenders/{record_id}/kill-switch`. Managers may inspect it; only the owner
+may change it with `PUT` and a reason. The control reuses the durable
+`SafetyControl` store, increments its version only for a real change and writes one
+idempotent audit/outbox record per version.
+
+For record-bound `tender_participation` and `tender_submission` tasks, Decision
+Engine checks the global stop first, then this exact tender stop, then the capability
+flag, all before creating or accepting an approval. Stopping one tender does not
+stop another. Releasing the stop never approves, requeues or resumes an old task;
+a fresh workflow attempt still needs the normal resource-bound owner approval.
+Future direct portal adapters must call the same gate again immediately before an
+external effect, so the separate hard-stop-near-execution requirement remains open.

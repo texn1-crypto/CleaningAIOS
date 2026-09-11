@@ -28,8 +28,9 @@
    four-eyes review and explicit missing-item remediation.
 6. **Assisted submission.** The persisted protected-action capability registry now
    gates Task/Orchestrator execution before approval plus the direct SMTP outreach
-   and social-publication worker boundaries. Next: central enforcement at every
-   remaining direct protected entry point and mock adapters; external receipt required.
+   and social-publication worker boundaries. Record-bound participation/submission
+   also has an isolated per-tender stop before approval. Next: enforce the same
+   controls at every future direct adapter; external receipt required.
    CAPTCHA/MFA always human takeover.
 7. **Auction safety.** Simulator, property/replay/failure tests and hard-stop
    invariant before controlled autobid can be proposed.

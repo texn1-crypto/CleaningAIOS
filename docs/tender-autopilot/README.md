@@ -197,10 +197,12 @@ extractor не объявляет товары соответствующими 
 Все защищённые action kinds имеют явные PostgreSQL `CapabilityFlag`. Manager-only
 API показывает registry, owner-only API меняет флаг с причиной и версией, а
 Decision Engine fail-closed блокирует отсутствующий/выключенный capability до
-создания или принятия approval. Глобальный kill switch проверяется первым; включение
-capability не заменяет owner approval. Сейчас enforcement доказан для
-Task/Orchestrator path, поэтому полное покрытие прямых защищённых API ещё не
-заявляется.
+создания или принятия approval. Глобальный kill switch проверяется первым. Для
+record-bound участия и подачи затем проверяется отдельный versioned per-tender stop,
+который менеджер видит, а изменить может только владелец; после него проверяется
+capability. Ни один из этих флагов не заменяет owner approval. Сейчас enforcement
+доказан для Task/Orchestrator path, поэтому полное покрытие будущих прямых
+защищённых adapters ещё не заявляется.
 
 Срез production-quality для общего HTTP(S) JSON feed и ручного/fixture структурированного ввода,
 локального выделения кандидатов требований и характеристик товара, проверки

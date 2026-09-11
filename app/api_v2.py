@@ -50,6 +50,7 @@ from .capability_flags import (
     GLOBAL_EXTERNAL_ACTIONS_CONTROL,
     PROTECTED_CAPABILITY_SET,
     capability_flag_view,
+    tender_external_actions_control_key,
 )
 from .notifications import (
     NotificationNotDelivered,
@@ -108,10 +109,14 @@ def get_db():
         db.close()
 
 
-def _kill_switch_view(row: SafetyControl | None) -> dict[str, object]:
+def _kill_switch_view(
+    row: SafetyControl | None,
+    *,
+    default_key: str = GLOBAL_EXTERNAL_ACTIONS_CONTROL,
+) -> dict[str, object]:
     if row is None:
         return {
-            "key": GLOBAL_EXTERNAL_ACTIONS_CONTROL,
+            "key": default_key,
             "active": False,
             "reason": "",
             "version": 0,
@@ -192,6 +197,96 @@ def update_external_actions_kill_switch(
     db.commit()
     db.refresh(row)
     return {**_kill_switch_view(row), "changed": changed}
+
+
+def _tender_or_404(db: Session, record_id: int) -> BusinessRecord:
+    tender = db.get(BusinessRecord, record_id)
+    if tender is None or tender.record_type != "tender":
+        raise HTTPException(404, "Tender not found")
+    return tender
+
+
+@router.get("/tenders/{record_id}/kill-switch")
+def tender_kill_switch_status(
+    record_id: int,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    _tender_or_404(db, record_id)
+    key = tender_external_actions_control_key(record_id)
+    return {
+        "tender_id": record_id,
+        **_kill_switch_view(
+            db.get(SafetyControl, key),
+            default_key=key,
+        ),
+    }
+
+
+@router.put("/tenders/{record_id}/kill-switch")
+def update_tender_kill_switch(
+    record_id: int,
+    payload: ExternalActionsKillSwitchUpdate,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "owner")
+    _tender_or_404(db, record_id)
+    reason = redact_sensitive_text(payload.reason).strip()
+    if payload.active and len(reason) < 3:
+        raise HTTPException(
+            422,
+            "A reason is required when activating the tender kill switch",
+        )
+    key = tender_external_actions_control_key(record_id)
+    row = db.get(SafetyControl, key)
+    changed = row is None or row.active != payload.active or row.reason != reason
+    if row is None:
+        row = SafetyControl(
+            key=key,
+            active=payload.active,
+            reason=reason,
+            version=1,
+            updated_by=actor.subject,
+        )
+        db.add(row)
+        db.flush()
+    elif changed:
+        row.active = payload.active
+        row.reason = reason
+        row.version += 1
+        row.updated_by = actor.subject
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.flush()
+    if changed:
+        details = {
+            "active": row.active,
+            "version": row.version,
+            "reason": row.reason,
+        }
+        audit(
+            db,
+            actor.subject,
+            "safety.tender_kill_switch_updated",
+            "tender",
+            str(record_id),
+            details,
+        )
+        event_bus.publish(
+            db,
+            "safety.tender_kill_switch_updated",
+            "tender",
+            str(record_id),
+            details,
+            idempotency_key=(
+                f"tender:{record_id}:kill-switch:version:{row.version}"
+            ),
+            actor=actor.subject,
+        )
+    db.commit()
+    db.refresh(row)
+    return {"tender_id": record_id, **_kill_switch_view(row), "changed": changed}
 
 
 @router.get("/safety/capability-flags")
