@@ -1777,6 +1777,109 @@ def test_tender_requirement_docx_preflight_rejects_unsafe_archives(
     )
 
 
+def test_tender_requirement_pdf_parser_is_resource_bounded(
+    client, tmp_path, monkeypatch
+):
+    from io import BytesIO
+    import subprocess
+
+    from reportlab.pdfgen.canvas import Canvas
+
+    from app import tender_document_intelligence as intelligence
+
+    monkeypatch.setattr(settings, "document_storage_path", str(tmp_path))
+
+    def pdf_bytes(*pages: str) -> bytes:
+        output = BytesIO()
+        canvas = Canvas(output)
+        for text in pages:
+            canvas.drawString(72, 720, text)
+            canvas.showPage()
+        canvas.save()
+        return output.getvalue()
+
+    def register(name: str, raw: bytes):
+        path = tmp_path / name
+        path.write_bytes(raw)
+        tender = client.post(
+            "/api/records",
+            headers=MANAGER,
+            json={
+                "record_type": "tender",
+                "external_id": f"pdf-parser-safety-{path.stem}",
+                "title": f"Проверка безопасности PDF: {path.stem}",
+                "data": {},
+            },
+        ).json()
+        return client.post(
+            f"/api/tenders/{tender['id']}/documents",
+            headers=MANAGER,
+            json={
+                "name": path.name,
+                "content_type": "application/pdf",
+                "storage_path": str(path),
+                "checksum": hashlib.sha256(raw).hexdigest(),
+                "analysis": {"kind": "requirements"},
+            },
+        ).json()
+
+    valid = register(
+        "valid.pdf",
+        pdf_bytes("Supplier must provide cleaning services."),
+    )
+    page_limit = register(
+        "page-limit.pdf",
+        pdf_bytes("Supplier must clean floor one.", "Supplier must clean floor two."),
+    )
+    text_limit = register(
+        "text-limit.pdf",
+        pdf_bytes("Supplier must provide a deliberately long cleaning requirement."),
+    )
+    timeout = register(
+        "timeout.pdf",
+        pdf_bytes("Supplier must provide cleaning services within the deadline."),
+    )
+
+    valid_result = client.post(
+        f"/api/tender-documents/{valid['id']}/requirements/extract",
+        headers=MANAGER,
+    )
+    assert valid_result.status_code == 200
+    assert valid_result.json()["candidate_count"] == 1
+
+    monkeypatch.setattr(intelligence, "MAX_PDF_PAGES", 1)
+    page_limit_result = client.post(
+        f"/api/tender-documents/{page_limit['id']}/requirements/extract",
+        headers=MANAGER,
+    )
+    assert page_limit_result.status_code == 422
+    assert page_limit_result.json()["detail"] == "Tender PDF exceeds the page limit"
+
+    monkeypatch.setattr(intelligence, "MAX_PDF_PAGES", 500)
+    monkeypatch.setattr(intelligence, "MAX_PDF_PAGE_TEXT_CHARS", 10)
+    text_limit_result = client.post(
+        f"/api/tender-documents/{text_limit['id']}/requirements/extract",
+        headers=MANAGER,
+    )
+    assert text_limit_result.status_code == 422
+    assert text_limit_result.json()["detail"] == (
+        "Tender PDF page exceeds the text expansion limit"
+    )
+
+    def expire(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=1)
+
+    monkeypatch.setattr(intelligence.subprocess, "run", expire)
+    timeout_result = client.post(
+        f"/api/tender-documents/{timeout['id']}/requirements/extract",
+        headers=MANAGER,
+    )
+    assert timeout_result.status_code == 422
+    assert timeout_result.json()["detail"] == (
+        "Tender PDF parser exceeded the time limit"
+    )
+
+
 def test_supplier_product_specification_extraction_is_fail_closed_and_idempotent(
     client, tmp_path, monkeypatch
 ):

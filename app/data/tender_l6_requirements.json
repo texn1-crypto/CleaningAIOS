@@ -128,10 +128,12 @@
       "evidence": [
         "app/integrations.py",
         "app/tender_document_intelligence.py",
+        "app/pdf_text_worker.py",
         "tests/test_app.py",
-        "tests/test_tender_autopilot.py"
+        "tests/test_tender_autopilot.py",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
       ],
-      "notes": "Secure download keeps checksum-addressed byte files and append-only version metadata, reuses exact replays, rejects on-disk checksum conflicts and feeds checksum-bound local PDF/DOCX/TXT/Markdown extraction. Before DOCX parsing, a bounded OPC/ZIP preflight rejects excessive entries or expanded bytes, compression bombs, traversal, duplicate, encrypted, linked and unsupported members without filesystem extraction. Requirement candidates have stable hashes and exact-set, checksum/extractor-bound manager review with append-only history and audit/outbox evidence. Malware scanning, isolated parser sandbox, OCR, tables, independent AI review and semantic amendment diffing remain incomplete."
+      "notes": "Secure download keeps checksum-addressed byte files and append-only version metadata, reuses exact replays, rejects on-disk checksum conflicts and feeds checksum-bound local PDF/DOCX/TXT/Markdown extraction. Before DOCX parsing, a bounded OPC/ZIP preflight rejects excessive entries or expanded bytes, compression bombs, traversal, duplicate, encrypted, linked and unsupported members without filesystem extraction. PDF parsing runs outside the web process with page/per-page/total-text/output budgets, a wall-clock timeout and Linux CPU/address-space limits; parser failure is fail-closed. Requirement candidates have stable hashes and exact-set, checksum/extractor-bound manager review with append-only history and audit/outbox evidence. Malware scanning, a fully filesystem/network-isolated parser sandbox, OCR, tables, independent AI review and semantic amendment diffing remain incomplete."
     },
     {
       "id": 12,
@@ -2354,9 +2356,10 @@
       "evidence": [
         "tests/test_app.py",
         "tests/test_tender_autopilot.py",
-        "tests/test_tender_autopilot.py:test_tender_requirement_docx_preflight_rejects_unsafe_archives"
+        "tests/test_tender_autopilot.py:test_tender_requirement_docx_preflight_rejects_unsafe_archives",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
       ],
-      "notes": "Tender DOCX security regression covers a valid document plus path traversal, duplicate members, compression bomb and excessive archive entries. Malware/PDF bomb, isolated parser and broader adversarial document coverage remain open."
+      "notes": "Tender DOCX security regression covers a valid document plus path traversal, duplicate members, compression bomb and excessive archive entries. PDF regression covers a valid extraction plus page/text budgets and fail-closed parser timeout. Malware, OCR-specific bombs, forced-OOM corpus, full parser isolation and broader adversarial document coverage remain open."
     },
     {
       "id": 253,
@@ -2779,6 +2782,7 @@
         "app/tender_autopilot.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
+        "app/pdf_text_worker.py",
         "app/capability_flags.py",
         "app/api_v2.py",
         "migrations/versions/0029_tender_source_pagination.py",
@@ -2790,9 +2794,10 @@
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
-        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only"
+        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
       ],
-      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, transaction-bound pagination checkpoints, hashed provider page acknowledgements, completeness receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION and the immutable verified supplier quote gate, economics, auction forecast, product matching, review, decision snapshot and evidence-derived application checklist. DOCX input passes a bounded archive-safety preflight before local parsing. Requirement candidates pass through an exact-set, checksum/extractor-bound manager review with append-only history; a decision cites review hashes and the server revalidates bytes, candidate set, decisions and evidence before deriving assessment facts. A reproducible 1000-pack A4 structured fixture reaches the owner approval card using two immutable supplier quotes. Persisted global, per-tender and capability controls gate record-bound participation/submission before approval; direct SMTP/social workers share the applicable global/capability gate, while owner approval remains mandatory. Official provider adapters and portal contracts, automated company/supplier evidence acquisition, quote acquisition and RFQ remain incomplete."
+      "notes": "The pipeline now starts with provider-scoped, canonical append-only generic feed versions, transaction-bound pagination checkpoints, hashed provider page acknowledgements, completeness receipts and deterministic freshness incidents, then can bind an immutable evidence-bound Company Digital Twin before FAST DISQUALIFICATION and the immutable verified supplier quote gate, economics, auction forecast, product matching, review, decision snapshot and evidence-derived application checklist. DOCX input passes a bounded archive-safety preflight before local parsing; PDF input is parsed outside the web process under page/text/output/time and Linux CPU/address-space limits. Requirement candidates pass through an exact-set, checksum/extractor-bound manager review with append-only history; a decision cites review hashes and the server revalidates bytes, candidate set, decisions and evidence before deriving assessment facts. A reproducible 1000-pack A4 structured fixture reaches the owner approval card using two immutable supplier quotes. Persisted global, per-tender and capability controls gate record-bound participation/submission before approval; direct SMTP/social workers share the applicable global/capability gate, while owner approval remains mandatory. Official provider adapters and portal contracts, automated company/supplier evidence acquisition, quote acquisition and RFQ remain incomplete."
     },
     {
       "id": 298,
@@ -2944,6 +2949,7 @@
         "app/tender_autopilot.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
+        "app/pdf_text_worker.py",
         "app/capability_flags.py",
         "app/api_v2.py",
         "migrations/versions/0029_tender_source_pagination.py",
@@ -2954,9 +2960,10 @@
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
-        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only"
+        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
       ],
-      "notes": "Provider-scoped canonical generic feed amendments, protected transaction-bound page checkpoints, hashed acknowledgements, completeness/source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction with bounded DOCX archive preflight, exact-set manager review, review-hash-to-decision derivation, comparison, decision conversion and a deterministic application checklist are persisted. The A4 evidence includes stored requirement bytes through deterministic extraction and checksum-bound review; its decision now cites only the review hash and server-derived facts, while the structured scenario reaches the owner approval card with two supplier quotes and the stop-price invariant. Protected Task/Orchestrator actions require the persisted global/capability controls before approval, and record-bound participation/submission also enforces an isolated per-tender stop; direct SMTP outreach and social publication workers enforce the applicable global/capability gate. Network A4 document acquisition, PDF/OCR/table extraction, independent multi-agent review, full post-win flow, official provider contracts, automated company/supplier evidence acquisition and RFQ remain incomplete, so the release DoD stays PARTIAL."
+      "notes": "Provider-scoped canonical generic feed amendments, protected transaction-bound page checkpoints, hashed acknowledgements, completeness/source-run receipts with freshness incidents, checksum-addressed document byte versions, immutable evidence-bound Company Digital Twin, fast prequalification, verified supplier quote snapshots, auction forecast, stop price, product matching, fail-closed extraction with bounded DOCX archive preflight and a resource-limited PDF subprocess, exact-set manager review, review-hash-to-decision derivation, comparison, decision conversion and a deterministic application checklist are persisted. The A4 evidence includes stored requirement bytes through deterministic extraction and checksum-bound review; its decision now cites only the review hash and server-derived facts, while the structured scenario reaches the owner approval card with two supplier quotes and the stop-price invariant. Protected Task/Orchestrator actions require the persisted global/capability controls before approval, and record-bound participation/submission also enforces an isolated per-tender stop; direct SMTP outreach and social publication workers enforce the applicable global/capability gate. Network A4 document acquisition, real PDF/OCR/table extraction evidence, independent multi-agent review, full post-win flow, official provider contracts, automated company/supplier evidence acquisition and RFQ remain incomplete, so the release DoD stays PARTIAL."
     },
     {
       "id": 314,
@@ -2986,6 +2993,7 @@
         "app/tender_autopilot.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
+        "app/pdf_text_worker.py",
         "app/capability_flags.py",
         "app/api_v2.py",
         "migrations/versions/0029_tender_source_pagination.py",
@@ -2996,9 +3004,10 @@
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
-        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only"
+        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
       ],
-      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, transaction-bound provider pagination checkpoints and hashed completeness evidence, persisted global/capability gates plus an isolated per-tender stop before participation/submission approval, direct SMTP/social enforcement of the applicable global/capability layers, bounded DOCX archive preflight, immutable Company Digital Twin, fast-prequalification, verified supplier quote snapshots, exact-set checksum-bound requirement review, server-side review-hash-to-decision fact derivation, a deterministic application checklist and reproducible A4 evidence through the approval card. It remains partial until the first-release DoD is met."
+      "notes": "The first vertical slice is being delivered incrementally with real API, persistence, RBAC, audit/outbox, transaction-bound provider pagination checkpoints and hashed completeness evidence, persisted global/capability gates plus an isolated per-tender stop before participation/submission approval, direct SMTP/social enforcement of the applicable global/capability layers, bounded DOCX archive preflight, resource-limited fail-closed PDF parsing, immutable Company Digital Twin, fast-prequalification, verified supplier quote snapshots, exact-set checksum-bound requirement review, server-side review-hash-to-decision fact derivation, a deterministic application checklist and reproducible A4 evidence through the approval card. It remains partial until the first-release DoD is met."
     },
     {
       "id": 317,
@@ -3011,6 +3020,7 @@
         "app/tender_autopilot.py",
         "app/tender_supplier_quotes.py",
         "app/tender_document_intelligence.py",
+        "app/pdf_text_worker.py",
         "app/capability_flags.py",
         "app/api_v2.py",
         "migrations/versions/0029_tender_source_pagination.py",
@@ -3021,9 +3031,10 @@
         "tests/test_tender_kill_switch.py",
         "tests/test_tender_provider_pagination.py",
         "tests/test_tender_autopilot.py:test_a4_1000_pack_reference_scenario_reaches_application_checklist",
-        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only"
+        "tests/test_tender_autopilot.py:test_tender_requirement_review_is_exact_set_checksum_bound_and_append_only",
+        "tests/test_tender_autopilot.py:test_tender_requirement_pdf_parser_is_resource_bounded"
       ],
-      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with protected resumable page checkpoints, hashed acknowledgements, explicit completeness/source-run receipts and freshness incidents, document-byte versions, bounded DOCX archive preflight before local parsing, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact-set checksum-bound requirement review, server-side fact derivation from current review hashes, product comparison review, hash-bound decision inputs and a persisted deterministic application checklist. A stored-byte A4 requirement case reaches assessment by citing only the manager review hash; stale, tampered, duplicate and mixed manual sources fail closed. The 1000-pack A4 structured fixture exercises two supplier quotes through an owner approval card without external effects. Every protected Task/Orchestrator action requires persisted global/capability controls before approval; record-bound participation/submission also has an isolated per-tender stop. Network A4 document acquisition, PDF/OCR/table extraction, independent multi-agent review, remaining direct-entry coverage, extended/automated Company Digital Twin verification, official provider adapters/contracts and automated supplier discovery/RFQ remain open."
+      "notes": "Generic-feed-to-approval-card now includes provider-scoped canonical append-only feed versions with protected resumable page checkpoints, hashed acknowledgements, explicit completeness/source-run receipts and freshness incidents, document-byte versions, bounded DOCX archive preflight before local parsing, resource-limited fail-closed PDF parsing outside the web process, immutable evidence-bound Company Digital Twin, FAST DISQUALIFICATION and supplier quote snapshots, deterministic auction forecast, product compliance gates, fail-closed extraction, exact-set checksum-bound requirement review, server-side fact derivation from current review hashes, product comparison review, hash-bound decision inputs and a persisted deterministic application checklist. A stored-byte A4 requirement case reaches assessment by citing only the manager review hash; stale, tampered, duplicate and mixed manual sources fail closed. The 1000-pack A4 structured fixture exercises two supplier quotes through an owner approval card without external effects. Every protected Task/Orchestrator action requires persisted global/capability controls before approval; record-bound participation/submission also has an isolated per-tender stop. Network A4 document acquisition, real PDF/OCR/table extraction evidence, independent multi-agent review, remaining direct-entry coverage, extended/automated Company Digital Twin verification, official provider adapters/contracts and automated supplier discovery/RFQ remain open."
     },
     {
       "id": 318,

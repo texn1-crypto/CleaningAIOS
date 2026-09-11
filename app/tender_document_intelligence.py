@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import stat
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 from docx import Document
-from pypdf import PdfReader
-
 from .config import settings
 from .models import BusinessRecord, TenderDocument
 
@@ -29,6 +30,21 @@ MAX_DOCX_ENTRIES = 4_096
 MAX_DOCX_ENTRY_BYTES = 100_000_000
 MAX_DOCX_UNCOMPRESSED_BYTES = 250_000_000
 MAX_DOCX_COMPRESSION_RATIO = 200.0
+MAX_PDF_PAGES = 500
+MAX_PDF_PAGE_TEXT_CHARS = 250_000
+MAX_PDF_TOTAL_TEXT_CHARS = 5_000_000
+MAX_PDF_WORKER_OUTPUT_BYTES = 40_000_000
+PDF_PARSER_MEMORY_BYTES = 512 * 1024 * 1024
+PDF_PARSER_CPU_SECONDS = 15
+PDF_PARSER_TIMEOUT_SECONDS = 20
+
+_PDF_WORKER_ERRORS = {
+    "encrypted": "Tender PDF is encrypted",
+    "page_limit": "Tender PDF exceeds the page limit",
+    "page_text_limit": "Tender PDF page exceeds the text expansion limit",
+    "total_text_limit": "Tender PDF exceeds the text expansion limit",
+    "parse_failed": "Tender PDF parsing failed safely",
+}
 
 _REQUIREMENT_MARKERS = (
     "обязан",
@@ -201,6 +217,79 @@ def _validate_docx_archive(path: Path) -> None:
         ) from exc
 
 
+def _pdf_segments(path: Path) -> list[tuple[str, str]]:
+    """Parse an untrusted PDF outside the web process with hard resource bounds."""
+
+    command = [
+        sys.executable,
+        "-m",
+        "app.pdf_text_worker",
+        str(path),
+        str(MAX_PDF_PAGES),
+        str(MAX_PDF_PAGE_TEXT_CHARS),
+        str(MAX_PDF_TOTAL_TEXT_CHARS),
+        str(MAX_SEGMENTS),
+        str(PDF_PARSER_MEMORY_BYTES),
+        str(PDF_PARSER_CPU_SECONDS),
+    ]
+    environment = {
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONHASHSEED": "0",
+        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+    }
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=Path(__file__).resolve().parent.parent,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=PDF_PARSER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TenderDocumentExtractionError(
+            "Tender PDF parser exceeded the time limit"
+        ) from exc
+    if completed.returncode != 0:
+        raise TenderDocumentExtractionError("Tender PDF parser failed safely")
+    if len(completed.stdout) > MAX_PDF_WORKER_OUTPUT_BYTES:
+        raise TenderDocumentExtractionError(
+            "Tender PDF parser output exceeds the safety limit"
+        )
+    try:
+        payload = json.loads(completed.stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise TenderDocumentExtractionError("Tender PDF parser failed safely") from exc
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        error_code = str(payload.get("error") if isinstance(payload, dict) else "")
+        raise TenderDocumentExtractionError(
+            _PDF_WORKER_ERRORS.get(error_code, "Tender PDF parser failed safely")
+        )
+    raw_segments = payload.get("segments")
+    if not isinstance(raw_segments, list):
+        raise TenderDocumentExtractionError("Tender PDF parser failed safely")
+    result: list[tuple[str, str]] = []
+    total_text_chars = 0
+    for item in raw_segments:
+        if (
+            not isinstance(item, list)
+            or len(item) != 2
+            or not all(isinstance(value, str) for value in item)
+        ):
+            raise TenderDocumentExtractionError("Tender PDF parser failed safely")
+        locator, text = item
+        total_text_chars += len(text)
+        if total_text_chars > MAX_PDF_TOTAL_TEXT_CHARS:
+            raise TenderDocumentExtractionError(
+                "Tender PDF exceeds the text expansion limit"
+            )
+        result.append((locator, text))
+    return result
+
+
 def _segments(path: Path) -> list[tuple[str, str]]:
     suffix = path.suffix.lower()
     result: list[tuple[str, str]] = []
@@ -208,10 +297,7 @@ def _segments(path: Path) -> list[tuple[str, str]]:
         if suffix == ".pdf":
             if not path.read_bytes()[:5] == b"%PDF-":
                 raise TenderDocumentExtractionError("Tender document MIME does not match PDF")
-            reader = PdfReader(str(path))
-            for page_number, page in enumerate(reader.pages[:500], start=1):
-                for paragraph_number, raw in enumerate((page.extract_text() or "").splitlines(), start=1):
-                    result.append((f"page {page_number}, line {paragraph_number}", raw))
+            result.extend(_pdf_segments(path))
         elif suffix == ".docx":
             _validate_docx_archive(path)
             source = Document(str(path))

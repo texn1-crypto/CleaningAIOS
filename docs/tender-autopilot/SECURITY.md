@@ -7,7 +7,7 @@
 | Approval replay | Versioned, expiring Approval Engine; snapshot hash in task | Per-action short-lived execution token |
 | Stop-price bypass | Backend deterministic calculation, no LLM arithmetic | Enforce again inside future bid adapter |
 | SSRF | Safe URL validation and redirect recheck | Provider-specific allowlists |
-| Malware/ZIP bomb/path traversal | Storage boundary, byte limit and DOCX preflight enforce entry/expanded-size/compression-ratio bounds and reject traversal, duplicate, encrypted, linked or unsupported members before local parsing | Isolated parser sandbox, AV, PDF bomb controls and broader corpus |
+| Malware/archive bomb/path traversal | Storage boundary, byte limit and DOCX preflight enforce entry/expanded-size/compression-ratio bounds and reject traversal, duplicate, encrypted, linked or unsupported members. PDF text extraction runs in a separate subprocess with page/text budgets, bounded output, a wall-clock timeout and Linux CPU/address-space limits | Full filesystem/network-isolated parser sandbox, AV, OCR-specific controls and broader corpus |
 | Secret/PII leakage to AI | Provider scopes and redaction policy | Document-level `LOCAL_ONLY` enforcement |
 | Account/session theft | No autonomous ETP session today | Isolated worker, vault, MFA human takeover |
 | Supplier/invoice fraud | Evidence-bound quote plus immutable masked company-profile fingerprint | Automated registry verification and bank-detail change hold |
