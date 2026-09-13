@@ -33,6 +33,20 @@ log = logging.getLogger("cleaningai.notifications")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+TELEGRAM_TEXT_MAX_CHARS = 4000
+TELEGRAM_TRUNCATION_SUFFIX = (
+    "\n\n[Сообщение сокращено. Полный текст сохранён в CleaningAI OS.]"
+)
+
+
+def _bounded_telegram_text(subject: str, body: str) -> tuple[str, bool]:
+    """Keep one Telegram delivery inside its text contract without losing the source."""
+    text = f"{subject}\n\n{body}"
+    if len(text) <= TELEGRAM_TEXT_MAX_CHARS:
+        return text, False
+    available = TELEGRAM_TEXT_MAX_CHARS - len(TELEGRAM_TRUNCATION_SUFFIX)
+    return text[:available].rstrip() + TELEGRAM_TRUNCATION_SUFFIX, True
+
 
 def _safe_delivery_error(exc: Exception) -> str:
     value = str(exc)
@@ -450,7 +464,15 @@ def _verified_document_attachment(data: dict[str, Any]) -> tuple[bytes, str, str
 def _send_telegram(db: Session, row: OwnerNotification) -> None:
     if not all([row.recipient, settings.telegram_bot_token]):
         raise RuntimeError("Telegram owner credentials are not configured")
-    payload: dict[str, Any] = {"chat_id": row.recipient, "text": f"{row.subject}\n\n{row.body}"}
+    text, text_truncated = _bounded_telegram_text(row.subject, row.body)
+    payload: dict[str, Any] = {"chat_id": row.recipient, "text": text}
+    if text_truncated:
+        row.data = {
+            **(row.data or {}),
+            "telegram_text_truncated": True,
+            "telegram_original_chars": len(row.subject) + 2 + len(row.body),
+            "telegram_delivered_chars": len(text),
+        }
     approval_id = row.data.get("approval_id")
     if approval_id:
         approval = db.get(ApprovalRequest, int(approval_id))

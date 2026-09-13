@@ -1343,9 +1343,14 @@
       "id": 137,
       "title": "NOTIFICATION CONTENT",
       "priority": "P2",
-      "status": "unverified",
-      "evidence": [],
-      "notes": "Requires code-level verification before implementation planning."
+      "status": "partial",
+      "evidence": [
+        "app/models.py",
+        "app/notifications.py",
+        "docs/PRODUCTION.md",
+        "tests/test_app.py:test_telegram_owner_notification_bounds_long_text_and_preserves_source"
+      ],
+      "notes": "Owner-notification source text is persisted in PostgreSQL and Telegram delivery now enforces a conservative 4,000-character single-message contract with explicit truncation metadata. Complete coverage of every notification type, localization and all external channels remains unverified."
     },
     {
       "id": 138,
@@ -1354,9 +1359,13 @@
       "status": "partial",
       "evidence": [
         "app/integrations.py",
-        "app/orchestrator.py"
+        "app/orchestrator.py",
+        "app/notifications.py",
+        "docs/PRODUCTION.md",
+        "tests/test_app.py:test_telegram_owner_notification_bounds_long_text_and_preserves_source",
+        "tests/test_system_admin.py:test_owner_notification_uses_extended_bounded_retry_window"
       ],
-      "notes": ""
+      "notes": "Persisted owner notifications use bounded retries and dead-letter/system-administrator recovery, while oversized Telegram reports retain their full PostgreSQL source and deliver a contract-safe preview. Multi-region failover and full disaster-recovery evidence remain incomplete."
     },
     {
       "id": 139,

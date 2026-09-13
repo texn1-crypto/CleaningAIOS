@@ -33,6 +33,13 @@ docker compose build --build-arg DEBIAN_MIRROR=mirror.yandex.ru
 The default remains `deb.debian.org`; the mirror override only affects the image
 build and is not stored in the runtime environment.
 
+Plain-text owner notifications keep their complete subject and body in PostgreSQL.
+When the combined Telegram text exceeds 4,000 characters, delivery uses a bounded
+preview with an explicit truncation notice and persists the original/delivered
+character counts in notification metadata. This keeps one outbound API call within
+Telegram's message contract without splitting a notification into duplicate-prone
+partial deliveries.
+
 The Telegram bot and worker services support `TELEGRAM_API_IP` as a routing
 override for cloud providers that cannot reach Telegram's DNS-selected address.
 The bot also retries a transient startup network error inside the same container

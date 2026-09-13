@@ -6025,6 +6025,44 @@ def test_telegram_owner_notification_uses_existing_approval_buttons(monkeypatch)
     assert all(len(item["callback_data"].encode()) <= 64 for item in buttons)
 
 
+def test_telegram_owner_notification_bounds_long_text_and_preserves_source(monkeypatch):
+    from app import notifications
+    from app.config import settings
+    from app.models import OwnerNotification
+
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def post(self, url, json): captured.update({"url": url, "payload": json}); return Response()
+
+    monkeypatch.setattr(notifications.httpx, "Client", Client)
+    monkeypatch.setattr(settings, "telegram_bot_token", "123456:test-token-value")
+    original_body = "Проверяемый отчёт. " * 300
+    row = OwnerNotification(
+        idempotency_key="telegram-long-text-contract",
+        channel="telegram",
+        recipient="999",
+        subject="Часовой отчёт",
+        body=original_body,
+        data={"report_kind": "owner_activity"},
+    )
+
+    notifications._send_telegram(object(), row)
+
+    assert captured["url"].endswith("/sendMessage")
+    assert len(captured["payload"]["text"]) <= notifications.TELEGRAM_TEXT_MAX_CHARS
+    assert captured["payload"]["text"].endswith(notifications.TELEGRAM_TRUNCATION_SUFFIX)
+    assert row.body == original_body
+    assert row.data["telegram_text_truncated"] is True
+    assert row.data["telegram_original_chars"] > row.data["telegram_delivered_chars"]
+
+
 def test_telegram_social_approval_sends_visual_album_before_buttons(monkeypatch):
     from app import notifications
     from app.config import settings
