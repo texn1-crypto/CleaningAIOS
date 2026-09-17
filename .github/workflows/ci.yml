@@ -3,6 +3,17 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -25,6 +36,8 @@ jobs:
           mypy --strict --follow-imports=skip app/tender_application_manifest.py
       - name: Agent behavior evals
         run: python scripts/run_agent_evals.py
+      - name: Server automation syntax
+        run: bash -n scripts/deploy_server.sh scripts/server_watchdog.sh scripts/install_server_watchdog.sh
       - name: Dependency vulnerability audit
         run: >-
           pip-audit -r requirements.txt
