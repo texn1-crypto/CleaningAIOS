@@ -1,0 +1,93 @@
+name: Deploy production
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cleaningaios-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    env:
+      PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+      PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+      PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+      PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+      PRODUCTION_SSH_PORT: ${{ vars.PRODUCTION_SSH_PORT || '22' }}
+      PRODUCTION_PATH: ${{ vars.PRODUCTION_PATH || '/opt/cleaningaios' }}
+    steps:
+      - name: Check out the tested release
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Resolve and verify the main release
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_sha="$(git rev-parse HEAD)"
+          git fetch --quiet origin main
+          test "$target_sha" = "$(git rev-parse origin/main)"
+          echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate production connection settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variable in PRODUCTION_SSH_HOST PRODUCTION_SSH_USER PRODUCTION_SSH_KEY PRODUCTION_SSH_KNOWN_HOSTS; do
+            test -n "${!variable:-}" || { echo "Missing required production secret: $variable" >&2; exit 1; }
+          done
+          [[ "$PRODUCTION_SSH_HOST" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$PRODUCTION_SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          [[ "$PRODUCTION_SSH_PORT" =~ ^[0-9]{1,5}$ ]]
+          [[ "$PRODUCTION_PATH" =~ ^/[A-Za-z0-9_./-]+$ ]]
+
+      - name: Configure pinned SSH identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > "$HOME/.ssh/cleaningaios_deploy"
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/cleaningaios_deploy" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy tested release to the server
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_options=(
+            -i "$HOME/.ssh/cleaningaios_deploy"
+            -p "$PRODUCTION_SSH_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+          )
+          remote_script="/tmp/cleaningaios-deploy-$RELEASE_SHA.sh"
+          scp -q -P "$PRODUCTION_SSH_PORT" \
+            -i "$HOME/.ssh/cleaningaios_deploy" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            scripts/deploy_server.sh \
+            "$PRODUCTION_SSH_USER@$PRODUCTION_SSH_HOST:$remote_script"
+          ssh "${ssh_options[@]}" "$PRODUCTION_SSH_USER@$PRODUCTION_SSH_HOST" \
+            "chmod 700 '$remote_script'; '$remote_script' '$RELEASE_SHA' '$PRODUCTION_PATH'; code=\$?; rm -f '$remote_script'; exit \$code"
+
+      - name: Remove runner SSH material
+        if: always()
+        shell: bash
+        run: rm -f "$HOME/.ssh/cleaningaios_deploy" "$HOME/.ssh/known_hosts"

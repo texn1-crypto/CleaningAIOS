@@ -1,0 +1,49 @@
+/* Service photography is kept separate from the compact base stylesheet. */
+.catalog-card {
+  min-height: 470px;
+  padding: 18px;
+}
+
+.catalog-card > img {
+  width: 100%;
+  height: 185px;
+  margin-bottom: 22px;
+  border-radius: 18px;
+  object-fit: cover;
+}
+
+.catalog-card h2 {
+  margin: 25px 12px 15px;
+}
+
+.catalog-card p {
+  margin-right: 12px;
+  margin-left: 12px;
+}
+
+.catalog-card b {
+  margin: auto 12px 10px;
+}
+
+.service-detail-hero img {
+  height: min(650px, 50vw);
+  min-height: 420px;
+}
+
+@media (max-width: 980px) {
+  .service-detail-hero img {
+    height: min(520px, 70vw);
+    min-height: 360px;
+  }
+}
+
+@media (max-width: 600px) {
+  .service-detail-hero img {
+    height: 330px;
+    min-height: 0;
+  }
+
+  .catalog-card {
+    min-height: 440px;
+  }
+}
