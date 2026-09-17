@@ -22,7 +22,7 @@ from .notifications import queue_owner_notification
 from .orchestrator import audit
 from .platform import event_bus
 from .publication_links import publication_url
-from .social_marketing import finalize_social_preview_batch
+from .social_marketing import finalize_social_preview_batch, validate_social_approval
 
 
 LOCAL_SOCIAL_MEDIA_POOL = (
@@ -484,13 +484,20 @@ def generate_next_social_visual(db: Session) -> bool:
 def _approved_item(db: Session, item: ContentItem) -> bool:
     approval_id = int((item.metrics or {}).get("approval_id") or 0)
     approval = db.get(ApprovalRequest, approval_id) if approval_id else None
-    return bool(
+    if not (
         approval
         and approval.status == "approved"
         and approval.action_kind == "social_publication"
         and approval.resource_type == "social_content_batch"
-        and str((item.metrics or {}).get("batch_id") or "") == approval.resource_id
-    )
+        and str((item.metrics or {}).get("batch_id") or "")
+        == approval.resource_id
+    ):
+        return False
+    try:
+        _, approved_items = validate_social_approval(db, approval)
+    except (TypeError, ValueError):
+        return False
+    return any(approved_item.id == item.id for approved_item in approved_items)
 
 
 def _item_asset(db: Session, item: ContentItem) -> MediaAsset | None:
@@ -750,7 +757,7 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
         db.commit()
         return True
     asset = _item_asset(db, item)
-    if asset is None or asset.status != "ready" or not asset.public_url:
+    if asset is None or asset.status not in {"ready", "published"} or not asset.public_url:
         item.status = "visual_pending"
         item.metrics = {**(item.metrics or {}), "publication_status": "approved_visual_unavailable"}
         db.commit()
@@ -777,6 +784,25 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
         item.metrics = {**(item.metrics or {}), "publication_status": "odnoklassniki_group_credentials_required"}
         db.commit()
         return True
+
+    if item.channel != "website":
+        item.status = "reconciliation_required"
+        item.metrics = {
+            **(item.metrics or {}),
+            "publication_status": (
+                f"{item.channel}_attempt_started_manual_reconciliation_if_interrupted"
+            ),
+            "publication_attempted_at": current.isoformat(),
+        }
+        audit(
+            db,
+            "social_publisher_agent",
+            "marketing.social_post_attempt_started",
+            "content_item",
+            str(item.id),
+            {"channel": item.channel},
+        )
+        db.commit()
 
     try:
         if item.channel == "website":
@@ -810,6 +836,8 @@ def publish_next_social_post(db: Session, *, now: datetime | None = None) -> boo
             provider = "odnoklassniki_official_api"
         public_post_url = publication_url(item.channel, external_post_id)
         item.status = "published"
+        asset.status = "published"
+        asset.published_at = asset.published_at or current
         item.published_at = current
         item.metrics = {
             **(item.metrics or {}),

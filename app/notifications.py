@@ -591,6 +591,21 @@ def send_next_owner_notification(db: Session) -> bool:
     )
     if not row:
         return False
+    row.status = "reconciliation_required"
+    row.last_error = (
+        "Delivery attempt started; reconcile provider outcome before retry "
+        "if execution is interrupted"
+    )
+    db.add(
+        AuditLog(
+            actor="worker",
+            action="owner_notification.delivery_attempt_started",
+            resource_type="owner_notification",
+            resource_id=str(row.id),
+            details={"channel": row.channel},
+        )
+    )
+    db.commit()
     try:
         if row.channel == "email":
             _send_email(db, row)

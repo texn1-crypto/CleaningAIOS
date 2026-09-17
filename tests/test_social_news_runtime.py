@@ -13,10 +13,31 @@ from sqlalchemy import select, update
 from app.config import settings
 from app.db import SessionLocal
 from app.models import ApprovalRequest, BusinessRecord, ContentItem, MediaAsset, OwnerNotification
-from app.social_marketing import prepare_daily_cleaning_news_plan
+from app.social_marketing import finalize_social_preview_batch, prepare_daily_cleaning_news_plan
 from app.social_news import CleaningNewsItem, parse_cleaning_news_feed
 from app.social_runtime import _https_endpoint, _ok_signature, _safe_provider_failure, generate_next_social_visual, publish_next_social_post, queue_direct_image_request
 from app.publication_links import publication_url, verified_publication_url
+
+
+def _approve_social_preview(db, batch, items, assets):
+    for asset in assets:
+        asset.metadata_json = {
+            **(asset.metadata_json or {}),
+            "generation_verified": True,
+        }
+    batch.data = {
+        **(batch.data or {}),
+        "content_item_ids": [item.id for item in items],
+        "visual_asset_ids": [asset.id for asset in assets],
+    }
+    result = finalize_social_preview_batch(db, batch.id)
+    approval = db.get(ApprovalRequest, result["approval_id"])
+    approval.status = "approved"
+    batch.status = "scheduled"
+    for item in items:
+        item.status = "scheduled"
+    db.flush()
+    return approval
 
 
 def test_odnoklassniki_signature_matches_provider_protocol(monkeypatch):
@@ -121,14 +142,6 @@ def test_worker_publishes_approved_website_post_without_external_adapter(monkeyp
         )
         db.add(batch)
         db.flush()
-        approval = ApprovalRequest(
-            action_kind="social_publication",
-            resource_type="social_content_batch",
-            resource_id=str(batch.id),
-            status="approved",
-        )
-        db.add(approval)
-        db.flush()
         asset = MediaAsset(
             kind="image",
             title="Website image",
@@ -147,11 +160,12 @@ def test_worker_publishes_approved_website_post_without_external_adapter(monkeyp
             scheduled_at=datetime(1998, 1, 1),
             metrics={
                 "batch_id": batch.id,
-                "approval_id": approval.id,
                 "visual_asset_id": asset.id,
             },
         )
         db.add(item)
+        db.flush()
+        _approve_social_preview(db, batch, [item], [asset])
         db.commit()
 
         assert publish_next_social_post(db, now=datetime(2042, 1, 1)) is True
@@ -230,8 +244,7 @@ def test_image_agent_generates_checksum_bound_public_asset(client, monkeypatch, 
     }
     assert calls[0][1]["headers"]["Authorization"] == "Bearer test-key"
     response = client.get(public_url)
-    assert response.status_code == 200
-    assert response.content == raw
+    assert response.status_code == 404
 
 
 def test_image_agent_uses_original_local_photo_pool_without_paid_key(client, monkeypatch, tmp_path):
@@ -249,7 +262,7 @@ def test_image_agent_uses_original_local_photo_pool_without_paid_key(client, mon
         assert asset.metadata_json["generation_status"] == "ready_for_owner_preview"
         assert asset.metadata_json["rights_basis"] == "original_project_asset"
         assert len(asset.metadata_json["sha256"]) == 64
-        assert client.get(asset.public_url).status_code == 200
+        assert client.get(asset.public_url).status_code == 404
 
 
 def test_local_photo_pool_skips_hash_used_by_superseded_visual(monkeypatch, tmp_path):
@@ -383,7 +396,7 @@ def test_image_agent_consumes_legacy_imagegen_job(client, monkeypatch, tmp_path)
         assert asset.status == "ready"
         assert asset.provider == "local_media_pool"
         assert asset.metadata_json["generation_status"] == "ready_for_owner_preview"
-        assert client.get(asset.public_url).status_code == 200
+        assert client.get(asset.public_url).status_code == 404
 
 
 def test_direct_image_request_rejects_personal_data_before_provider(monkeypatch):
@@ -580,8 +593,6 @@ def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeyp
     with SessionLocal() as db:
         batch = BusinessRecord(record_type="social_content_batch", external_id="publisher-test-2042", title="Publisher", status="scheduled", data={})
         db.add(batch); db.flush()
-        approval = ApprovalRequest(action_kind="social_publication", resource_type="social_content_batch", resource_id=str(batch.id), status="approved")
-        db.add(approval); db.flush()
         asset = MediaAsset(
             kind="image",
             title="Approved image",
@@ -594,9 +605,11 @@ def test_telegram_publisher_sends_only_owner_approved_exact_post(client, monkeyp
         db.add(asset); db.flush()
         item = ContentItem(
             channel="telegram", title="News", body="Verified news text\n\nhttps://source.example/item", status="scheduled",
-            scheduled_at=datetime(1999, 1, 1), metrics={"batch_id": batch.id, "approval_id": approval.id, "visual_asset_id": asset.id, "source_url": "https://source.example/item"},
+            scheduled_at=datetime(1999, 1, 1), metrics={"batch_id": batch.id, "visual_asset_id": asset.id, "source_url": "https://source.example/item"},
         )
-        db.add(item); db.commit(); item_id = item.id
+        db.add(item); db.flush()
+        _approve_social_preview(db, batch, [item], [asset])
+        db.commit(); item_id = item.id
         assert publish_next_social_post(db, now=datetime(2042, 1, 1)) is True
         db.refresh(item)
         assert item.status == "published"
@@ -661,12 +674,12 @@ def test_vk_publisher_uses_official_upload_and_wall_apis_after_approval(client, 
     with SessionLocal() as db:
         batch = BusinessRecord(record_type="social_content_batch", external_id="vk-publisher-test-2042", title="VK Publisher", status="scheduled", data={})
         db.add(batch); db.flush()
-        approval = ApprovalRequest(action_kind="social_publication", resource_type="social_content_batch", resource_id=str(batch.id), status="approved")
-        db.add(approval); db.flush()
         asset = MediaAsset(kind="image", title="VK image", provider="openai_images", public_url="/vk.png", storage_path=str(image_path), status="ready", metadata_json={"sha256": digest})
         db.add(asset); db.flush()
-        item = ContentItem(channel="vk", title="VK news", body="Exact approved VK text", status="scheduled", scheduled_at=datetime(1998, 1, 1), metrics={"batch_id": batch.id, "approval_id": approval.id, "visual_asset_id": asset.id})
-        db.add(item); db.commit()
+        item = ContentItem(channel="vk", title="VK news", body="Exact approved VK text", status="scheduled", scheduled_at=datetime(1998, 1, 1), metrics={"batch_id": batch.id, "visual_asset_id": asset.id})
+        db.add(item); db.flush()
+        _approve_social_preview(db, batch, [item], [asset])
+        db.commit()
         assert publish_next_social_post(db, now=datetime(2042, 1, 1)) is True
         db.refresh(item)
         assert item.status == "published"
@@ -718,12 +731,12 @@ def test_odnoklassniki_publisher_resumes_approved_post_and_uses_official_api(cli
     with SessionLocal() as db:
         batch = BusinessRecord(record_type="social_content_batch", external_id="ok-publisher-test-2042", title="OK Publisher", status="scheduled", data={})
         db.add(batch); db.flush()
-        approval = ApprovalRequest(action_kind="social_publication", resource_type="social_content_batch", resource_id=str(batch.id), status="approved")
-        db.add(approval); db.flush()
         asset = MediaAsset(kind="image", title="OK image", provider="local_media_pool", public_url="/ok.png", storage_path=str(image_path), status="ready", metadata_json={"sha256": digest})
         db.add(asset); db.flush()
-        item = ContentItem(channel="odnoklassniki", title="OK news", body="Точный одобренный текст ОК", status="adapter_required", scheduled_at=datetime(1998, 1, 1), metrics={"batch_id": batch.id, "approval_id": approval.id, "visual_asset_id": asset.id})
-        db.add(item); db.commit()
+        item = ContentItem(channel="odnoklassniki", title="OK news", body="Точный одобренный текст ОК", status="adapter_required", scheduled_at=datetime(1998, 1, 1), metrics={"batch_id": batch.id, "visual_asset_id": asset.id})
+        db.add(item); db.flush()
+        _approve_social_preview(db, batch, [item], [asset])
+        db.commit()
         assert publish_next_social_post(db, now=datetime(2042, 1, 1)) is True
         db.refresh(item)
         assert item.status == "published"

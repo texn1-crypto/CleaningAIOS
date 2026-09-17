@@ -318,6 +318,25 @@ def intake_telegram_lead(
     task_title = f"Telegram lead #{lead.id} · contact #{contact.id}"
     task = db.scalar(select(Task).where(Task.title == task_title))
     if task is None:
+        reply_payload = (
+            {
+                "action": "send_inbound_lead_reply",
+                "template_key": "inbound-reply-v1",
+                "autonomy_action": "inbound_lead_reply",
+                "autonomy_idempotency_key": (
+                    f"inbound-reply:{payload.conversation_id}:first"
+                ),
+                "autonomy_context": {
+                    "channel": "email",
+                    "recipient_category": "inbound_consented_lead",
+                    "template_key": "inbound-reply-v1",
+                    "recipients": 1,
+                },
+                "external_send": True,
+            }
+            if email
+            else {"external_send": False}
+        )
         task = Task(
             title=task_title,
             agent_type="sales",
@@ -326,7 +345,7 @@ def intake_telegram_lead(
                 "record_id": lead.id,
                 "reason": "telegram_lead_autopilot",
                 "next_action": "contact_and_schedule_site_survey",
-                "external_send": False,
+                **reply_payload,
             },
         )
         db.add(task)

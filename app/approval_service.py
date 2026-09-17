@@ -155,7 +155,7 @@ def _apply_resource_transition(
             )
             task.run_after = now_utc()
             task_status = task.status
-            if row.action_kind == "bulk_outreach":
+            if row.action_kind in {"bulk_outreach", "voice_call"}:
                 execution = "queued"
     elif row.resource_type == "decision":
         decision = db.get(Decision, int(row.resource_id))

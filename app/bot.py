@@ -27,6 +27,7 @@ from .lead_autopilot import CLEANING_KIND_LABELS, FREQUENCY_LABELS, SERVICE_LABE
 from .recipient_import import EMAIL_PATTERN, SUPPORTED_RECIPIENT_SUFFIXES, extract_recipient_emails
 from .logging_config import configure_logging
 from .openjarvis_client import OpenJarvisError, OpenJarvisUnavailable, ask_openjarvis
+from .crawl4ai_client import Crawl4AIError, crawl_public_page
 
 configure_logging("bot")
 # httpx logs full request URLs at INFO. Telegram embeds the bot token in those
@@ -1423,6 +1424,9 @@ def format_system_admin_report(result: dict) -> str:
                 f"• задача #{request.get('task_id')}: {request.get('intent')} → "
                 f"{request.get('classification')}"
             )
+    crm_url = str((result.get("links") or {}).get("crm") or "").strip()
+    if crm_url:
+        lines.append(f"\n🔗 CRM: {crm_url}")
     lines.append(
         "\nРассылки и другие бизнес-действия автоматически повторно не запускались. "
         "Credentials в отчёт не попадают."
@@ -1669,8 +1673,30 @@ async def jarvis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Попробуйте ещё раз позже."
         )
         return
+    web_context = ""
+    source_url = ""
+    source_match = re.search(r"https://[^\s<>()]+", safe_question)
+    if source_match:
+        try:
+            crawl = await asyncio.to_thread(
+                crawl_public_page,
+                {"url": source_match.group(0).rstrip(".,;:!?"), "max_chars": 6_000},
+            )
+            if crawl.get("success"):
+                web_context = str(crawl.get("markdown") or "")
+                source_url = str(crawl.get("resolved_url") or "")
+        except Crawl4AIError:
+            await update.effective_message.reply_text(
+                "Jarvis не смог получить указанную публичную страницу через "
+                "защищённый веб-контур. Ответ без содержимого страницы не сформирован."
+            )
+            return
     try:
-        answer = await ask_openjarvis(safe_question)
+        answer = (
+            await ask_openjarvis(safe_question, web_context=web_context)
+            if web_context
+            else await ask_openjarvis(safe_question)
+        )
     except OpenJarvisUnavailable:
         await update.effective_message.reply_text(
             "Jarvis сейчас недоступен. CleaningAIOS продолжает работать; "
@@ -1683,7 +1709,10 @@ async def jarvis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "персональные данные и попробуйте снова."
         )
         return
-    await update.effective_message.reply_text(f"🤖 Jarvis (совет):\n{answer}")
+    source_note = f"\n\n🌐 Источник: {source_url}" if source_url else ""
+    await update.effective_message.reply_text(
+        f"🤖 Jarvis (совет):\n{answer}{source_note}"
+    )
 
 
 async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1713,6 +1742,15 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             analysis = {"classification": "analysis_unavailable", "improvement_id": None}
         if isinstance(analysis.get("resolved_intent"), dict):
             intent = analysis["resolved_intent"]
+        execution_brief = analysis.get("execution_brief")
+        if intent.get("kind") == "task" and isinstance(execution_brief, dict):
+            intent = {
+                **intent,
+                "payload": {
+                    **(intent.get("payload") or {}),
+                    "request_council": execution_brief,
+                },
+            }
         kind = intent["kind"]
         if kind == "greeting":
             await update.effective_message.reply_text("Здравствуйте! Напишите обычным русским текстом, что нужно сделать или показать.")

@@ -354,6 +354,45 @@ class TenderAgent:
 class SalesAgent:
     name = "sales"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "queue_consented_sales_call":
+            from .telephony import queue_consented_sales_call
+
+            scheduled_at = (
+                datetime.fromisoformat(payload["scheduled_at"])
+                if payload.get("scheduled_at")
+                else None
+            )
+            return queue_consented_sales_call(
+                db,
+                lead_id=int(payload.get("lead_id") or 0),
+                idempotency_key=str(payload.get("call_idempotency_key") or ""),
+                purpose=str(payload.get("purpose") or ""),
+                script=str(payload.get("script") or ""),
+                scheduled_at=scheduled_at,
+                task_id=int(payload.get("_runtime_authority", {}).get("task_id") or 0),
+                approval_id=int(payload.get("approval_id") or 0),
+            )
+        if payload.get("action") == "send_inbound_lead_reply":
+            runtime_authority = payload.get("_runtime_authority")
+            if not isinstance(runtime_authority, dict):
+                runtime_authority = {}
+            authority_context = payload.get("autonomy_context")
+            if not isinstance(authority_context, dict):
+                authority_context = {}
+            from .marketing_coordination import queue_inbound_lead_reply
+
+            return queue_inbound_lead_reply(
+                db,
+                record_id=int(payload.get("record_id") or 0),
+                idempotency_key=str(payload.get("autonomy_idempotency_key") or ""),
+                authority_envelope_use_id=int(
+                    payload.get("authority_envelope_use_id") or 0
+                ),
+                template_key=str(payload.get("template_key") or ""),
+                task_id=int(runtime_authority.get("task_id") or 0),
+                actor=str(runtime_authority.get("actor") or ""),
+                authority_context=authority_context,
+            )
         if payload.get("action") == "prepare_lead_follow_up":
             from .marketing_coordination import prepare_lead_follow_up
 

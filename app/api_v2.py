@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .config import settings
-from .models import ApprovalRequest, BusinessGoal, BusinessRecord, CapabilityFlag, CompanyProfileSnapshot, CompanyRequisite, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderPrequalificationSnapshot, TenderSourceCheckpoint, TenderSourceRun, TenderSupplierCandidateSnapshot, TenderSupplierQuoteSnapshot
+from .models import ApprovalRequest, AuthorityEnvelope, AuthorityEnvelopeUse, BusinessGoal, BusinessRecord, CapabilityFlag, CompanyProfileSnapshot, CompanyRequisite, ContentItem, Decision, DecisionOutcome, ImportJob, ImprovementRequest, InboxMessage, MailTransportState, MessageTemplate, OperatingEntity, OutboundMessage, OutreachConsent, OwnerNotification, SafetyControl, SenderMailbox, Suppression, Task, TaskTransition, TenderAssessmentSnapshot, TenderDocument, TenderPrequalificationSnapshot, TenderSourceCheckpoint, TenderSourceRun, TenderSupplierCandidateSnapshot, TenderSupplierQuoteSnapshot
 from .integrations import collect_tenders, download_tender_document, tender_source_freshness
 from .improvements import retry_workspace_handoff
 from .management_companies import enrich_management_company, import_management_companies
@@ -108,6 +108,15 @@ from .tender_requirements import (
     tender_l6_requirements,
 )
 from .schemas import TelegramAlertCallback, TelegramApprovalCallback, TelegramIdentityBind, TelegramIdentityRequest, TelegramTaskQuery
+from .autonomy import (
+    AuthorityEnvelopeCreate,
+    AuthorityEnvelopeRevoke,
+    authority_policy_catalog,
+    create_authority_envelope,
+    envelope_view,
+    revoke_authority_envelope,
+)
+from .money_opportunities import build_money_opportunities
 
 router = APIRouter(prefix="/api")
 
@@ -118,6 +127,157 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+@router.get("/money-opportunities")
+def money_opportunities(
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    return build_money_opportunities(db)
+
+
+@router.get("/autonomy/policy")
+def autonomy_policy(
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    return {
+        "default": "APPROVAL_REQUIRED",
+        "unknown_actions_fail_closed": True,
+        "policies": authority_policy_catalog(),
+    }
+
+
+@router.get("/autonomy/envelopes")
+def authority_envelopes(
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    rows = list(
+        db.scalars(
+            select(AuthorityEnvelope).order_by(
+                AuthorityEnvelope.status,
+                AuthorityEnvelope.expires_at,
+                AuthorityEnvelope.id,
+            )
+        ).all()
+    )
+    result = []
+    for row in rows:
+        count, amount = db.execute(
+            select(
+                func.count(AuthorityEnvelopeUse.id),
+                func.coalesce(func.sum(AuthorityEnvelopeUse.amount), 0),
+            ).where(AuthorityEnvelopeUse.envelope_id == row.id)
+        ).one()
+        result.append(
+            {
+                **envelope_view(row),
+                "usage": {
+                    "actions": int(count or 0),
+                    "amount": str(amount or 0),
+                },
+            }
+        )
+    return result
+
+
+@router.post("/autonomy/envelopes", status_code=201)
+def create_authority_envelope_endpoint(
+    payload: AuthorityEnvelopeCreate,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "owner")
+    try:
+        row, created = create_authority_envelope(
+            db,
+            payload,
+            actor=actor.subject,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    details = {
+        "action": row.action,
+        "input_hash": row.input_hash,
+        "expires_at": row.expires_at.isoformat(),
+        "created": created,
+    }
+    if created:
+        audit(
+            db,
+            actor.subject,
+            "autonomy.envelope_created",
+            "authority_envelope",
+            str(row.id),
+            details,
+        )
+        event_bus.publish(
+            db,
+            "autonomy.envelope_created",
+            "authority_envelope",
+            str(row.id),
+            details,
+            idempotency_key=f"authority-envelope:{row.envelope_key}:v{row.version}",
+            actor=actor.subject,
+        )
+    db.commit()
+    db.refresh(row)
+    return {**envelope_view(row), "created": created}
+
+
+@router.post("/autonomy/envelopes/{envelope_id}/revoke")
+def revoke_authority_envelope_endpoint(
+    envelope_id: int,
+    payload: AuthorityEnvelopeRevoke,
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "owner")
+    row = db.scalar(
+        select(AuthorityEnvelope)
+        .where(AuthorityEnvelope.id == envelope_id)
+        .with_for_update()
+    )
+    if not row:
+        raise HTTPException(404, "Authority envelope not found")
+    try:
+        changed = revoke_authority_envelope(
+            row,
+            actor=actor.subject,
+            reason=redact_sensitive_text(payload.reason),
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if changed:
+        details = {
+            "action": row.action,
+            "version": row.version,
+            "reason": row.revocation_reason,
+        }
+        audit(
+            db,
+            actor.subject,
+            "autonomy.envelope_revoked",
+            "authority_envelope",
+            str(row.id),
+            details,
+        )
+        event_bus.publish(
+            db,
+            "autonomy.envelope_revoked",
+            "authority_envelope",
+            str(row.id),
+            details,
+            idempotency_key=f"authority-envelope:{row.envelope_key}:v{row.version}",
+            actor=actor.subject,
+        )
+    db.commit()
+    db.refresh(row)
+    return {**envelope_view(row), "changed": changed}
 
 
 def _kill_switch_view(
@@ -813,6 +973,9 @@ def analyze_request(payload: RequestAnalysisCreate, db: Session = Depends(get_db
         "request_category": result.get("request_category"),
         "desired_outcome": result.get("desired_outcome"),
         "improvement_id": result.get("improvement_id"),
+        "council_status": (result.get("llm_analysis") or {}).get("status"),
+        "council_member_count": (result.get("llm_analysis") or {}).get("member_count", 0),
+        "council_quorum_reached": (result.get("llm_analysis") or {}).get("quorum_reached", False),
     })
     db.commit()
     return {
@@ -2639,6 +2802,9 @@ def launch_campaign(payload: CampaignLaunch, db: Session = Depends(get_db), acto
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "Campaign storage conflict") from exc
     event_bus.publish(db, "campaign.queued", "campaign", payload.campaign_key, result, idempotency_key=f"campaign:{payload.campaign_key}:queued")
     audit(db, actor.subject, "campaign.queued", "campaign", payload.campaign_key, result)
     db.commit()

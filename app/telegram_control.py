@@ -31,6 +31,7 @@ RISK_BY_ACTION = {
     "tender_submission": "critical",
     "bulk_outreach": "high",
     "social_publication": "high",
+    "voice_call": "high",
 }
 
 

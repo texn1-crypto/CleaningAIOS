@@ -64,6 +64,7 @@ class OutreachCreate(BaseModel):
     scheduled_at: Optional[datetime] = None
     mailbox_id: Optional[int] = None
     template_id: Optional[int] = None
+    approval_id: Optional[int] = None
     attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 

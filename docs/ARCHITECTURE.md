@@ -1,5 +1,14 @@
 # CleaningAI OS 2.0 architecture
 
+## Agent skill routing
+
+Runtime agents use a versioned, project-owned skill registry. Every execution
+receives deterministic skill context and stores the applied skill names as audit
+evidence. LLM providers receive this context only as advisory input; it cannot
+bypass approvals, policy checks, or transactional execution. See
+[`docs/AGENT_SKILLS.md`](AGENT_SKILLS.md) for the complete mapping and operational
+contract.
+
 ## Layers
 
 1. **System of Record** stores leads, tenders, finance entries, campaigns,
@@ -29,6 +38,14 @@ requests reuse the same deduplication key. Optional Workspace Agent handoff uses
 idempotency key; local Codex automation can consume the same queue without sharing
 application secrets.
 
+Every actionable owner request also passes through the advisory LLM Council described
+in [`LLM_COUNCIL.md`](LLM_COUNCIL.md). Configured OpenAI, Gemini and Claude members
+review the same redacted deterministic baseline independently and in parallel. Local
+code synthesizes their low-cardinality votes into a bounded execution brief; raw model
+prose is never promoted into an executable prompt. Missing quorum is explicit and
+falls back to the deterministic route. Council output cannot weaken RBAC, approvals,
+audit, consent, suppression, rate limits or the post-run evidence gate.
+
 Contextual text requests use the same durable request history. “Улучши это” can use
 an explicit Telegram reply, while a request for feedback on the previous letter
 resolves the latest saved request for the same channel and user. The copywriter
@@ -41,6 +58,16 @@ also incomplete. The gate creates one deduplicated improvement and a linked AI C
 incident task with the source task, agent, reason, handoff and responsible party.
 
 ## Controlled execution
+
+Owner-created authority envelopes add a bounded middle tier between safe automatic
+work and per-action approvals. The code-owned policy catalog classifies an exact
+action as `AUTO_SAFE`, `AUTO_WITHIN_LIMIT`, `APPROVAL_REQUIRED` or `FORBIDDEN`.
+Limited actions require a current scope match, deterministic numeric limits and a
+unique idempotency key. Each authorization creates an append-only usage receipt;
+the action still needs its queue/provider evidence before the task can complete.
+Explicit protected actions remain behind the existing approval and capability gates,
+and unattended payments, signatures and tender submission are forbidden. See
+[`AUTONOMY.md`](AUTONOMY.md).
 
 Every domain write and its event are committed in one database transaction. Each event
 has a stable UUID, schema version, actor, correlation/causation identifiers and UTC
@@ -57,6 +84,22 @@ be HTTPS, stateless, explicitly configured and limited to named tools; shell,
 browser, filesystem, arbitrary HTTP and write operations are absent. Remote input
 is screened for credential, personal and financial data, and all returned content
 is marked untrusted.
+
+Public web extraction is the single narrow browser-backed exception. The
+`web.public_crawl` tool sends one validated public HTTPS URL to an authenticated
+Crawl4AI 0.9.3 container on a dedicated Compose network that excludes PostgreSQL and
+the scheduler. Only the web, worker and Telegram bot application containers share
+that network; the bot uses the same validated adapter when `/jarvis` contains one
+public HTTPS URL. Agents cannot control browser internals or request active content,
+and receive only bounded Markdown marked as untrusted. See
+[`CRAWL4AI.md`](CRAWL4AI.md).
+
+Agent roles are registry entries over the same durable Task queue, not independent
+databases or uncontrolled loops. Production can scale `worker` consumers from 1 to
+60 with PostgreSQL `FOR UPDATE SKIP LOCKED`; deployment and watchdog scripts verify
+the exact desired count. The current role catalog remains smaller than that ceiling,
+and new roles require a capability profile, schema, SLO, evaluation and stop
+condition before registration.
 
 Company Brain document storage is append-only by source version. Ingestion requires
 a manager role and an idempotency key, records content checksums and provenance,
@@ -177,6 +220,14 @@ rows link back to their source resource. Navigation never infers task state loca
   require a separately operated local Bot API endpoint.
 - SMTP passwords are supplied through environment variables. Additional mailbox
   records contain only an environment-variable name in `secret_ref`, never a password.
+- Outbound phone calls use a carrier-neutral HTTPS gateway boundary. A call is
+  queued only for a CRM lead with stored phone-consent evidence or a customer-requested
+  callback and an exact `voice_call` owner approval. The worker rechecks the global
+  stop, the separate capability flag, suppression, consent, calling hours and rate
+  limits immediately before provider access. Every request has an idempotency key,
+  recording is disabled by default, AI disclosure is mandatory, callbacks are
+  HMAC-authenticated and terminal outcomes become CRM contact events. Provider
+  credentials remain environment-only; `docs/TELEPHONY.md` defines the adapter.
 - `TENDER_SOURCES` declares comma-separated HTTP JSON feeds. A feed returns either a
   list or `{ "items": [...] }`; each item needs `external_id`, `title`, and may include
   `deadline_at`, scoring data and `documents`. `TENDER_SOURCE_TOKEN` supplies an

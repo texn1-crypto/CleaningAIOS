@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Optional
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -22,6 +23,7 @@ class ApprovalKind(str, Enum):
     TENDER_SUBMISSION = "tender_submission"
     TENDER_PARTICIPATION = "tender_participation"
     BULK_OUTREACH = "bulk_outreach"
+    VOICE_CALL = "voice_call"
     AGENT_REPLAY = "agent_replay"
 
 
@@ -179,6 +181,11 @@ class OutboundMessage(Base):
     __table_args__ = (UniqueConstraint("campaign_key", "recipient", name="uq_campaign_recipient"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     mailbox_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sender_mailboxes.id"), nullable=True, index=True)
+    authority_envelope_use_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("authority_envelope_uses.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("message_templates.id"), nullable=True)
     campaign_key: Mapped[str] = mapped_column(String(128), index=True)
     recipient: Mapped[str] = mapped_column(String(320), index=True)
@@ -481,6 +488,64 @@ class ApprovalDecisionRecord(Base):
     reason: Mapped[str] = mapped_column(Text, default="")
     request_version: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AuthorityEnvelope(Base):
+    """Owner-granted, time-bounded authority for one narrowly scoped action."""
+
+    __tablename__ = "authority_envelopes"
+    __table_args__ = (
+        UniqueConstraint("envelope_key", name="uq_authority_envelope_key"),
+        CheckConstraint(
+            "status IN ('active', 'revoked', 'expired')",
+            name="ck_authority_envelope_status",
+        ),
+        CheckConstraint(
+            "expires_at > starts_at",
+            name="ck_authority_envelope_time_window",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    envelope_key: Mapped[str] = mapped_column(String(128), index=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    scope: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    input_hash: Mapped[str] = mapped_column(String(64), index=True)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    starts_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    approved_by: Mapped[str] = mapped_column(String(128), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    revoked_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    revocation_reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class AuthorityEnvelopeUse(Base):
+    """Append-only authorization receipt; retries reuse the same idempotency key."""
+
+    __tablename__ = "authority_envelope_uses"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_authority_envelope_use_key"),
+        CheckConstraint("unit_count >= 1", name="ck_authority_envelope_use_units"),
+        CheckConstraint("amount >= 0", name="ck_authority_envelope_use_amount"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    envelope_id: Mapped[int] = mapped_column(
+        ForeignKey("authority_envelopes.id", ondelete="RESTRICT"), index=True
+    )
+    task_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    context_digest: Mapped[str] = mapped_column(String(64))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    unit_count: Mapped[int] = mapped_column(Integer, default=1)
+    actor: Mapped[str] = mapped_column(String(128), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class OperatingEntity(Base):

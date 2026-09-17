@@ -61,13 +61,10 @@ def test_openjarvis_rejects_oversized_response(monkeypatch):
     monkeypatch.setattr(settings, "openjarvis_enabled", True)
     monkeypatch.setattr(settings, "openjarvis_base_url", "http://127.0.0.1:8011")
     monkeypatch.setattr(settings, "openjarvis_api_key", "")
-    monkeypatch.setattr(settings, "openjarvis_max_response_bytes", 1024)
+    monkeypatch.setattr(settings, "openjarvis_max_response_bytes", 1_024)
 
     transport = httpx.MockTransport(
-        lambda request: httpx.Response(
-            200,
-            content=b"x" * 1025,
-        )
+        lambda request: httpx.Response(200, content=b"x" * 1_025)
     )
     real_client = httpx.AsyncClient
 
@@ -122,3 +119,52 @@ def test_telegram_jarvis_runs_request_analysis_before_adviser(monkeypatch):
     assert Update.effective_message.replies[-1][0] == (
         "🤖 Jarvis (совет):\nЗащищённый ответ"
     )
+
+
+def test_telegram_jarvis_reads_one_public_url_through_crawl4ai(monkeypatch):
+    from app import bot
+
+    async def fake_api(method, path, **kwargs):
+        return {"classification": "supported"}
+
+    monkeypatch.setattr(
+        bot,
+        "crawl_public_page",
+        lambda arguments: {
+            "success": True,
+            "resolved_url": arguments["url"],
+            "markdown": "verified public page",
+        },
+    )
+
+    async def fake_ask(message, *, web_context=""):
+        assert "https://example.com/report" in message
+        assert web_context == "verified public page"
+        return "Ответ по источнику"
+
+    class Message:
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, value, **kwargs):
+            self.replies.append((value, kwargs))
+
+    class User:
+        id = 123
+
+    class Update:
+        effective_message = Message()
+        effective_user = User()
+
+    monkeypatch.setattr(bot, "api", fake_api)
+    monkeypatch.setattr(bot, "ask_openjarvis", fake_ask)
+    asyncio.run(
+        bot.jarvis_command(
+            Update(),
+            SimpleNamespace(args=["Проверь", "https://example.com/report"]),
+        )
+    )
+
+    reply = Update.effective_message.replies[-1][0]
+    assert "Ответ по источнику" in reply
+    assert "🌐 Источник: https://example.com/report" in reply

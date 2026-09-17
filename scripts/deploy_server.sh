@@ -26,6 +26,13 @@ cd "$APP_DIR"
 test -d .git || { echo "The production directory is not a Git repository" >&2; exit 2; }
 test -f .env || { echo "Production .env is missing" >&2; exit 2; }
 
+worker_replicas="$(sed -nE 's/^AGENT_WORKER_REPLICAS=([0-9]+)$/\1/p' .env | tail -n 1)"
+worker_replicas="${worker_replicas:-4}"
+if [[ ! "$worker_replicas" =~ ^[0-9]+$ ]] || (( worker_replicas < 1 || worker_replicas > 60 )); then
+  echo "AGENT_WORKER_REPLICAS must be an integer from 1 to 60" >&2
+  exit 2
+fi
+
 git_safe() {
   git -c safe.directory="$APP_DIR" "$@"
 }
@@ -113,6 +120,7 @@ rollback_release() {
     docker compose --env-file .env "${compose_profiles[@]}" build \
       "${build_services[@]}" || true
     docker compose --env-file .env "${compose_profiles[@]}" up -d --no-build \
+      --scale "worker=$worker_replicas" \
       --remove-orphans "${runtime_services[@]}" || true
   fi
   exit "$exit_code"
@@ -159,6 +167,7 @@ if (( jarvis_enabled )); then
   cleanup_model_pull_network
 fi
 docker compose --env-file .env "${compose_profiles[@]}" up -d --no-build \
+  --scale "worker=$worker_replicas" \
   --remove-orphans "${runtime_services[@]}"
 
 if (( jarvis_enabled )); then
@@ -229,12 +238,19 @@ PY
 fi
 
 for service in "${runtime_services[@]}"; do
-  container_id="$(docker compose --env-file .env "${compose_profiles[@]}" ps -q "$service")"
-  test -n "$container_id"
-  state="$(docker inspect --format '{{.State.Status}}' "$container_id")"
-  health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")"
-  test "$state" = "running"
-  test "$health" != "unhealthy"
+  container_ids="$(docker compose --env-file .env "${compose_profiles[@]}" ps -q "$service")"
+  test -n "$container_ids"
+  container_count="$(printf '%s\n' "$container_ids" | sed '/^$/d' | wc -l | tr -d ' ')"
+  expected_count=1
+  [[ "$service" == "worker" ]] && expected_count="$worker_replicas"
+  test "$container_count" = "$expected_count"
+  while IFS= read -r container_id; do
+    [[ -n "$container_id" ]] || continue
+    state="$(docker inspect --format '{{.State.Status}}' "$container_id")"
+    health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")"
+    test "$state" = "running"
+    test "$health" != "unhealthy"
+  done <<< "$container_ids"
 done
 
 "$APP_DIR/scripts/install_server_watchdog.sh" "$APP_DIR"
@@ -242,3 +258,4 @@ docker compose --env-file .env "${compose_profiles[@]}" ps
 
 trap - ERR
 echo "deployed_release=$TARGET_SHA"
+echo "agent_worker_replicas=$worker_replicas"

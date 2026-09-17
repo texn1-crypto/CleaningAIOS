@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .contact_directory import upsert_contact_directory
+from .integrations import _DNSPinningTransport
 from .models import BusinessRecord, ImportJob, OutreachConsent, Suppression
 from .operations import parse_lead_import
 
@@ -400,7 +401,14 @@ def _validate_public_url(url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Only public HTTP(S) website URLs are allowed")
     try:
-        addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or 443)}
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(
+                parsed.hostname,
+                parsed.port or (443 if parsed.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
+        }
     except socket.gaierror as exc:
         raise ValueError("Website hostname cannot be resolved") from exc
     for address in addresses:
@@ -486,7 +494,12 @@ def enrich_management_company(db: Session, record_id: int) -> dict:
     _validate_public_url(website)
     parsed = urlparse(website)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    with httpx.Client(timeout=15, follow_redirects=False) as client:
+    with httpx.Client(
+        timeout=15,
+        follow_redirects=False,
+        trust_env=False,
+        transport=_DNSPinningTransport(),
+    ) as client:
         robots = RobotFileParser()
         robots.set_url(robots_url)
         try:

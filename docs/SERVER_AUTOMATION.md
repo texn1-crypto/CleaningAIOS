@@ -23,6 +23,12 @@ container without fetching code. Docker's `restart: unless-stopped` policy cover
 process exits and host restarts. GitHub Actions is the only automatic code-release
 path.
 
+`AGENT_WORKER_REPLICAS` controls horizontal Task consumers. The deployment and
+watchdog scripts accept `1..60`, verify the exact running replica count and preserve
+the same PostgreSQL `FOR UPDATE SKIP LOCKED` queue semantics. Start with the default
+four replicas and increase only after observing CPU, memory, database locks and
+provider quotas; sixty is a supported ceiling, not a safe default for every server.
+
 ## Controlled learning and repair
 
 `Meta Brain`, `Evolution Research`, agent evals and `System Admin` form the quality

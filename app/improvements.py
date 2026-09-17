@@ -433,23 +433,37 @@ def deterministic_assessment(message: str, intent: dict[str, Any]) -> dict[str, 
 
 
 def _merge_llm_assessment(message: str, intent: dict[str, Any], baseline: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    if intent.get("kind") != "task" or baseline["classification"] in {"supported", "approval_required", "configuration_required"}:
+    if intent.get("kind") != "task":
         return baseline, {"status": "not_needed"}
-    advice = llm_advisor.analyze_request(redact_sensitive_text(message), intent, baseline)
-    if advice.get("status") != "succeeded":
+    advice = llm_advisor.council_analyze_request(
+        redact_sensitive_text(message),
+        intent,
+        baseline,
+    )
+    if advice.get("status") not in {"succeeded", "degraded"}:
+        return baseline, advice
+    if baseline["classification"] in {
+        "supported",
+        "approval_required",
+        "configuration_required",
+    }:
         return baseline, advice
     if not advice.get("should_create_improvement") and not baseline["should_create_improvement"]:
         return baseline, advice
+    # Council prose is untrusted advisory data.  The improvement prompt may be
+    # handed to an autonomous code-writing agent, so only deterministic
+    # baseline fields are allowed to shape that prompt.  Numeric scoring may
+    # make the gap more conservative, but cannot introduce instructions.
     merged = dict(baseline)
     merged.update({
         "fully_supported": False,
         "capability_score": min(float(baseline["capability_score"]), float(advice.get("capability_score", 0.5))),
         "classification": "capability_gap",
-        "reason": str(advice.get("reason") or baseline["reason"])[:2000],
-        "missing_capabilities": [str(x)[:200] for x in (advice.get("missing_capabilities") or baseline["missing_capabilities"])[:10]],
-        "suggested_function": str(advice.get("suggested_function") or baseline["suggested_function"])[:1000],
-        "acceptance_criteria": [str(x)[:1000] for x in (advice.get("acceptance_criteria") or baseline["acceptance_criteria"])[:10]],
-        "test_plan": [str(x)[:1000] for x in (advice.get("test_plan") or baseline["test_plan"])[:10]],
+        "reason": str(baseline["reason"])[:2000],
+        "missing_capabilities": [str(x)[:200] for x in baseline["missing_capabilities"][:10]],
+        "suggested_function": str(baseline["suggested_function"])[:1000],
+        "acceptance_criteria": [str(x)[:1000] for x in baseline["acceptance_criteria"][:10]],
+        "test_plan": [str(x)[:1000] for x in baseline["test_plan"][:10]],
         "should_create_improvement": True,
     })
     return merged, advice
@@ -457,12 +471,13 @@ def _merge_llm_assessment(message: str, intent: dict[str, Any], baseline: dict[s
 
 def build_codex_prompt(request_text: str, assessment: dict[str, Any], improvement_id: int | None = None) -> str:
     identifier = f" #{improvement_id}" if improvement_id else ""
+    safe_request_text = redact_sensitive_text(request_text)[:4000]
     return f"""CleaningAI OS improvement request{identifier}
 
 Work only in the existing repository texn1-crypto/CleaningAIOS. Do not create a new project.
 
 Original Telegram request (credentials already redacted):
-{request_text}
+{safe_request_text}
 
 Capability gap:
 {assessment['reason']}
@@ -559,6 +574,7 @@ def analyze_and_record(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
         **assessment,
         **routing,
         "llm_analysis": llm_analysis,
+        "execution_brief": llm_analysis.get("execution_brief"),
         "improvement_id": None,
         "handoff_status": "not_needed",
     }

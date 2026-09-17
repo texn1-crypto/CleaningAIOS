@@ -21,6 +21,13 @@ if ! flock -n 9; then
   exit 0
 fi
 
+worker_replicas="$(sed -nE 's/^AGENT_WORKER_REPLICAS=([0-9]+)$/\1/p' .env | tail -n 1)"
+worker_replicas="${worker_replicas:-4}"
+if [[ ! "$worker_replicas" =~ ^[0-9]+$ ]] || (( worker_replicas < 1 || worker_replicas > 60 )); then
+  echo "AGENT_WORKER_REPLICAS must be an integer from 1 to 60" >&2
+  exit 2
+fi
+
 compose=(docker compose --env-file .env --profile telegram)
 services=(db web worker scheduler bot)
 jarvis_enabled=0
@@ -36,16 +43,28 @@ fi
 repaired=0
 
 for service in "${services[@]}"; do
-  container_id="$("${compose[@]}" ps -q "$service" 2>/dev/null || true)"
-  state="missing"
-  health="none"
-  if [[ -n "$container_id" ]]; then
+  container_ids="$("${compose[@]}" ps -q "$service" 2>/dev/null || true)"
+  expected_count=1
+  [[ "$service" == "worker" ]] && expected_count="$worker_replicas"
+  container_count="$(printf '%s\n' "$container_ids" | sed '/^$/d' | wc -l | tr -d ' ')"
+  service_healthy=1
+  [[ "$container_count" == "$expected_count" ]] || service_healthy=0
+  while IFS= read -r container_id; do
+    [[ -n "$container_id" ]] || continue
     state="$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || echo missing)"
     health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null || echo missing)"
-  fi
-  if [[ "$state" != "running" || "$health" == "unhealthy" ]]; then
-    echo "repairing service=$service state=$state health=$health"
-    "${compose[@]}" up -d --no-build --force-recreate "$service"
+    if [[ "$state" != "running" || "$health" == "unhealthy" ]]; then
+      service_healthy=0
+    fi
+  done <<< "$container_ids"
+  if (( service_healthy == 0 )); then
+    echo "repairing service=$service containers=$container_count expected=$expected_count"
+    if [[ "$service" == "worker" ]]; then
+      "${compose[@]}" up -d --no-build --force-recreate \
+        --scale "worker=$worker_replicas" worker
+    else
+      "${compose[@]}" up -d --no-build --force-recreate "$service"
+    fi
     repaired=1
   fi
 done

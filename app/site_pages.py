@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from html import escape
 from math import ceil
+from typing import TypedDict
 
 from .config import settings
 
@@ -18,7 +19,14 @@ SERVICE_IMAGE_SIZES = {
 }
 
 
-SERVICE_DETAILS = {
+class ServiceDetails(TypedDict):
+    title: str
+    lead: str
+    image: str
+    zones: tuple[str, ...]
+
+
+SERVICE_DETAILS: dict[str, ServiceDetails] = {
     "offices": {
         "title": "Уборка офисов",
         "lead": "Поддерживаем рабочее пространство в порядке до, во время или после рабочего дня.",

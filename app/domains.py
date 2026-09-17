@@ -24,7 +24,27 @@ DOMAIN_STATUSES = {
     "proposal": {"draft", "ready", "approved", "sent", "cancelled"},
 }
 
+PROTECTED_RECORD_STATUSES = {
+    "tender": {"approval", "submitted"},
+    "candidate": {"approved", "hired"},
+    "cashflow": {"approved", "paid"},
+    "expense": {"approved", "paid"},
+    "payment": {"approved", "paid"},
+    "campaign": {"approval", "scheduled", "running", "completed"},
+    "marketing_experiment": {"approval", "approved", "running", "completed"},
+    "marketing_invoice": {"approved_for_manual_payment", "paid"},
+    "proposal": {"approved", "sent"},
+}
+
 TERMINAL_STATUSES = {"won", "lost", "expired", "rejected", "hired", "paid", "cancelled", "completed"}
+
+
+def validate_generic_record_status(record_type: str, status: str) -> None:
+    if status in PROTECTED_RECORD_STATUSES.get(record_type, set()):
+        raise HTTPException(
+            409,
+            f"Status {record_type}.{status} requires its protected workflow",
+        )
 
 
 def validate_status(record_type: str, status: str) -> None:

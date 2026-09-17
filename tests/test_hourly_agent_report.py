@@ -70,9 +70,18 @@ def test_hourly_report_accounts_for_every_agent_and_social_blockers():
         assert "не назначались задачи" in activity["copywriter"]["inactivity_reason"]
         assert "ожидают готовых изображений" in activity["social_publisher"]["inactivity_reason"]
         assert "IMAGE_GENERATION_API_KEY" in activity["social_image"]["inactivity_reason"]
+        assert report["links"]["crm"].endswith("/mission-control")
+        assert report["agent_topology"] == {
+            "registered_roles": len(AGENTS),
+            "worker_replicas_desired": 4,
+            "worker_replicas_max_supported": 60,
+            "coordination": "postgresql_task_queue_skip_locked",
+        }
 
         formatted = format_activity_report(report)
         assert "Работа каждого ИИ-агента" in formatted
+        assert "CRM: http://localhost:8000/mission-control" in formatted
+        assert f"{len(AGENTS)} ролей · 4 параллельных worker" in formatted
         assert "sales: 1/1 успешно" in formatted
         assert "copywriter: не работал" in formatted
         assert "social_publisher: не работал" in formatted

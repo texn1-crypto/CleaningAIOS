@@ -13,7 +13,9 @@ registry currently contains only bounded aggregate views:
   fields removed);
 - `company_brain.search` (viewer-safe, freshness-filtered evidence with exact
   citations; retrieved content is labelled untrusted and is not approved for
-  automatic transfer to an external model).
+  automatic transfer to an external model);
+- `web.public_crawl` (one public HTTPS page through the isolated Crawl4AI
+  service, returned as size-bounded untrusted Markdown).
 
 Every tool has an exact agent allowlist. A batch also has a maximum call count,
 per-call deadline, total deadline and serialized-result size limit. Policy denials,
@@ -21,6 +23,13 @@ timeouts, failures and successes are stored in `agent_tool_calls` with only an
 argument digest and aggregate execution metadata. Raw arguments and results are
 not copied to this audit table. Successful results are labelled `read_only` and
 attached to the normal `AgentRun` evidence.
+
+`web.public_crawl` is disabled until its private service token and explicit
+enable switch are configured. Its input schema intentionally exposes only
+`url` and `max_chars`; agents cannot provide browser internals, JavaScript,
+cookies, headers, proxy settings, hooks, file paths, deep-crawl strategies or
+LLM configuration. See [CRAWL4AI.md](CRAWL4AI.md) for the deployment and threat
+boundary.
 
 ## Optional remote MCP
 
