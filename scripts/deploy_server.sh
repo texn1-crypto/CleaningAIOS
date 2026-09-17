@@ -77,6 +77,20 @@ configure_runtime_services() {
   fi
 }
 
+model_pull_network=""
+ollama_container=""
+cleanup_model_pull_network() {
+  if [[ -n "$model_pull_network" ]]; then
+    if [[ -n "$ollama_container" ]]; then
+      docker network disconnect -f "$model_pull_network" "$ollama_container" \
+        >/dev/null 2>&1 || true
+    fi
+    docker network rm "$model_pull_network" >/dev/null 2>&1 || true
+    model_pull_network=""
+    ollama_container=""
+  fi
+}
+
 if db_container="$(docker compose --env-file .env ps -q db 2>/dev/null)" && [[ -n "$db_container" ]]; then
   backup_tmp="$backup_root/.cleaningaios-$previous_sha-$(date -u +%Y%m%dT%H%M%SZ).dump.tmp"
   backup_final="${backup_tmp%.tmp}"
@@ -89,6 +103,7 @@ fi
 rollback_release() {
   local exit_code=$?
   trap - ERR
+  cleanup_model_pull_network
   if [[ "$previous_sha" != "$TARGET_SHA" ]]; then
     echo "Deployment failed; restoring application release $previous_sha" >&2
     git_safe checkout --quiet --detach "$previous_sha" || true
@@ -121,6 +136,19 @@ docker compose --env-file .env up -d db
 docker compose --env-file .env run --rm migrate
 if (( jarvis_enabled )); then
   docker compose --env-file .env "${compose_profiles[@]}" up -d --no-build ollama
+  ollama_container="$(
+    docker compose --env-file .env "${compose_profiles[@]}" ps -q ollama
+  )"
+  test -n "$ollama_container"
+  model_pull_network="cleaningaios-model-pull"
+  if docker network inspect "$model_pull_network" >/dev/null 2>&1; then
+    echo "Stale OpenJarvis model-pull network exists" >&2
+    exit 3
+  fi
+  docker network create --driver bridge \
+    --label cleaningaios.purpose=openjarvis-model-pull \
+    "$model_pull_network" >/dev/null
+  docker network connect "$model_pull_network" "$ollama_container"
   docker compose --env-file .env "${compose_profiles[@]}" exec -T ollama \
     ollama pull qwen3:0.6b
   jarvis_model_id="$(
@@ -128,6 +156,7 @@ if (( jarvis_enabled )); then
       ollama list | awk '$1 == "qwen3:0.6b" {print $2}'
   )"
   test "$jarvis_model_id" = "7df6b6e09427"
+  cleanup_model_pull_network
 fi
 docker compose --env-file .env "${compose_profiles[@]}" up -d --no-build \
   --remove-orphans "${runtime_services[@]}"

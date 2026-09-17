@@ -50,6 +50,10 @@ def test_deploy_is_exact_release_and_refuses_dirty_checkout() -> None:
     assert "git_safe status --porcelain" in deploy
     assert "Production checkout contains local changes; deployment refused" in deploy
     assert "telegram_getme=ok" in deploy
+    assert "cleaningaios-model-pull" in deploy
+    assert "cleanup_model_pull_network" in deploy
+    assert 'docker network connect "$model_pull_network" "$ollama_container"' in deploy
+    assert 'docker network rm "$model_pull_network"' in deploy
     assert "web worker scheduler migrate bot" in deploy
 
 
