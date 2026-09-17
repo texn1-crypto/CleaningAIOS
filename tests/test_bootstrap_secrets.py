@@ -13,7 +13,11 @@ def test_bootstrap_generates_only_missing_secrets_and_is_idempotent(tmp_path: Pa
 
     updated = bootstrap(environment)
 
-    assert updated == ["TELEGRAM_CALLBACK_SECRET", "PUBLIC_LEAD_RATE_SECRET"]
+    assert updated == [
+        "TELEGRAM_CALLBACK_SECRET",
+        "PUBLIC_LEAD_RATE_SECRET",
+        "OPENJARVIS_API_KEY",
+    ]
     values = dict(
         line.split("=", 1)
         for line in environment.read_text().splitlines()

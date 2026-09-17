@@ -4169,7 +4169,7 @@ def test_telegram_application_registers_natural_language_handler(monkeypatch):
     handlers = [handler for group in application.handlers.values() for handler in group]
     assert any(isinstance(handler, MessageHandler) for handler in handlers)
     commands = {command for handler in handlers if isinstance(handler, CommandHandler) for command in handler.commands}
-    assert {"outreach", "mailing", "cancel", "sysadmin"}.issubset(commands)
+    assert {"outreach", "mailing", "cancel", "sysadmin", "jarvis"}.issubset(commands)
 
 
 def test_outreach_summary_is_owner_safe_and_manager_guarded(client):
