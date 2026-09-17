@@ -25,8 +25,11 @@ jobs:
       PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
       PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
       PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+      PRODUCTION_COMPANY_PHONE: ${{ secrets.PRODUCTION_COMPANY_PHONE }}
       PRODUCTION_SSH_PORT: ${{ vars.PRODUCTION_SSH_PORT || '22' }}
       PRODUCTION_PATH: ${{ vars.PRODUCTION_PATH || '/opt/cleaningaios' }}
+      PRODUCTION_COMPANY_SERVICE_AREA: ${{ vars.PRODUCTION_COMPANY_SERVICE_AREA || 'Санкт-Петербург и Ленинградская область' }}
+      PRODUCTION_MANAGEMENT_CONTACT_REGIONS: ${{ vars.PRODUCTION_MANAGEMENT_CONTACT_REGIONS || 'Санкт-Петербург|Ленинградская область' }}
     steps:
       - name: Check out the tested release
         uses: actions/checkout@v5
@@ -48,13 +51,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for variable in PRODUCTION_SSH_HOST PRODUCTION_SSH_USER PRODUCTION_SSH_KEY PRODUCTION_SSH_KNOWN_HOSTS; do
+          for variable in PRODUCTION_SSH_HOST PRODUCTION_SSH_USER PRODUCTION_SSH_KEY PRODUCTION_SSH_KNOWN_HOSTS PRODUCTION_COMPANY_PHONE; do
             test -n "${!variable:-}" || { echo "Missing required production secret: $variable" >&2; exit 1; }
           done
           [[ "$PRODUCTION_SSH_HOST" =~ ^[A-Za-z0-9._-]+$ ]]
           [[ "$PRODUCTION_SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
           [[ "$PRODUCTION_SSH_PORT" =~ ^[0-9]{1,5}$ ]]
           [[ "$PRODUCTION_PATH" =~ ^/[A-Za-z0-9_./-]+$ ]]
+          [[ "$PRODUCTION_COMPANY_PHONE" =~ ^\+?[0-9()\ -]{7,32}$ ]]
+          [[ "$PRODUCTION_COMPANY_SERVICE_AREA" != *$'\n'* ]]
+          [[ "$PRODUCTION_COMPANY_SERVICE_AREA" != *'='* ]]
+          [[ "$PRODUCTION_MANAGEMENT_CONTACT_REGIONS" != *$'\n'* ]]
+          [[ "$PRODUCTION_MANAGEMENT_CONTACT_REGIONS" != *'='* ]]
 
       - name: Configure pinned SSH identity
         shell: bash
@@ -79,15 +87,26 @@ jobs:
             -o StrictHostKeyChecking=yes
           )
           remote_script="/tmp/cleaningaios-deploy-$RELEASE_SHA.sh"
+          remote_business_config="/tmp/cleaningaios-business-$RELEASE_SHA.env"
+          local_business_config="$RUNNER_TEMP/cleaningaios-business-$RELEASE_SHA.env"
+          umask 077
+          {
+            printf 'COMPANY_PHONE=%s\n' "$PRODUCTION_COMPANY_PHONE"
+            printf 'COMPANY_SERVICE_AREA=%s\n' "$PRODUCTION_COMPANY_SERVICE_AREA"
+            printf 'MANAGEMENT_CONTACT_REGIONS=%s\n' "$PRODUCTION_MANAGEMENT_CONTACT_REGIONS"
+          } > "$local_business_config"
           scp -q -P "$PRODUCTION_SSH_PORT" \
             -i "$HOME/.ssh/cleaningaios_deploy" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             scripts/deploy_server.sh \
             "$PRODUCTION_SSH_USER@$PRODUCTION_SSH_HOST:$remote_script"
           ssh "${ssh_options[@]}" "$PRODUCTION_SSH_USER@$PRODUCTION_SSH_HOST" \
-            "chmod 700 '$remote_script'; '$remote_script' '$RELEASE_SHA' '$PRODUCTION_PATH'; code=\$?; rm -f '$remote_script'; exit \$code"
+            "umask 077; install -m 600 /dev/null '$remote_business_config'; cat > '$remote_business_config'" \
+            < "$local_business_config"
+          ssh "${ssh_options[@]}" "$PRODUCTION_SSH_USER@$PRODUCTION_SSH_HOST" \
+            "chmod 700 '$remote_script'; chmod 600 '$remote_business_config'; '$remote_script' '$RELEASE_SHA' '$PRODUCTION_PATH' '$remote_business_config'; code=\$?; rm -f '$remote_script' '$remote_business_config'; exit \$code"
 
       - name: Remove runner SSH material
         if: always()
         shell: bash
-        run: rm -f "$HOME/.ssh/cleaningaios_deploy" "$HOME/.ssh/known_hosts"
+        run: rm -f "$HOME/.ssh/cleaningaios_deploy" "$HOME/.ssh/known_hosts" "$RUNNER_TEMP"/cleaningaios-business-*.env

@@ -27,6 +27,24 @@ def _event_trace(task: Task, actor: str) -> dict[str, str]:
 
 def _execution_gap(task: Task, result: dict) -> tuple[str, bool] | None:
     payload = task.payload or {}
+    status = str(result.get("status") or "").strip().lower()
+    required = result.get("credentials_required")
+    if status in {
+        "adapter_required",
+        "configuration_required",
+        "credentials_required",
+        "unavailable",
+    }:
+        reason = str(
+            result.get("reason")
+            or "The agent dependency is unavailable, so no verifiable business result was produced."
+        )
+        reason_lower = reason.lower()
+        credentials_missing = bool(required) or status == "credentials_required" or any(
+            marker in reason_lower
+            for marker in ("401", "403", "unauthorized", "forbidden", "api key", "credential")
+        )
+        return reason, credentials_missing
     autonomy_action = str(payload.get("autonomy_action") or "")
     if autonomy_action in AUTO_WITHIN_LIMIT_ACTIONS:
         expected_evidence = {
@@ -51,8 +69,6 @@ def _execution_gap(task: Task, result: dict) -> tuple[str, bool] | None:
     source = str(payload.get("source", ""))
     if source not in {"telegram_natural_language", "telegram_document", "telegram_mailing_wizard"}:
         return None
-    status = str(result.get("status", ""))
-    required = result.get("credentials_required")
     if required or status in {"adapter_required", "credentials_required", "configuration_required"}:
         return str(result.get("reason") or "Для полного выполнения не настроены обязательные credentials или внешний адаптер."), True
     evidence = result.get("evidence") if isinstance(result.get("evidence"), list) else []

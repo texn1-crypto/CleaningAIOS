@@ -25,6 +25,8 @@ def test_deploy_requires_ci_main_and_pinned_host_identity() -> None:
     assert "PRODUCTION_SSH_KNOWN_HOSTS" in workflow
     assert "StrictHostKeyChecking=yes" in workflow
     assert "environment: production" in workflow
+    assert "PRODUCTION_COMPANY_PHONE" in workflow
+    assert "remote_business_config" in workflow
 
 
 def test_watchdog_repairs_runtime_without_updating_code() -> None:
@@ -55,6 +57,11 @@ def test_deploy_is_exact_release_and_refuses_dirty_checkout() -> None:
     assert 'docker network connect "$model_pull_network" "$ollama_container"' in deploy
     assert 'docker network rm "$model_pull_network"' in deploy
     assert "web worker scheduler migrate bot" in deploy
+    assert "BUSINESS_CONFIG_PATH" in deploy
+    assert "python -m app.business_policy" in deploy
+    assert deploy.index('TARGET_SHA" != "$remote_main') < deploy.index(
+        'python3 - ".env" "$BUSINESS_CONFIG_PATH"'
+    )
 
 
 def test_release_provenance_is_injected_and_reported() -> None:

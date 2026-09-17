@@ -6353,10 +6353,12 @@ def test_management_company_internet_discovery_reports_real_provider_requirement
         "max_attempts": 1,
     }).json()
     completed = client.post(f"/api/tasks/{task['id']}/run").json()
-    assert completed["status"] == "done"
+    assert completed["status"] == "blocked"
     result = completed["result"]
     assert result["status"] == "credentials_required"
     assert result["credentials_required"] == ["PERPLEXITY_API_KEY"]
+    assert result["responsible_party"] == "owner_configuration"
+    assert "execution_gap" in result
     assert result["external_messages_sent"] is False
     assert result["evidence"] == []
 
