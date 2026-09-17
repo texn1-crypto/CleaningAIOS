@@ -42,6 +42,8 @@ advisory request from the bot container, and then verifies all container states.
 The server watchdog checks both Jarvis containers and confirms that the model is
 still present without downloading it automatically. The Python base image,
 OpenJarvis release, and its resolved dependency versions are pinned for repeatable
-rebuilds.
+rebuilds. Ollama is attached to a dedicated empty outbound network only while the
+pinned model is downloaded; deployment disconnects and removes that network before
+OpenJarvis starts. Its steady-state network remains internal-only.
 
 OpenJarvis upstream: <https://github.com/open-jarvis/OpenJarvis>

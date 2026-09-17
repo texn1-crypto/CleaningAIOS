@@ -34,6 +34,13 @@ def test_watchdog_repairs_runtime_without_updating_code() -> None:
     assert "git checkout" not in watchdog
 
 
+def test_watchdog_skips_during_an_active_deployment() -> None:
+    watchdog = (ROOT / "scripts" / "server_watchdog.sh").read_text()
+    assert 'lock_path="/tmp/cleaningaios-deploy-$(id -u).lock"' in watchdog
+    assert "flock -n 9" in watchdog
+    assert "watchdog_skipped=deployment_in_progress" in watchdog
+
+
 def test_deploy_is_exact_release_and_refuses_dirty_checkout() -> None:
     deploy = (ROOT / "scripts" / "deploy_server.sh").read_text()
     assert 'TARGET_SHA" != "$remote_main' in deploy
@@ -43,6 +50,10 @@ def test_deploy_is_exact_release_and_refuses_dirty_checkout() -> None:
     assert "git_safe status --porcelain" in deploy
     assert "Production checkout contains local changes; deployment refused" in deploy
     assert "telegram_getme=ok" in deploy
+    assert "cleaningaios-model-pull" in deploy
+    assert "cleanup_model_pull_network" in deploy
+    assert 'docker network connect "$model_pull_network" "$ollama_container"' in deploy
+    assert 'docker network rm "$model_pull_network"' in deploy
     assert "web worker scheduler migrate bot" in deploy
 
 
