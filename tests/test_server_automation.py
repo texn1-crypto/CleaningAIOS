@@ -41,3 +41,13 @@ def test_deploy_is_exact_release_and_refuses_dirty_checkout() -> None:
     assert "git_safe status --porcelain" in deploy
     assert "Production checkout contains local changes; deployment refused" in deploy
     assert "telegram_getme=ok" in deploy
+    assert "web worker scheduler migrate bot" in deploy
+
+
+def test_release_provenance_is_injected_and_reported() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    compose = (ROOT / "docker-compose.yml").read_text()
+    main = (ROOT / "app" / "main.py").read_text()
+    assert "ARG RELEASE_SHA=development" in dockerfile
+    assert "RELEASE_SHA: ${RELEASE_SHA:-development}" in compose
+    assert '"release_sha": settings.release_sha' in main

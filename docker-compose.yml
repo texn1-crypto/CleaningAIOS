@@ -1,11 +1,17 @@
 x-app: &app
-  build: .
+  build:
+    context: .
+    args:
+      RELEASE_SHA: ${RELEASE_SHA:-development}
+      BUILD_TIME: ${BUILD_TIME:-unknown}
   restart: unless-stopped
   env_file: .env
   environment:
     DATABASE_URL: postgresql+psycopg://cleaningai:${POSTGRES_PASSWORD}@db:5432/cleaningai
     ENVIRONMENT: ${ENVIRONMENT:-production}
     INTERNAL_API_URL: http://web:8000
+    RELEASE_SHA: ${RELEASE_SHA:-development}
+    BUILD_TIME: ${BUILD_TIME:-unknown}
   depends_on:
     migrate:
       condition: service_completed_successfully
