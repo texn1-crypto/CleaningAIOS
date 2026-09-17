@@ -43,9 +43,12 @@ if [[ -n "$(git_safe status --porcelain --untracked-files=normal)" ]]; then
   exit 3
 fi
 
-git_safe fetch --quiet --prune origin main:refs/remotes/origin/main
+deploy_ref="refs/cleaningaios/deploy/main"
+git_safe update-ref -d "$deploy_ref" || true
+git_safe fetch --quiet --force --no-tags origin \
+  "refs/heads/main:$deploy_ref"
 git_safe cat-file -e "$TARGET_SHA^{commit}"
-remote_main="$(git_safe rev-parse origin/main)"
+remote_main="$(git_safe rev-parse "$deploy_ref^{commit}")"
 if [[ "$TARGET_SHA" != "$remote_main" ]]; then
   echo "Requested release is not the current origin/main commit" >&2
   exit 3
