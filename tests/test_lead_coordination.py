@@ -8,11 +8,11 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app import lead_reports
-from app.db import Base
+from app import lead_reports, lead_scout
+from app.db import Base, SessionLocal
 from app.lead_coordination import LEAD_SCOUT_PROFILES, coordinate_lead_scouts
 from app.lead_reports import LEAD_REPORT_RECORD_TYPE, build_instant_lead_report
-from app.models import BusinessRecord, OutboundMessage, OwnerNotification, Task
+from app.models import AgentRun, BusinessRecord, OutboundMessage, OwnerNotification, Task
 
 
 def _session_factory():
@@ -77,6 +77,50 @@ def test_lead_coordinator_runs_through_protected_task_api(client):
     assert result["status"] == "coordinated"
     assert len(result["tasks_created"]) == 4
     assert result["external_messages_sent"] is False
+
+
+def test_unavailable_lead_provider_blocks_task_instead_of_claiming_done(client, monkeypatch):
+    monkeypatch.setattr(
+        lead_scout.llm_advisor,
+        "discover_public_business_leads",
+        lambda brief: {
+            "status": "unavailable",
+            "provider": "public_search",
+            "error": "401 Unauthorized",
+            "credentials_required": [],
+            "leads": [],
+        },
+    )
+    task = client.post(
+        "/api/tasks",
+        json={
+            "title": "Lead provider unavailable regression",
+            "agent_type": "commercial_lead_scout",
+            "payload": {
+                "action": "discover_public_business_leads",
+                "source": "owner_instruction",
+                "regions": ["Санкт-Петербург", "Ленинградская область"],
+                "max_results": 20,
+                "automatic_outreach": False,
+            },
+            "max_attempts": 1,
+        },
+    ).json()
+
+    completed = client.post(f"/api/tasks/{task['id']}/run").json()
+
+    assert completed["status"] == "blocked"
+    assert completed["result"]["status"] == "unavailable"
+    assert completed["result"]["responsible_party"] == "owner_configuration"
+    assert "execution_gap" in completed["result"]
+    with SessionLocal() as db:
+        latest_run = db.scalar(
+            select(AgentRun)
+            .where(AgentRun.task_id == task["id"])
+            .order_by(AgentRun.id.desc())
+        )
+        assert latest_run is not None
+        assert latest_run.status == "incomplete"
 
 
 def test_new_or_changed_lead_creates_one_verified_pdf_and_never_outreach(

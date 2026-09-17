@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 TARGET_SHA="${1:-}"
 APP_DIR="${2:-}"
+BUSINESS_CONFIG_PATH="${3:-}"
 
 if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "A full 40-character release SHA is required" >&2
@@ -12,10 +13,14 @@ if [[ ! "$APP_DIR" =~ ^/[A-Za-z0-9_./-]+$ ]]; then
   echo "The application path must be an absolute path without spaces" >&2
   exit 2
 fi
+if [[ ! "$BUSINESS_CONFIG_PATH" =~ ^/tmp/cleaningaios-business-[0-9a-f]{40}\.env$ ]]; then
+  echo "A validated temporary business configuration path is required" >&2
+  exit 2
+fi
 
 if (( EUID != 0 )); then
   command -v sudo >/dev/null || { echo "Passwordless sudo is required" >&2; exit 2; }
-  exec sudo -n -- "$0" "$TARGET_SHA" "$APP_DIR"
+  exec sudo -n -- "$0" "$TARGET_SHA" "$APP_DIR" "$BUSINESS_CONFIG_PATH"
 fi
 
 for command_name in docker git curl flock python3; do
@@ -25,6 +30,11 @@ done
 cd "$APP_DIR"
 test -d .git || { echo "The production directory is not a Git repository" >&2; exit 2; }
 test -f .env || { echo "Production .env is missing" >&2; exit 2; }
+test -f "$BUSINESS_CONFIG_PATH" || { echo "Production business configuration is missing" >&2; exit 2; }
+
+lock_path="/tmp/cleaningaios-deploy-$(id -u).lock"
+exec 9>"$lock_path"
+flock -n 9 || { echo "Another CleaningAIOS deployment is running" >&2; exit 3; }
 
 worker_replicas="$(sed -nE 's/^AGENT_WORKER_REPLICAS=([0-9]+)$/\1/p' .env | tail -n 1)"
 worker_replicas="${worker_replicas:-4}"
@@ -40,10 +50,6 @@ git_safe() {
 for local_exclude in /backups/ /.runtime/; do
   grep -qxF "$local_exclude" .git/info/exclude 2>/dev/null || printf '%s\n' "$local_exclude" >> .git/info/exclude
 done
-
-lock_path="/tmp/cleaningaios-deploy-$(id -u).lock"
-exec 9>"$lock_path"
-flock -n 9 || { echo "Another CleaningAIOS deployment is running" >&2; exit 3; }
 
 if [[ -n "$(git_safe status --porcelain --untracked-files=normal)" ]]; then
   echo "Production checkout contains local changes; deployment refused" >&2
@@ -130,6 +136,62 @@ trap rollback_release ERR
 git_safe checkout --quiet --detach "$TARGET_SHA"
 export RELEASE_SHA="$TARGET_SHA"
 export BUILD_TIME="$build_time"
+python3 - ".env" "$BUSINESS_CONFIG_PATH" <<'PY'
+import os
+from pathlib import Path
+import re
+import tempfile
+import sys
+
+environment_path = Path(sys.argv[1])
+overlay_path = Path(sys.argv[2])
+allowed = {
+    "COMPANY_PHONE",
+    "COMPANY_SERVICE_AREA",
+    "MANAGEMENT_CONTACT_REGIONS",
+}
+phone_pattern = re.compile(r"^\+?[0-9 ()-]{7,32}$")
+
+overlay: dict[str, str] = {}
+for raw_line in overlay_path.read_text().splitlines():
+    if not raw_line or "=" not in raw_line:
+        raise SystemExit("Invalid production business configuration")
+    key, value = raw_line.split("=", 1)
+    if key not in allowed or key in overlay or not value or "\n" in value or "\r" in value:
+        raise SystemExit("Invalid production business configuration")
+    overlay[key] = value
+if set(overlay) != allowed or not phone_pattern.fullmatch(overlay["COMPANY_PHONE"]):
+    raise SystemExit("Invalid production business configuration")
+
+lines = environment_path.read_text().splitlines()
+positions: dict[str, int] = {}
+for index, line in enumerate(lines):
+    if not line or line.lstrip().startswith("#") or "=" not in line:
+        continue
+    key, _value = line.split("=", 1)
+    if key in allowed:
+        positions[key] = index
+for key, value in overlay.items():
+    replacement = f"{key}={value}"
+    if key in positions:
+        lines[positions[key]] = replacement
+    else:
+        lines.append(replacement)
+
+descriptor, temporary_name = tempfile.mkstemp(
+    prefix=f".{environment_path.name}.business.",
+    dir=environment_path.parent,
+)
+temporary = Path(temporary_name)
+try:
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write("\n".join(lines) + "\n")
+    temporary.chmod(0o600)
+    os.replace(temporary, environment_path)
+finally:
+    temporary.unlink(missing_ok=True)
+print("Production business configuration synchronized.")
+PY
 python3 scripts/bootstrap_secrets.py .env
 grep -Eq '^OPENJARVIS_API_KEY=.+$' .env || {
   echo "OpenJarvis API key was not configured" >&2
@@ -142,6 +204,7 @@ docker compose --env-file .env "${compose_profiles[@]}" build \
   "${build_services[@]}"
 docker compose --env-file .env up -d db
 docker compose --env-file .env run --rm migrate
+docker compose --env-file .env run --rm migrate python -m app.business_policy
 if (( jarvis_enabled )); then
   docker compose --env-file .env "${compose_profiles[@]}" up -d --no-build ollama
   ollama_container="$(
