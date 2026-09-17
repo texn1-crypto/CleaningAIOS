@@ -98,8 +98,10 @@ def main() -> None:
         help="Generate the private Crawl4AI service token and enable its safe defaults.",
     )
     args = parser.parse_args()
-    updated = bootstrap(args.path, enable_crawl4ai=args.enable_crawl4ai)
-    print("Configured missing secrets: " + (", ".join(updated) if updated else "none"))
+    bootstrap(args.path, enable_crawl4ai=args.enable_crawl4ai)
+    # Keep bootstrap output deliberately generic. Even secret *names* can reveal
+    # enabled integrations and should not be copied into deployment logs.
+    print("Secret bootstrap completed.")
 
 
 if __name__ == "__main__":
