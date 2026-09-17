@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     agent_read_tool_max_result_bytes: int = 64_000
     agent_mcp_read_servers_json: str = "[]"
     agent_mcp_protocol_version: str = "2026-07-28"
+    openjarvis_enabled: bool = False
+    openjarvis_base_url: str = "http://host.docker.internal:8011"
+    openjarvis_api_key: str = ""
+    openjarvis_model: str = "qwen3:0.6b"
+    openjarvis_timeout_seconds: float = 120.0
+    openjarvis_max_prompt_chars: int = 4_000
+    openjarvis_max_response_chars: int = 3_500
+    openjarvis_max_response_bytes: int = 128_000
     ceo_review_interval_hours: int = 24
     owner_activity_report_interval_minutes: int = 60
     daily_owner_pack_timezone: str = "Europe/Moscow"

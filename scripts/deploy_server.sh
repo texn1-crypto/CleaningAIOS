@@ -63,6 +63,14 @@ chmod 700 "$backup_root"
 configure_runtime_services() {
   compose_profiles=(--profile telegram)
   runtime_services=(db web worker scheduler bot)
+  build_services=(web worker scheduler migrate bot)
+  jarvis_enabled=0
+  if docker compose --env-file .env --profile jarvis config --services 2>/dev/null | grep -qx openjarvis; then
+    compose_profiles+=(--profile jarvis)
+    runtime_services+=(ollama openjarvis)
+    build_services+=(openjarvis)
+    jarvis_enabled=1
+  fi
   if docker compose --env-file .env --profile crawl config --services 2>/dev/null | grep -qx crawl4ai; then
     compose_profiles+=(--profile crawl)
     runtime_services+=(crawl4ai)
@@ -87,10 +95,10 @@ rollback_release() {
     export RELEASE_SHA="$previous_sha"
     export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     configure_runtime_services
-    docker compose --env-file .env --profile telegram build \
-      web worker scheduler migrate bot || true
+    docker compose --env-file .env "${compose_profiles[@]}" build \
+      "${build_services[@]}" || true
     docker compose --env-file .env "${compose_profiles[@]}" up -d --no-build \
-      "${runtime_services[@]}" || true
+      --remove-orphans "${runtime_services[@]}" || true
   fi
   exit "$exit_code"
 }
@@ -99,15 +107,43 @@ trap rollback_release ERR
 git_safe checkout --quiet --detach "$TARGET_SHA"
 export RELEASE_SHA="$TARGET_SHA"
 export BUILD_TIME="$build_time"
+python3 scripts/bootstrap_secrets.py .env
+grep -Eq '^OPENJARVIS_API_KEY=.+$' .env || {
+  echo "OpenJarvis API key was not configured" >&2
+  exit 3
+}
 configure_runtime_services
 
-docker compose --env-file .env config --quiet
-docker compose --env-file .env --profile telegram build \
-  web worker scheduler migrate bot
+docker compose --env-file .env "${compose_profiles[@]}" config --quiet
+docker compose --env-file .env "${compose_profiles[@]}" build \
+  "${build_services[@]}"
 docker compose --env-file .env up -d db
 docker compose --env-file .env run --rm migrate
+if (( jarvis_enabled )); then
+  docker compose --env-file .env "${compose_profiles[@]}" up -d --no-build ollama
+  docker compose --env-file .env "${compose_profiles[@]}" exec -T ollama \
+    ollama pull qwen3:0.6b
+  jarvis_model_id="$(
+    docker compose --env-file .env "${compose_profiles[@]}" exec -T ollama \
+      ollama list | awk '$1 == "qwen3:0.6b" {print $2}'
+  )"
+  test "$jarvis_model_id" = "7df6b6e09427"
+fi
 docker compose --env-file .env "${compose_profiles[@]}" up -d --no-build \
-  "${runtime_services[@]}"
+  --remove-orphans "${runtime_services[@]}"
+
+if (( jarvis_enabled )); then
+  openjarvis_container="$(docker compose --env-file .env "${compose_profiles[@]}" ps -q openjarvis)"
+  test -n "$openjarvis_container"
+  openjarvis_health=""
+  for _ in $(seq 1 45); do
+    openjarvis_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$openjarvis_container")"
+    [[ "$openjarvis_health" == "healthy" ]] && break
+    [[ "$openjarvis_health" == "unhealthy" ]] && exit 1
+    sleep 2
+  done
+  test "$openjarvis_health" = "healthy"
+fi
 
 published_web="$(docker compose --env-file .env port web 8000 | tail -n 1)"
 published_port="${published_web##*:}"
@@ -149,6 +185,19 @@ if not payload.get("ok") or not payload.get("result", {}).get("id"):
     raise SystemExit("Telegram getMe failed")
 print("telegram_getme=ok")
 PY
+
+if (( jarvis_enabled )); then
+  docker compose --env-file .env "${compose_profiles[@]}" exec -T bot python - <<'PY'
+import asyncio
+
+from app.openjarvis_client import ask_openjarvis
+
+answer = asyncio.run(ask_openjarvis("Ответь одним словом: работает"))
+if not answer.strip():
+    raise SystemExit("OpenJarvis returned an empty response")
+print("openjarvis_advice=ok")
+PY
+fi
 
 for service in "${runtime_services[@]}"; do
   container_id="$(docker compose --env-file .env "${compose_profiles[@]}" ps -q "$service")"

@@ -21,11 +21,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import NetworkError, TelegramError
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
-from .chat import understand_russian_message
+from .chat import redact_sensitive_text, understand_russian_message
 from .config import settings
 from .lead_autopilot import CLEANING_KIND_LABELS, FREQUENCY_LABELS, SERVICE_LABELS, URGENCY_LABELS, normalize_phone
 from .recipient_import import EMAIL_PATTERN, SUPPORTED_RECIPIENT_SUFFIXES, extract_recipient_emails
 from .logging_config import configure_logging
+from .openjarvis_client import OpenJarvisError, OpenJarvisUnavailable, ask_openjarvis
 
 configure_logging("bot")
 # httpx logs full request URLs at INFO. Telegram embeds the bot token in those
@@ -323,7 +324,7 @@ async def proposal_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён."); return
-    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🛡 Системный администратор", "system_admin"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🧲 Проверить Lead Autopilot", "lead:new"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["🎨 AI-генератор изображений", "image_help"], ["📱 Новости и соцсети", "social"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
+    rows = [["🏢 Mission Control", "dashboard"], ["🤖 AI CEO", "ceo"], ["🤖 Jarvis", "jarvis_help"], ["🛡 Системный администратор", "system_admin"], ["🧠 E-агенты", "agents"], ["✅ Решения и approvals", "approvals"], ["👥 CRM и продажи", "crm"], ["🧲 Проверить Lead Autopilot", "lead:new"], ["🏗 Тендеры", "tenders"], ["🧹 Кандидаты и HR", "hr"], ["💰 Финансы", "finance"], ["📊 Маркетинг", "marketing"], ["🎨 AI-генератор изображений", "image_help"], ["📱 Новости и соцсети", "social"], ["🧾 Счета рекламы", "marketing_invoices"], ["🧪 Симулятор", "simulator"], ["🧾 Задачи", "tasks"], ["🧬 Meta Brain", "meta_brain"], ["🛠 Улучшения", "improvements"], ["📣 Рассылки", "outreach"]]
     keyboard = [[InlineKeyboardButton(label, callback_data=key)] for label, key in rows]
     await update.effective_message.reply_text("CleaningAI OS · выберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1625,6 +1626,66 @@ async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _execute_image_generation(update, intent)
 
 
+async def jarvis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    question = " ".join(getattr(context, "args", ()) or ()).strip()
+    if not question:
+        await update.effective_message.reply_text(
+            "Напишите: /jarvis ваш вопрос. Jarvis — защищённый персональный "
+            "советник: он может объяснить и предложить план, но не выполняет "
+            "действия и не заменяет задачи CleaningAIOS. Не присылайте пароли, "
+            "токены и персональные данные."
+        )
+        return
+    safe_question = redact_sensitive_text(question)
+    identity = _telegram_identity.get() or {}
+    intent = {
+        "kind": "task",
+        "title": f"Консультация Jarvis: {safe_question[:220]}",
+        "agent_type": "orchestrator",
+        "priority": "normal",
+        "payload": {
+            "action": "openjarvis_advice",
+            "source": "telegram_jarvis",
+            "original_message": safe_question[:4000],
+            "advisory_only": True,
+            "external_action": False,
+        },
+        "protected": False,
+    }
+    try:
+        await api(
+            "POST",
+            "/api/request-analysis",
+            json={
+                "message": safe_question,
+                "intent": intent,
+                "source_channel": "telegram",
+                "source_user": str(identity.get("subject") or "telegram-owner"),
+            },
+        )
+    except httpx.HTTPError:
+        await update.effective_message.reply_text(
+            "Сейчас Request Analyst недоступен, поэтому запрос не передан Jarvis. "
+            "Попробуйте ещё раз позже."
+        )
+        return
+    try:
+        answer = await ask_openjarvis(safe_question)
+    except OpenJarvisUnavailable:
+        await update.effective_message.reply_text(
+            "Jarvis сейчас недоступен. CleaningAIOS продолжает работать; "
+            "попробуйте запрос ещё раз позже."
+        )
+        return
+    except OpenJarvisError:
+        await update.effective_message.reply_text(
+            "Запрос к Jarvis отклонён безопасной проверкой. Уберите секреты или "
+            "персональные данные и попробуйте снова."
+        )
+        return
+    await update.effective_message.reply_text(f"🤖 Jarvis (совет):\n{answer}")
+
+
 async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         await update.effective_message.reply_text("Доступ не разрешён.")
@@ -1668,6 +1729,7 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• Создай задачу связаться с новым клиентом\n"
                 "• /estimate — проверить публичный мастер заявки\n"
                 "• Создай изображение чистого холла бизнес-центра\n"
+                "• /jarvis вопрос — спросить персонального советника\n"
                 "• Проанализируй финансы\n\n"
                 "Request Analyst проверяет каждый запрос. Если функции не хватает, он создаёт техническое задание для Codex с критериями и тест-планом.\n\n"
                 "Оплата, договоры, подача тендеров, окончательные кадровые решения и массовые рассылки всегда потребуют вашего подтверждения."
@@ -1949,7 +2011,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or q.data == "ceo"
         or q.data.startswith("ceo:")
         else "operator"
-        if q.data.startswith("intent:") or q.data.startswith("mailing:")
+        if q.data == "jarvis_help" or q.data.startswith("intent:") or q.data.startswith("mailing:")
         else "viewer"
     )
     identity = await _authorize_update(update, minimum_role)
@@ -1980,6 +2042,13 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(
                 "🎨 AI-генератор\n\nНапишите обычной фразой «Создай изображение …» или используйте /image описание. "
                 "Результат придёт отдельным сообщением; он никуда не публикуется автоматически."
+            )
+        elif q.data == "jarvis_help":
+            await update.effective_message.reply_text(
+                "🤖 Jarvis\n\nНапишите /jarvis и затем ваш вопрос. Например: "
+                "«/jarvis Как улучшить план продаж на следующую неделю?»\n\n"
+                "Jarvis даёт совет, но не выполняет действия. Не присылайте пароли, "
+                "токены, платёжные или персональные данные."
             )
         elif q.data == "social": await social_dashboard(update, context)
         elif q.data == "marketing_invoices": await records(update, "marketing_invoice", "🧾 Счета рекламы · одобрение не выполняет оплату")
@@ -2065,6 +2134,7 @@ def build_application() -> Application:
         ("outreach", outreach_dashboard, "viewer"),
         ("mailing", mailing_start, "operator"),
         ("image", image_command, "operator"),
+        ("jarvis", jarvis_command, "operator"),
         ("social", social_dashboard, "viewer"),
         ("cancel", mailing_cancel, "operator"),
         ("addtask", addtask, "operator"),

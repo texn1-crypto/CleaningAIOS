@@ -12,6 +12,12 @@ test -f .env || { echo "Production .env is missing" >&2; exit 2; }
 
 compose=(docker compose --env-file .env --profile telegram)
 services=(db web worker scheduler bot)
+jarvis_enabled=0
+if docker compose --env-file .env --profile jarvis config --services 2>/dev/null | grep -qx openjarvis; then
+  compose+=(--profile jarvis)
+  services+=(ollama openjarvis)
+  jarvis_enabled=1
+fi
 if docker compose --env-file .env --profile crawl config --services 2>/dev/null | grep -qx crawl4ai; then
   compose+=(--profile crawl)
   services+=(crawl4ai)
@@ -32,6 +38,14 @@ for service in "${services[@]}"; do
     repaired=1
   fi
 done
+
+if (( jarvis_enabled )); then
+  jarvis_model_id="$(
+    "${compose[@]}" exec -T ollama ollama list |
+      awk '$1 == "qwen3:0.6b" {print $2}'
+  )"
+  test "$jarvis_model_id" = "7df6b6e09427"
+fi
 
 published_web="$("${compose[@]}" port web 8000 | tail -n 1)"
 published_port="${published_web##*:}"
