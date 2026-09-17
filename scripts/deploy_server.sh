@@ -43,7 +43,7 @@ if [[ -n "$(git_safe status --porcelain --untracked-files=normal)" ]]; then
   exit 3
 fi
 
-git_safe fetch --quiet --prune origin main
+git_safe fetch --quiet --prune origin main:refs/remotes/origin/main
 git_safe cat-file -e "$TARGET_SHA^{commit}"
 remote_main="$(git_safe rev-parse origin/main)"
 if [[ "$TARGET_SHA" != "$remote_main" ]]; then
