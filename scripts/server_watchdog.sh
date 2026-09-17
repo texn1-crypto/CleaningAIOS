@@ -9,6 +9,17 @@ fi
 
 cd "$APP_DIR"
 test -f .env || { echo "Production .env is missing" >&2; exit 2; }
+command -v flock >/dev/null || { echo "flock is required" >&2; exit 2; }
+
+# The deployment holds this same lock while checking out, building and replacing
+# services. A watchdog cycle that overlaps it must not pull/recreate containers
+# from a half-deployed Compose definition.
+lock_path="/tmp/cleaningaios-deploy-$(id -u).lock"
+exec 9>"$lock_path"
+if ! flock -n 9; then
+  echo "watchdog_skipped=deployment_in_progress"
+  exit 0
+fi
 
 compose=(docker compose --env-file .env --profile telegram)
 services=(db web worker scheduler bot)
