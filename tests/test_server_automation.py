@@ -64,3 +64,12 @@ def test_release_provenance_is_injected_and_reported() -> None:
     assert "ARG RELEASE_SHA=development" in dockerfile
     assert "RELEASE_SHA: ${RELEASE_SHA:-development}" in compose
     assert '"release_sha": settings.release_sha' in main
+
+
+def test_openjarvis_is_bounded_for_the_production_vm() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text()
+    client = (ROOT / "app" / "openjarvis_client.py").read_text()
+    assert 'OLLAMA_MAX_LOADED_MODELS: "1"' in compose
+    assert 'OLLAMA_NUM_PARALLEL: "1"' in compose
+    assert 'JARVIS_NUM_CTX: "4096"' in compose
+    assert '"max_tokens": 512' in client

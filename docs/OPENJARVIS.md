@@ -44,6 +44,8 @@ still present without downloading it automatically. The Python base image,
 OpenJarvis release, and its resolved dependency versions are pinned for repeatable
 rebuilds. Ollama is attached to a dedicated empty outbound network only while the
 pinned model is downloaded; deployment disconnects and removes that network before
-OpenJarvis starts. Its steady-state network remains internal-only.
+OpenJarvis starts. Its steady-state network remains internal-only. The local model
+runs with one inference slot, one loaded model, a 4,096-token context window, and a
+bounded response budget so it fits predictably on the 4 GB production VM.
 
 OpenJarvis upstream: <https://github.com/open-jarvis/OpenJarvis>

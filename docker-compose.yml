@@ -110,6 +110,9 @@ services:
     image: ollama/ollama:0.30.10@sha256:bfc9c6d53cc6989aa5131a6fde6b162b2802d4d337657f3253b5f69579bddeee
     restart: unless-stopped
     profiles: ["jarvis"]
+    environment:
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
     volumes: [ollama_models:/root/.ollama]
     read_only: true
     tmpfs:
@@ -117,7 +120,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 256
-    mem_limit: 1536m
+    mem_limit: 2g
     networks: [jarvis]
     healthcheck:
       test: ["CMD", "ollama", "list"]
@@ -134,6 +137,7 @@ services:
     profiles: ["jarvis"]
     environment:
       OLLAMA_HOST: http://ollama:11434
+      JARVIS_NUM_CTX: "4096"
       OPENJARVIS_ENGINE_DEFAULT: ollama
       OPENJARVIS_API_KEY: ${OPENJARVIS_API_KEY:-}
     command: ["serve", "--host", "0.0.0.0", "--port", "8011", "--engine", "ollama", "--model", "qwen3:0.6b", "--agent", "simple"]
