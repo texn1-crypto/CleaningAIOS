@@ -111,6 +111,7 @@ async def ask_openjarvis(message: str) -> str:
             {"role": "user", "content": safe_message},
         ],
         "temperature": 0.2,
+        "max_tokens": 512,
         "stream": False,
     }
     headers = {"Accept": "application/json"}
