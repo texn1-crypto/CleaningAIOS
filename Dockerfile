@@ -2,6 +2,9 @@ FROM python:3.12-slim AS runtime
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 ARG DEBIAN_MIRROR=deb.debian.org
+ARG RELEASE_SHA=development
+ARG BUILD_TIME=unknown
+ENV RELEASE_SHA=${RELEASE_SHA} BUILD_TIME=${BUILD_TIME}
 RUN if [ "$DEBIAN_MIRROR" != "deb.debian.org" ]; then \
         sed -i "s#deb.debian.org#${DEBIAN_MIRROR}#g" /etc/apt/sources.list.d/debian.sources; \
     fi \

@@ -146,7 +146,14 @@ def as_task(row: Task) -> dict:
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
-    return {"status": "ok", "app": settings.app_name, "version": "2.1.0", "database": "ok"}
+    return {
+        "status": "ok",
+        "app": settings.app_name,
+        "version": "2.1.0",
+        "release_sha": settings.release_sha,
+        "build_time": settings.build_time,
+        "database": "ok",
+    }
 
 
 @app.get("/ready")

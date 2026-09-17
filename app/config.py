@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./cleaningai.db"
     log_format: str = "json"
     log_level: str = "INFO"
+    release_sha: str = "development"
+    build_time: str = "unknown"
     api_key: str = "development-only-change-me"
     manager_api_key: str = ""
     operator_api_key: str = ""

@@ -84,7 +84,8 @@ rollback_release() {
     export RELEASE_SHA="$previous_sha"
     export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     configure_runtime_services
-    docker compose --env-file .env build web worker scheduler migrate || true
+    docker compose --env-file .env --profile telegram build \
+      web worker scheduler migrate bot || true
     docker compose --env-file .env "${compose_profiles[@]}" up -d --no-build \
       "${runtime_services[@]}" || true
   fi
@@ -98,7 +99,8 @@ export BUILD_TIME="$build_time"
 configure_runtime_services
 
 docker compose --env-file .env config --quiet
-docker compose --env-file .env build web worker scheduler migrate
+docker compose --env-file .env --profile telegram build \
+  web worker scheduler migrate bot
 docker compose --env-file .env up -d db
 docker compose --env-file .env run --rm migrate
 docker compose --env-file .env "${compose_profiles[@]}" up -d --no-build \

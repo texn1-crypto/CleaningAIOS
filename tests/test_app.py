@@ -9,6 +9,8 @@ def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["database"] == "ok"
+    assert response.json()["release_sha"]
+    assert response.json()["build_time"]
 
 
 def test_task_and_agent_flow(client):
