@@ -32,6 +32,37 @@ TENDER_FEED_CONTRACT_VERSION = "tender-feed-v1"
 TENDER_PAGE_CONTRACT_VERSION = "tender-page-v1"
 
 
+class _DNSPinningTransport(httpx.BaseTransport):
+    """Resolve once, then connect to that exact public address with the original SNI."""
+
+    def __init__(self, transport: httpx.BaseTransport | None = None) -> None:
+        self._transport = transport or httpx.HTTPTransport(retries=0)
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        hostname = request.url.host.rstrip(".").lower()
+        port = request.url.port or (443 if request.url.scheme == "https" else 80)
+        addresses = _public_addresses(hostname, port)
+        address = sorted(
+            addresses,
+            key=lambda value: (ipaddress.ip_address(value).version != 4, value),
+        )[0]
+        headers = request.headers.copy()
+        headers["host"] = request.url.netloc.decode("ascii")
+        headers["connection"] = "close"
+        extensions = {**request.extensions, "sni_hostname": hostname}
+        pinned = httpx.Request(
+            request.method,
+            request.url.copy_with(host=address),
+            headers=headers,
+            stream=request.stream,
+            extensions=extensions,
+        )
+        return self._transport.handle_request(pinned)
+
+    def close(self) -> None:
+        self._transport.close()
+
+
 def _safe_source_label(source: str) -> str:
     """Return a query/userinfo-free label suitable for receipts and errors."""
 
@@ -235,6 +266,27 @@ def tender_source_freshness(
     }
 
 
+def _public_addresses(hostname: str, port: int) -> set[str]:
+    try:
+        addresses = {
+            str(item[4][0])
+            for item in socket.getaddrinfo(
+                hostname,
+                port,
+                type=socket.SOCK_STREAM,
+            )
+        }
+    except socket.gaierror as exc:
+        raise HTTPException(
+            422, f"Source hostname cannot be resolved: {hostname}"
+        ) from exc
+    if not addresses or any(
+        not ipaddress.ip_address(address).is_global for address in addresses
+    ):
+        raise HTTPException(422, "Private or local source URLs are not allowed")
+    return addresses
+
+
 def _safe_url(url: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or not parsed.hostname:
@@ -244,19 +296,10 @@ def _safe_url(url: str) -> None:
     hostname = parsed.hostname.rstrip(".").lower()
     if hostname == "localhost" or hostname.endswith(BLOCKED_HOST_SUFFIXES):
         raise HTTPException(422, "Private or local source URLs are not allowed")
-    try:
-        addresses = {
-            item[4][0]
-            for item in socket.getaddrinfo(
-                hostname,
-                parsed.port or (443 if parsed.scheme == "https" else 80),
-                type=socket.SOCK_STREAM,
-            )
-        }
-    except socket.gaierror as exc:
-        raise HTTPException(422, f"Source hostname cannot be resolved: {hostname}") from exc
-    if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
-        raise HTTPException(422, "Private or local source URLs are not allowed")
+    _public_addresses(
+        hostname,
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+    )
 
 
 def _safe_get(
@@ -264,9 +307,17 @@ def _safe_get(
     url: str,
     *,
     require_https: bool = False,
+    authenticated_origin: tuple[str, str, int] | None = None,
 ) -> httpx.Response:
     current_url = url
     for _ in range(6):
+        if (
+            authenticated_origin is not None
+            and _url_origin(current_url) != authenticated_origin
+        ):
+            raise HTTPException(
+                422, "Authenticated source redirect changed origin"
+            )
         if require_https and urlparse(current_url).scheme != "https":
             raise HTTPException(422, "Authenticated source URLs must use HTTPS")
         _safe_url(current_url)
@@ -357,6 +408,11 @@ def _tender_feed_version(
 
 
 def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, Any]:
+    configured_origins = {
+        _url_origin(value.strip())
+        for value in settings.tender_sources.split(",")
+        if value.strip()
+    }
     sources = sources if sources is not None else [x.strip() for x in settings.tender_sources.split(",") if x.strip()]
     if not sources:
         return {
@@ -369,7 +425,13 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
     headers = {"Authorization": f"Bearer {settings.tender_source_token}"} if settings.tender_source_token else {}
     created = updated = unchanged = 0
     errors = []
-    with httpx.Client(timeout=settings.tender_request_timeout_seconds, follow_redirects=False, headers=headers) as client:
+    with httpx.Client(
+        timeout=settings.tender_request_timeout_seconds,
+        follow_redirects=False,
+        trust_env=False,
+        headers=headers,
+        transport=_DNSPinningTransport(),
+    ) as client:
         for source in sources:
             source_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
             source_hash = _sha256_text(source)
@@ -397,11 +459,21 @@ def collect_tenders(db: Session, sources: list[str] | None = None) -> dict[str, 
             }
             source_savepoint = db.begin_nested()
             try:
+                authenticated_origin = None
+                if headers:
+                    source_origin = _url_origin(source)
+                    if source_origin not in configured_origins:
+                        raise HTTPException(
+                            422,
+                            "Authenticated tender source origin is not configured",
+                        )
+                    authenticated_origin = source_origin
                 _safe_url(request_url)
                 response = _safe_get(
                     client,
                     request_url,
                     require_https=bool(headers),
+                    authenticated_origin=authenticated_origin,
                 )
                 http_status = int(getattr(response, "status_code", 200))
                 response.raise_for_status()
@@ -662,7 +734,12 @@ def download_tender_document(db: Session, document: TenderDocument) -> dict[str,
     if not document.source_url: raise HTTPException(422, "Document source_url is empty")
     _safe_url(document.source_url)
     try:
-        with httpx.Client(timeout=settings.tender_request_timeout_seconds, follow_redirects=False) as client:
+        with httpx.Client(
+            timeout=settings.tender_request_timeout_seconds,
+            follow_redirects=False,
+            trust_env=False,
+            transport=_DNSPinningTransport(),
+        ) as client:
             current_url = document.source_url
             content = bytearray()
             response_headers: dict[str, str] = {}

@@ -58,7 +58,7 @@ def public_social_media(asset_id: int, filename: str, db: Session = Depends(get_
     if (
         not asset
         or asset.kind != "image"
-        or asset.status not in {"ready", "published"}
+        or asset.status != "published"
         or len(digest) != 64
         or filename not in expected_names
         or not asset.storage_path
@@ -104,7 +104,7 @@ def public_site(db: Session = Depends(get_db)):
     ).all()
     media = db.scalars(
         select(MediaAsset)
-        .where(MediaAsset.status.in_(["ready", "published"]), MediaAsset.public_url != "")
+        .where(MediaAsset.status == "published", MediaAsset.public_url != "")
         .order_by(MediaAsset.id.desc())
         .limit(24)
     ).all()
@@ -203,13 +203,6 @@ def create_public_lead(payload: PublicLeadCreate, request: Request, db: Session 
         )
         db.add(lead)
         db.flush()
-    else:
-        lead.title = payload.company or payload.name
-        lead.data = {**lead.data, **lead_data}
-        lead.score = max(float(lead.score or 0), score)
-        if lead.score >= settings.hot_lead_score and lead.status == "new":
-            lead.status = "qualified"
-
     contact = ContactEvent(
         record_id=lead.id,
         channel="web",

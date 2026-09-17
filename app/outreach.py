@@ -9,8 +9,10 @@ import stat
 from datetime import datetime, timezone
 from itertools import cycle
 from pathlib import Path
+from typing import cast
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -184,37 +186,50 @@ def _legacy_attachment_name(directory: Path, submitted_path: object) -> str | No
     return None
 
 
+def read_campaign_attachment(attachment: dict) -> bytes:
+    """Read only a checksum-bound object from the protected outreach store."""
+    directory = _attachment_directory()
+    expected_digest = str(attachment.get("sha256") or "")
+    object_name = _attachment_object_name(expected_digest)
+    try:
+        raw = _read_attachment(directory, object_name)
+    except ValueError:
+        legacy_name = _legacy_attachment_name(
+            directory,
+            attachment.get("storage_path"),
+        )
+        if not legacy_name:
+            raise ValueError("Attachment storage object is unavailable") from None
+        raw = _read_attachment(directory, legacy_name)
+    if not raw or len(raw) > settings.max_attachment_bytes:
+        raise ValueError("Attachment exceeds the safe size limit")
+    if hashlib.sha256(raw).hexdigest() != expected_digest:
+        raise ValueError("Attachment checksum mismatch")
+    return raw
+
+
 def persist_campaign_attachments(campaign_key: str, attachments: list[dict]) -> list[dict]:
     """Store unique payloads once on the web/worker shared protected volume."""
     if attachments and all(item.get("storage_path") for item in attachments):
         directory = _attachment_directory()
-        persisted: list[dict] = []
+        stored_attachments: list[dict] = []
         total = 0
         for item in attachments:
-            expected_digest = str(item.get("sha256") or "")
+            raw = read_campaign_attachment(item)
+            expected_digest = hashlib.sha256(raw).hexdigest()
             object_name = _attachment_object_name(expected_digest)
-            try:
-                raw = _read_attachment(directory, object_name)
-            except ValueError:
-                legacy_name = _legacy_attachment_name(directory, item["storage_path"])
-                if not legacy_name:
-                    raise ValueError("Attachment storage object is unavailable") from None
-                raw = _read_attachment(directory, legacy_name)
             total += len(raw)
-            digest = hashlib.sha256(raw).hexdigest()
-            if not raw or len(raw) > settings.max_attachment_bytes or total > settings.max_attachment_bytes:
+            if total > settings.max_attachment_bytes:
                 raise ValueError("Combined attachments exceed the safe size limit")
-            if digest != expected_digest:
-                raise ValueError("Attachment checksum mismatch")
             _store_attachment(directory, object_name, raw)
-            persisted.append({
+            stored_attachments.append({
                 "filename": _safe_filename(str(item.get("filename") or "attachment")),
                 "content_type": str(item.get("content_type") or "application/octet-stream")[:128],
-                "sha256": digest,
+                "sha256": expected_digest,
                 "size": len(raw),
                 "storage_path": str(directory / object_name),
             })
-        return persisted
+        return stored_attachments
     checked = validate_attachments(attachments)
     if not checked:
         return []
@@ -278,8 +293,10 @@ def _mailbox_pool(db: Session, mailbox_id: int | None, auto_balance: bool) -> li
     mailboxes = db.scalars(
         select(SenderMailbox).where(SenderMailbox.active.is_(True)).order_by(SenderMailbox.id)
     ).all()
-    mailboxes = [mailbox for mailbox in mailboxes if _mailbox_ready(mailbox)]
-    if not mailboxes:
+    ready_mailboxes: list[SenderMailbox] = [
+        mailbox for mailbox in mailboxes if _mailbox_ready(mailbox)
+    ]
+    if not ready_mailboxes:
         return [None]
     load = {
         mailbox.id: int(
@@ -291,9 +308,13 @@ def _mailbox_pool(db: Session, mailbox_id: int | None, auto_balance: bool) -> li
             )
             or 0
         )
-        for mailbox in mailboxes
+        for mailbox in ready_mailboxes
     }
-    return sorted(mailboxes, key=lambda mailbox: (load[mailbox.id], mailbox.id))
+    def mailbox_sort_key(mailbox: SenderMailbox) -> tuple[int, int]:
+        mailbox_key = cast(int, mailbox.id)
+        return load[mailbox_key], mailbox_key
+
+    return sorted(ready_mailboxes, key=mailbox_sort_key)
 
 
 def _mailbox_ready(mailbox: SenderMailbox | None) -> bool:
@@ -338,24 +359,36 @@ def queue_campaign(
         mailbox = next(rotation)
         assigned_id = mailbox.id if mailbox else None
         ready = _mailbox_ready(mailbox)
-        db.add(
-            OutboundMessage(
-                campaign_key=campaign_key,
-                recipient=address,
-                subject=subject,
-                body=body,
-                mailbox_id=assigned_id,
-                template_id=template_id,
-                scheduled_at=when,
-                attachments=persisted_attachments,
-                status="queued" if ready else "waiting_configuration",
-            )
+        row = OutboundMessage(
+            campaign_key=campaign_key,
+            recipient=address,
+            subject=subject,
+            body=body,
+            mailbox_id=assigned_id,
+            template_id=template_id,
+            scheduled_at=when,
+            attachments=persisted_attachments,
+            status="queued" if ready else "waiting_configuration",
         )
+        try:
+            with db.begin_nested():
+                db.add(row)
+                db.flush()
+        except IntegrityError:
+            existing = db.scalar(
+                select(OutboundMessage.id).where(
+                    OutboundMessage.campaign_key == campaign_key,
+                    OutboundMessage.recipient == address,
+                )
+            )
+            if existing is None:
+                raise
+            duplicate += 1
+            continue
         key = str(assigned_id or "default")
         mailbox_distribution[key] = mailbox_distribution.get(key, 0) + 1
         queued += 1
         waiting_configuration += int(not ready)
-    db.flush()
     required_credentials: list[str] = []
     if waiting_configuration:
         required_credentials = ["SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM_EMAIL"]

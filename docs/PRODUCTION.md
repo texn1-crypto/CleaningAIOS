@@ -8,6 +8,14 @@
 
 ## Deploy
 
+Set immutable release metadata before the build so `/health` identifies the exact
+artifact rather than only the application version:
+
+```bash
+export RELEASE_SHA="$(git rev-parse HEAD)"
+export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+```
+
 ```bash
 cp .env.example .env
 # fill every required secret
@@ -22,6 +30,14 @@ curl --fail http://127.0.0.1:8000/health
 curl --fail http://127.0.0.1:8000/
 curl --fail -H "X-API-Key: $API_KEY" http://127.0.0.1:8000/api/integrations
 ```
+
+The health response must contain the deployed `release_sha` and `build_time`.
+`development`/`unknown` are acceptable only outside production.
+
+Bounded autonomous actions are disabled unless an owner creates a matching authority
+envelope. Review [`AUTONOMY.md`](AUTONOMY.md) before granting one. Start with a short
+expiry and small total/daily limits. `GET /api/autonomy/envelopes` shows aggregate
+usage; revoke the grant immediately if the expected funnel evidence is absent.
 
 On Yandex Cloud, if the standard Debian CDN is unreachable from the selected
 availability zone, build against Yandex's regional Debian mirror instead:

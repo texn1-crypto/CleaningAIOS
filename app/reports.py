@@ -7,6 +7,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from .chat import redact_sensitive_text
+from .config import settings
 from .models import (
     AgentRun,
     AgentState,
@@ -460,6 +461,16 @@ def build_activity_report(
         for row in agents
     ]
     agent_activity = _agent_activity(db, cutoff=cutoff)
+    from .agents import AGENTS
+
+    agent_topology = {
+        "registered_roles": len(AGENTS),
+        "worker_replicas_desired": max(
+            1, min(int(settings.agent_worker_replicas), 60)
+        ),
+        "worker_replicas_max_supported": 60,
+        "coordination": "postgresql_task_queue_skip_locked",
+    }
     blockers = []
     if summary["tasks_failed"]:
         blockers.append(f"Задач с ошибкой: {summary['tasks_failed']}")
@@ -514,6 +525,8 @@ def build_activity_report(
             ),
         }
     strategic_growth = growth_snapshot(db, now=generated_at)
+    from .operational_links import operational_links
+
     return {
         "outcome": "completed",
         "report_kind": "system_activity",
@@ -543,8 +556,10 @@ def build_activity_report(
         ],
         "agent_statuses": agent_statuses,
         "agent_activity": agent_activity,
+        "agent_topology": agent_topology,
         "strategic_growth": strategic_growth,
         "marketing_sales_coordination": marketing_sales_coordination,
+        "links": operational_links(),
         "blockers": blockers,
         "evidence": [
             {
@@ -586,8 +601,17 @@ def format_activity_report(result: dict[str, Any]) -> str:
         ),
         f"🔐 Ожидают подтверждения: {summary.get('pending_approvals', 0)}",
     ]
+    crm_url = str((result.get("links") or {}).get("crm") or "").strip()
+    if crm_url:
+        lines.append(f"🔗 CRM: {crm_url}")
     agent_activity = result.get("agent_activity") or []
     if agent_activity:
+        topology = result.get("agent_topology") or {}
+        lines.append(
+            "\n🧠 Контур агентов: "
+            f"{int(topology.get('registered_roles') or 0)} ролей · "
+            f"{int(topology.get('worker_replicas_desired') or 0)} параллельных worker"
+        )
         lines.append("\n🤖 Работа каждого ИИ-агента:")
         for row in agent_activity:
             agent_type = _short_text(row.get("agent_type"), 40)

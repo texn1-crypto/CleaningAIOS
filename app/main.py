@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import time
 from typing import Optional
+from urllib.parse import parse_qs, urlencode
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -19,16 +20,23 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import Base, SessionLocal, engine
-from .domains import module_summary, validate_record
+from .domains import module_summary, validate_generic_record_status, validate_record
 from .models import AgentRun, AgentState, ApprovalRequest, AuditLog, BusinessRecord, ContactEvent, ContentItem, Decision, DomainEvent, EventConsumerReceipt, MessageTemplate, OrchestratorDecision, OutboundMessage, SenderMailbox, Suppression, Task, TaskTransition
 from .orchestrator import audit, dispatch
 from .orchestrator_telemetry import measure_routing_outcome, routing_decision_view
-from .platform import company_brain, event_bus
+from .outreach import (
+    campaign_approval_payload,
+    queue_campaign,
+    validate_attachments,
+    verified_recipients,
+)
+from .platform import approval_engine, company_brain, event_bus
 from .schemas import ApprovalDecision, ContactEventCreate, DecisionCreate, KnowledgeCreate, KnowledgeDocumentCreate, LeadAutopilotCreate, OutreachCreate, RecordCreate, RecordUpdate, SuppressionCreate, TaskCreate
 from .security import Principal, principal, require_role, valid_unsubscribe_token, validate_production_security
 from .api_v2 import router as api_v2_router
 from .marketing_api import router as marketing_router
 from .public_api import router as public_router
+from .telephony_api import router as telephony_router
 from .mission_control import MISSION_CONTROL_HTML
 from .public_site import PUBLIC_SITE_HTML, privacy_html
 from .site_pages import about_html, contacts_html, journal_html, prices_html, service_html, services_html
@@ -87,6 +95,7 @@ app = FastAPI(title=settings.app_name, version="2.1.0", lifespan=lifespan)
 app.include_router(api_v2_router)
 app.include_router(marketing_router)
 app.include_router(public_router)
+app.include_router(telephony_router)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
@@ -226,7 +235,7 @@ def run_task(task_id: int, db: Session = Depends(get_db), actor: Principal = Dep
 
 @app.post("/api/tasks/{task_id}/complete")
 def complete_task(task_id: int, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
-    require_role(actor, "operator")
+    require_role(actor, "owner")
     row = db.get(Task, task_id)
     if not row: raise HTTPException(404, "Task not found")
     try:
@@ -359,6 +368,7 @@ def download_proposal_revision_file(
 @app.post("/api/records", status_code=201)
 def create_record(payload: RecordCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "operator")
+    validate_generic_record_status(payload.record_type, payload.status)
     validate_record(payload.record_type, payload.status, payload.data, payload.deadline_at)
     row = BusinessRecord(**payload.model_dump())
     db.add(row); db.flush(); audit(db, actor.subject, "record.created", payload.record_type, str(row.id))
@@ -378,6 +388,8 @@ def update_record(record_id: int, payload: RecordUpdate, db: Session = Depends(g
     candidate_data = {**row.data, **(changes.get("data") or {})}
     candidate_status = changes.get("status", row.status)
     candidate_deadline = changes.get("deadline_at", row.deadline_at)
+    if candidate_status != old_status:
+        validate_generic_record_status(row.record_type, candidate_status)
     validate_record(row.record_type, candidate_status, candidate_data, candidate_deadline)
     for field, value in changes.items():
         setattr(row, field, candidate_data if field == "data" else value)
@@ -570,6 +582,14 @@ def agent_runs(db: Session = Depends(get_db), actor: Principal = Depends(princip
     return [{"id": x.id, "agent_type": x.agent_type, "task_id": x.task_id, "status": x.status, "output": x.output, "error": x.error, "started_at": x.started_at, "finished_at": x.finished_at} for x in rows]
 
 
+@app.get("/api/agent-skills")
+def agent_skills(actor: Principal = Depends(principal)):
+    from .skill_registry import skill_catalog
+
+    require_role(actor, "manager")
+    return skill_catalog()
+
+
 @app.post("/api/agent-runs/{run_id}/replay", status_code=201)
 def replay_agent_run(
     run_id: int,
@@ -675,12 +695,53 @@ def suppress(payload: SuppressionCreate, db: Session = Depends(get_db), actor: P
     return {"address": row.address, "suppressed": True}
 
 
-@app.get("/api/outreach/unsubscribe")
-def unsubscribe(email: str, token: str = "", db: Session = Depends(get_db)):
-    if not valid_unsubscribe_token(email, token):
+def _unsubscribe_address(email: str, token: str) -> str:
+    address = email.strip().lower()
+    if not valid_unsubscribe_token(address, token):
         raise HTTPException(403, "Invalid unsubscribe token")
-    row = Suppression(address=email.lower(), reason="unsubscribe")
-    db.merge(row); audit(db, email.lower(), "outreach.unsubscribed", "email", email.lower()); db.commit()
+    return address
+
+
+@app.get("/api/outreach/unsubscribe", response_class=HTMLResponse)
+def unsubscribe_confirmation(email: str, token: str = ""):
+    address = _unsubscribe_address(email, token)
+    query = urlencode({"email": address, "token": token})
+    return HTMLResponse(
+        "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\">"
+        "<title>Подтверждение отписки</title></head><body>"
+        "<main><h1>Подтвердите отписку</h1>"
+        f"<p>Адрес {escape(address)} больше не будет получать рассылку.</p>"
+        f"<form method=\"post\" action=\"/api/outreach/unsubscribe?{escape(query, quote=True)}\">"
+        "<input type=\"hidden\" name=\"List-Unsubscribe\" value=\"One-Click\">"
+        "<button type=\"submit\">Отписаться</button></form></main></body></html>"
+    )
+
+
+@app.post("/api/outreach/unsubscribe")
+async def unsubscribe(
+    request: Request,
+    email: str,
+    token: str = "",
+    db: Session = Depends(get_db),
+):
+    address = _unsubscribe_address(email, token)
+    body = await request.body()
+    if len(body) > 256:
+        raise HTTPException(400, "Invalid one-click unsubscribe request")
+    try:
+        fields = parse_qs(
+            body.decode("ascii"),
+            strict_parsing=True,
+            max_num_fields=1,
+        )
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise HTTPException(400, "Invalid one-click unsubscribe request") from exc
+    if fields != {"List-Unsubscribe": ["One-Click"]}:
+        raise HTTPException(400, "Invalid one-click unsubscribe request")
+    row = Suppression(address=address, reason="unsubscribe")
+    db.merge(row)
+    audit(db, address, "outreach.unsubscribed", "email", address)
+    db.commit()
     return {"unsubscribed": True}
 
 
@@ -688,16 +749,119 @@ def unsubscribe(email: str, token: str = "", db: Session = Depends(get_db)):
 def queue_message(payload: OutreachCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
     require_role(actor, "operator")
     recipient = str(payload.recipient).lower()
-    if db.get(Suppression, recipient): raise HTTPException(409, "Recipient is suppressed")
-    if payload.mailbox_id and not db.get(SenderMailbox, payload.mailbox_id): raise HTTPException(404, "Mailbox not found")
-    if payload.template_id and not db.get(MessageTemplate, payload.template_id): raise HTTPException(404, "Template not found")
-    row = OutboundMessage(campaign_key=payload.campaign_key, recipient=recipient, subject=payload.subject, body=payload.body, scheduled_at=payload.scheduled_at or datetime.now(timezone.utc).replace(tzinfo=None))
-    row.mailbox_id = payload.mailbox_id; row.template_id = payload.template_id; row.attachments = payload.attachments
-    db.add(row)
-    try: db.flush()
-    except IntegrityError: db.rollback(); raise HTTPException(409, "Duplicate campaign recipient")
-    audit(db, actor.subject, "outreach.queued", "outbound_message", str(row.id), {"recipient": recipient}); db.commit(); db.refresh(row)
-    return {"id": row.id, "status": row.status}
+    if db.get(Suppression, recipient):
+        raise HTTPException(409, "Recipient is suppressed")
+    if db.scalar(
+        select(OutboundMessage.id).where(
+            OutboundMessage.campaign_key == payload.campaign_key,
+            OutboundMessage.recipient == recipient,
+        )
+    ):
+        raise HTTPException(409, "Duplicate campaign recipient")
+    if payload.mailbox_id and not db.get(SenderMailbox, payload.mailbox_id):
+        raise HTTPException(404, "Mailbox not found")
+    if payload.template_id and not db.get(MessageTemplate, payload.template_id):
+        raise HTTPException(404, "Template not found")
+    if any(str(item.get("storage_path") or "").strip() for item in payload.attachments):
+        raise HTTPException(
+            422,
+            "Attachment paths are server-managed; submit inline content",
+        )
+    _, without_consent = verified_recipients(db, [recipient])
+    if without_consent:
+        raise HTTPException(
+            422,
+            {
+                "message": "Verified commercial-outreach consent is required",
+                "addresses_without_consent": without_consent,
+                "count": len(without_consent),
+            },
+        )
+    try:
+        checked_attachments = validate_attachments(payload.attachments)
+        approval_payload = campaign_approval_payload(
+            recipients=[recipient],
+            subject=payload.subject,
+            body=payload.body,
+            mailbox_id=payload.mailbox_id,
+            template_id=payload.template_id,
+            scheduled_at=payload.scheduled_at,
+            attachments=checked_attachments,
+            auto_balance_mailboxes=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not approval_engine.authorized(
+        db,
+        "bulk_outreach",
+        payload.approval_id,
+        "campaign",
+        payload.campaign_key,
+        approval_payload,
+    ):
+        approval = approval_engine.request(
+            db,
+            "bulk_outreach",
+            "campaign",
+            payload.campaign_key,
+            actor.subject,
+            approval_payload,
+            "Outreach requires verified consent and exact owner approval",
+        )
+        event_bus.publish(
+            db,
+            "approval.requested",
+            "campaign",
+            payload.campaign_key,
+            {"approval_id": approval.id, "recipient_count": 1},
+            idempotency_key=f"campaign:{payload.campaign_key}:approval:{approval.id}",
+        )
+        db.commit()
+        return {
+            "status": "waiting_approval",
+            "approval_id": approval.id,
+            "recipient_count": 1,
+        }
+    try:
+        result = queue_campaign(
+            db,
+            campaign_key=payload.campaign_key,
+            recipients=[recipient],
+            subject=payload.subject,
+            body=payload.body,
+            mailbox_id=payload.mailbox_id,
+            template_id=payload.template_id,
+            scheduled_at=payload.scheduled_at,
+            attachments=checked_attachments,
+            auto_balance_mailboxes=False,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "Campaign storage conflict") from exc
+    if not result["queued"] and result["duplicate"]:
+        db.rollback()
+        raise HTTPException(409, "Duplicate campaign recipient")
+    row = db.scalar(
+        select(OutboundMessage).where(
+            OutboundMessage.campaign_key == payload.campaign_key,
+            OutboundMessage.recipient == recipient,
+        )
+    )
+    if row:
+        audit(
+            db,
+            actor.subject,
+            "outreach.queued",
+            "outbound_message",
+            str(row.id),
+            {"recipient": recipient, "approval_id": payload.approval_id},
+        )
+    db.commit()
+    return {"id": row.id if row else None, **result}
 
 
 @app.get("/api/audit")

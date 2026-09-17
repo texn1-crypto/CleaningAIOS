@@ -3,12 +3,10 @@ from __future__ import annotations
 import logging
 import os
 import base64
-import hashlib
 import smtplib
 import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from pathlib import Path
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
@@ -19,12 +17,14 @@ from .chat import redact_sensitive_text
 from .capability_flags import external_action_gate
 from .db import SessionLocal
 from .orchestrator import run_next
-from .models import AuditLog, MailTransportState, OutboundMessage, SenderMailbox, Suppression
+from .models import AuditLog, AuthorityEnvelope, AuthorityEnvelopeUse, MailTransportState, OutboundMessage, SenderMailbox, Suppression
 from .platform import process_next_event
 from .notifications import queue_owner_notification, send_next_owner_notification
+from .outreach import read_campaign_attachment
 from .inbound_mail import collect_inbound_replies
 from .security import unsubscribe_token
 from .social_runtime import generate_next_social_visual, publish_next_social_post
+from .telephony import place_next_sales_call
 from .logging_config import configure_logging
 
 configure_logging("worker")
@@ -219,11 +219,17 @@ def _defer_mailbox_after_auth_failure(
         else OutboundMessage.mailbox_id.is_(None)
     )
     safe_error = SMTP_AUTH_REASON
+    row.status = "waiting_configuration"
+    row.error = safe_error
     db.execute(
         update(OutboundMessage)
         .where(
             mailbox_scope,
-            OutboundMessage.status.in_(["queued", "waiting_configuration"]),
+            OutboundMessage.status.in_([
+                "queued",
+                "waiting_configuration",
+                "reconciliation_required",
+            ]),
         )
         .values(
             status="waiting_configuration",
@@ -329,14 +335,21 @@ def _defer_mailbox_after_provider_block(
         else OutboundMessage.mailbox_id.is_(None)
     )
     safe_error = SMTP_RATE_LIMIT_REASON if failure_kind == "rate_limited" else SMTP_PROVIDER_BLOCK_REASON
+    row.status = "waiting_configuration"
+    row.error = safe_error
     values = {"status": "waiting_configuration", "error": safe_error}
     if retry_at is not None:
+        row.scheduled_at = retry_at
         values["scheduled_at"] = retry_at
     db.execute(
         update(OutboundMessage)
         .where(
             mailbox_scope,
-            OutboundMessage.status.in_(["queued", "waiting_configuration"]),
+            OutboundMessage.status.in_([
+                "queued",
+                "waiting_configuration",
+                "reconciliation_required",
+            ]),
         )
         .values(**values)
     )
@@ -420,6 +433,41 @@ def send_next_email(db, *, now: datetime | None = None) -> bool:
     ).all()
     row = None
     for candidate in candidates:
+        if candidate.authority_envelope_use_id is not None:
+            authority_use = db.get(
+                AuthorityEnvelopeUse, candidate.authority_envelope_use_id
+            )
+            envelope = (
+                db.get(AuthorityEnvelope, authority_use.envelope_id)
+                if authority_use
+                else None
+            )
+            if (
+                authority_use is None
+                or authority_use.action
+                not in {"inbound_lead_reply", "outreach_follow_up", "supplier_rfq"}
+                or envelope is None
+                or envelope.status != "active"
+                or envelope.starts_at > now
+                or envelope.expires_at <= now
+            ):
+                candidate.status = "blocked_authority"
+                candidate.error = "Authority envelope is unavailable"
+                db.add(
+                    AuditLog(
+                        actor="worker",
+                        action="outreach.authority_blocked",
+                        resource_type="outbound_message",
+                        resource_id=str(candidate.id),
+                        details={
+                            "authority_envelope_use_id": (
+                                candidate.authority_envelope_use_id
+                            ),
+                            "reason": "authority_unavailable",
+                        },
+                    )
+                )
+                continue
         candidate_mailbox = db.get(SenderMailbox, candidate.mailbox_id) if candidate.mailbox_id else None
         candidate_mailbox_scope = (
             OutboundMessage.mailbox_id == candidate.mailbox_id
@@ -483,27 +531,36 @@ def send_next_email(db, *, now: datetime | None = None) -> bool:
     unsubscribe_query = urlencode({"email": row.recipient, "token": unsubscribe_token(row.recipient)})
     unsubscribe = f"{settings.public_base_url.rstrip('/')}/api/outreach/unsubscribe?{unsubscribe_query}"
     message = EmailMessage(); message["From"] = from_email; message["To"] = row.recipient; message["Subject"] = row.subject
+    if unsubscribe.startswith("https://"):
+        message["List-Unsubscribe"] = f"<{unsubscribe}>"
+        message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     message.set_content(f"{row.body}\n\nОтписаться: {unsubscribe}")
     try:
         for attachment in row.attachments or []:
             storage_path = str(attachment.get("storage_path") or "")
             if storage_path:
-                root = Path(settings.document_storage_path).resolve()
-                path = Path(storage_path).resolve()
-                try:
-                    path.relative_to(root)
-                except ValueError as exc:
-                    raise ValueError("attachment path is outside document storage") from exc
-                raw = path.read_bytes()
-                expected = str(attachment.get("sha256") or "")
-                if expected and hashlib.sha256(raw).hexdigest() != expected:
-                    raise ValueError("attachment checksum mismatch")
+                raw = read_campaign_attachment(attachment)
             else:
                 raw = base64.b64decode(str(attachment.get("content_base64", "")), validate=True)
             if len(raw) > settings.max_attachment_bytes: raise ValueError("attachment is too large")
             content_type = str(attachment.get("content_type", "application/octet-stream"))
             maintype, subtype = content_type.split("/", 1) if "/" in content_type else ("application", "octet-stream")
             message.add_attachment(raw, maintype=maintype, subtype=subtype, filename=str(attachment.get("filename") or "attachment"))
+        row.status = "reconciliation_required"
+        row.error = (
+            "SMTP delivery attempt started; reconcile provider outcome before retry "
+            "if execution is interrupted"
+        )
+        db.add(
+            AuditLog(
+                actor="worker",
+                action="outreach.delivery_attempt_started",
+                resource_type="outbound_message",
+                resource_id=str(row.id),
+                details={"mailbox_id": row.mailbox_id},
+            )
+        )
+        db.commit()
         smtp_factory = smtplib.SMTP_SSL if smtp_port == 465 else smtplib.SMTP
         with smtp_factory(smtp_host, smtp_port, timeout=20) as smtp:
             if smtp_port != 465:
@@ -566,6 +623,7 @@ def main() -> None:
                 event = process_next_event(db)
                 if event: log.info("published event %s", event.id)
                 send_next_email(db)
+                place_next_sales_call(db)
                 generate_next_social_visual(db)
                 publish_next_social_post(db)
                 send_next_owner_notification(db)

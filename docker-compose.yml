@@ -18,6 +18,23 @@ x-app: &app
   networks: [backend]
 
 services:
+  crawl4ai:
+    image: unclecode/crawl4ai:0.9.3@sha256:84751dab794259db05d5bd4e5c766a8041a65f0554326e4516e620abdf2fa18b
+    restart: unless-stopped
+    profiles: ["crawl"]
+    environment:
+      CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
+      CRAWL4AI_ALLOW_INTERNAL_URLS: "false"
+      CRAWL4AI_ALLOW_INSECURE_TLS: "false"
+    expose: ["11235"]
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:11235/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+    networks: [crawl]
+
   db:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -46,6 +63,7 @@ services:
 
   web:
     <<: *app
+    networks: [backend, crawl]
     ports: ["${WEB_PORT:-8000}:8000"]
     volumes: [tender_documents:/data/documents]
     healthcheck:
@@ -56,6 +74,7 @@ services:
 
   worker:
     <<: *app
+    networks: [backend, crawl]
     command: ["python", "-m", "app.worker"]
     # Owner notifications use Telegram from the worker, so it needs the same
     # configurable cloud route as the long-polling bot service.
@@ -99,7 +118,7 @@ services:
       web: {condition: service_healthy}
     volumes: [tender_documents:/data/documents]
     profiles: ["telegram"]
-    networks: [backend, jarvis]
+    networks: [backend, jarvis, crawl]
     healthcheck:
       test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
       interval: 15s
@@ -168,3 +187,4 @@ networks:
   backend:
   jarvis:
     internal: true
+  crawl:

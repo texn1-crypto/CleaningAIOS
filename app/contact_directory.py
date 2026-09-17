@@ -257,6 +257,16 @@ def _safe_output_path(path: Path) -> Path:
     return resolved
 
 
+def _spreadsheet_cell(value: str) -> str:
+    text = str(value)
+    stripped = text.lstrip(" \t\r\n")
+    if text and (
+        text[0] in "\t\r\n" or stripped.startswith(("=", "+", "-", "@"))
+    ):
+        return f"'{text}"
+    return text
+
+
 def _display_rows(contacts: list[BusinessRecord]) -> list[list[str]]:
     rows: list[list[str]] = []
     for contact in contacts:
@@ -284,7 +294,9 @@ def _write_csv(path: Path, rows: list[list[str]]) -> str:
         with temporary_path.open("w", encoding="utf-8-sig", newline="") as stream:
             writer = csv.writer(stream)
             writer.writerow(["Организация", "Город", "ИНН", "Email", "Источник", "Обнаружен", "Очередь рассылки"])
-            writer.writerows(rows)
+            writer.writerows(
+                [_spreadsheet_cell(value) for value in row] for row in rows
+            )
         os.chmod(temporary_path, 0o600)
         temporary_path.replace(path)
     finally:
@@ -305,7 +317,7 @@ def _write_xlsx(path: Path, rows: list[list[str]], *, week_start: date) -> str:
     headers = ["Организация", "Город", "ИНН", "Email", "Источник", "Обнаружен", "Очередь рассылки"]
     sheet.append(headers)
     for row in rows:
-        sheet.append(row)
+        sheet.append([_spreadsheet_cell(value) for value in row])
     sheet.freeze_panes = "A4"
     sheet.auto_filter.ref = f"A3:G{max(3, len(rows) + 3)}"
     sheet["A1"].font = Font(name="Arial", size=16, bold=True, color="173F32")

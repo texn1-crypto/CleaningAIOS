@@ -6,6 +6,7 @@ from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from .models import AgentRun, AuditLog, Task
+from .autonomy import AUTO_WITHIN_LIMIT_ACTIONS
 from .orchestrator_telemetry import measure_routing_outcome
 from .platform import agent_runtime, decision_engine, event_bus
 from .task_state import record_task_created, transition_task
@@ -26,6 +27,27 @@ def _event_trace(task: Task, actor: str) -> dict[str, str]:
 
 def _execution_gap(task: Task, result: dict) -> tuple[str, bool] | None:
     payload = task.payload or {}
+    autonomy_action = str(payload.get("autonomy_action") or "")
+    if autonomy_action in AUTO_WITHIN_LIMIT_ACTIONS:
+        expected_evidence = {
+            "supplier_rfq": {"supplier_rfq_queued", "supplier_rfq_provider_receipt"},
+            "inbound_lead_reply": {"outreach_message_queued", "outreach_provider_receipt"},
+            "outreach_follow_up": {"outreach_message_queued", "outreach_provider_receipt"},
+            "calendar_invitation": {"calendar_invitation_provider_receipt"},
+            "marketing_campaign_manage": {"advertising_provider_receipt"},
+            "marketing_bid_adjustment": {"advertising_provider_receipt"},
+        }[autonomy_action]
+        evidence = result.get("evidence") if isinstance(result.get("evidence"), list) else []
+        has_receipt = any(
+            isinstance(item, dict) and item.get("type") in expected_evidence
+            for item in evidence
+        )
+        if not has_receipt:
+            return (
+                "Автономное действие было разрешено конвертом полномочий, но исполнитель "
+                "не создал обязательную внешнюю квитанцию или запись очереди.",
+                False,
+            )
     source = str(payload.get("source", ""))
     if source not in {"telegram_natural_language", "telegram_document", "telegram_mailing_wizard"}:
         return None

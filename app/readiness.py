@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from .config import settings
+from .crawl4ai_client import configuration_status as crawl4ai_configuration_status
 from .improvements import workspace_agent_configuration_status
 from .llm import llm_advisor
+from .telephony import configuration_status as telephony_configuration_status
 
 
 def integration_status() -> dict[str, Any]:
@@ -59,6 +61,18 @@ def integration_status() -> dict[str, Any]:
             "status": workspace_agent_configuration_status(),
             "provider": "chatgpt_workspace_agents",
         },
+        "public_web_research": {
+            "status": crawl4ai_configuration_status(),
+            "provider": "crawl4ai",
+            "mode": "isolated_read_only_markdown",
+            "owner_approval_for_external_actions": True,
+        },
+        "telephony": {
+            "status": telephony_configuration_status(),
+            "provider": "carrier_neutral_voice_gateway",
+            "mode": "consented_owner_approved_calls_only",
+            "recording_default": "disabled",
+        },
         "owner_hot_lead_email": {
             "status": "configured"
             if smtp_ready and settings.owner_notification_email
@@ -77,6 +91,15 @@ def integration_status() -> dict[str, Any]:
             "telegram_intake": "ready" if settings.public_leads_enabled else "legal_profile_required",
             "pricing_configured": True,
             "pricing_source": "published_site_price_book",
+        },
+        "autonomy_policy": {
+            "status": "ready",
+            "default": "approval_required",
+            "bounded_authority_envelopes": True,
+            "unknown_actions_fail_closed": True,
+            "automatic_payment": "forbidden",
+            "automatic_signature": "forbidden",
+            "automatic_tender_submission": "forbidden",
         },
         "marketing_channels": {
             "yandex": "credentials_present_adapter_manual"

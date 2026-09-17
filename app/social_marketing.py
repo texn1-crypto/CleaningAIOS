@@ -243,7 +243,7 @@ def _absolute_public_url(value: str) -> str:
 
 def _ready_asset(asset: MediaAsset) -> bool:
     metadata = asset.metadata_json or {}
-    if asset.status != "ready" or not asset.public_url or not (
+    if asset.status not in {"ready", "published"} or not asset.public_url or not (
         metadata.get("visually_reviewed") or metadata.get("generation_verified")
     ):
         return False

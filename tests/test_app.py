@@ -1827,7 +1827,19 @@ def test_tender_source_freshness_reports_all_states_without_source_secrets(
 
 
 def test_delivery_event_suppresses_bounced_recipient(client):
-    queued = client.post("/api/outreach/messages", json={"campaign_key": "bounce-test", "recipient": "bounce@example.com", "subject": "Test", "body": "Body"}).json()
+    from app.db import SessionLocal
+    from app.models import OutboundMessage
+
+    with SessionLocal() as db:
+        row = OutboundMessage(
+            campaign_key="bounce-test",
+            recipient="bounce@example.com",
+            subject="Test",
+            body="Body",
+        )
+        db.add(row)
+        db.commit()
+        queued = {"id": row.id}
     event = client.post("/api/outreach/delivery-events", json={"event_type": "bounce", "recipient": "bounce@example.com", "message_id": queued["id"], "reason": "mailbox unavailable"})
     assert event.status_code == 201
     assert event.json()["suppressed"] is True
@@ -2106,6 +2118,21 @@ def test_outreach_suppression_and_deduplication(client):
     blocked = client.post("/api/outreach/messages", json={"campaign_key": "c1", "recipient": "stop@example.com", "subject": "Hi", "body": "Body"})
     assert blocked.status_code == 409
     payload = {"campaign_key": "c1", "recipient": "ok@example.com", "subject": "Hi", "body": "Body"}
+    assert client.post("/api/outreach/messages", json=payload).status_code == 422
+    assert client.put("/api/outreach/consents", json={
+        "address": payload["recipient"],
+        "source_url": "https://consent.example.test/c1",
+        "evidence": "Documented opt-in for campaign c1",
+    }).status_code == 200
+    requested = client.post("/api/outreach/messages", json=payload)
+    assert requested.status_code == 201
+    assert requested.json()["status"] == "waiting_approval"
+    approval_id = requested.json()["approval_id"]
+    assert client.post(
+        f"/api/approvals/{approval_id}/approve",
+        json={"note": "Exact recipient and content reviewed"},
+    ).status_code == 200
+    payload["approval_id"] = approval_id
     assert client.post("/api/outreach/messages", json=payload).status_code == 201
     assert client.post("/api/outreach/messages", json=payload).status_code == 409
 
@@ -2146,12 +2173,20 @@ def test_tender_url_guard_blocks_private_networks(monkeypatch):
         integrations._safe_url("https://feed.example/tenders")
 
 
-def test_unsubscribe_link_requires_valid_signature(client):
+def test_unsubscribe_link_requires_valid_signature_and_post_confirmation(client):
+    from app.db import SessionLocal
+    from app.models import Suppression
     from app.security import unsubscribe_token
 
     address = "signed-unsubscribe@example.com"
     assert client.get(f"/api/outreach/unsubscribe?email={address}&token=invalid").status_code == 403
-    response = client.get(f"/api/outreach/unsubscribe?email={address}&token={unsubscribe_token(address)}")
+    url = f"/api/outreach/unsubscribe?email={address}&token={unsubscribe_token(address)}"
+    confirmation = client.get(url)
+    assert confirmation.status_code == 200
+    assert "Подтвердите отписку" in confirmation.text
+    with SessionLocal() as db:
+        assert db.get(Suppression, address) is None
+    response = client.post(url, data={"List-Unsubscribe": "One-Click"})
     assert response.status_code == 200
     assert response.json()["unsubscribed"] is True
 
@@ -4179,18 +4214,27 @@ def test_outreach_summary_is_owner_safe_and_manager_guarded(client):
         "source_url": "https://consent.example.test/bot-panel",
         "evidence": "Documented opt-in for the Telegram outreach panel",
     }).status_code == 200
-    assert client.post("/api/outreach/messages", json={
+    payload = {
         "campaign_key": "bot-outreach-panel-test",
         "recipient": address,
         "subject": "Панель рассылок",
         "body": "Тестовый черновик",
-    }).status_code == 201
+    }
+    requested = client.post("/api/outreach/messages", json=payload)
+    assert requested.status_code == 201
+    approval_id = requested.json()["approval_id"]
+    assert client.post(
+        f"/api/approvals/{approval_id}/approve",
+        json={"note": "Проверен точный черновик"},
+    ).status_code == 200
+    payload["approval_id"] = approval_id
+    assert client.post("/api/outreach/messages", json=payload).status_code == 201
 
     response = client.get("/api/outreach/summary", headers={"X-Role": "manager"})
     assert response.status_code == 200
     summary = response.json()
     assert summary["consents"]["verified"] >= 1
-    assert summary["messages"]["statuses"]["queued"] >= 1
+    assert summary["messages"]["total"] >= 1
     assert set(summary["inbound"]) == {
         "enabled",
         "receiving_ready",

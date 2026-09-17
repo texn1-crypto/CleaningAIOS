@@ -17,6 +17,7 @@ PROTECTED_CAPABILITIES = (
     "social_publication",
     "tender_participation",
     "tender_submission",
+    "voice_call",
 )
 PROTECTED_CAPABILITY_SET = frozenset(PROTECTED_CAPABILITIES)
 TENDER_SCOPED_CAPABILITIES = frozenset(

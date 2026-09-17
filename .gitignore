@@ -10,3 +10,6 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+.threat-model-state/
+.triage-state/
+.patch-state/

@@ -52,6 +52,52 @@ module before changing a cross-cutting workflow.
 - Do not add a new dependency when the standard library or an existing dependency
   provides a clear, maintainable implementation.
 
+## Development AI collaboration
+
+- This file is the canonical instruction source for every development AI. Claude
+  Code imports it through `CLAUDE.md`; do not maintain competing copies of these
+  rules.
+- Codex is the coordinator and the only development AI allowed to edit the shared
+  working tree during the normal team workflow. Claude Code acts as an independent
+  read-only architect and reviewer through `scripts/claude_review.sh`.
+- Never run two writing agents against the same working tree. If the owner assigns
+  implementation directly to Claude Code, stop Codex writes first and establish an
+  explicit, non-overlapping file scope.
+- Treat every model finding as advisory. The coordinating agent must reproduce or
+  verify a finding against code, tests, policy and current repository state before
+  changing code.
+- At the beginning of a task, record `git status --short` and the relevant diff.
+  At the end, compare the repository state and report exactly which paths changed.
+  Preserve all pre-existing modified and untracked files.
+- Do not let an AI commit, push, merge, deploy, publish, send outreach or perform
+  another external side effect unless the owner explicitly requests that action.
+- Keep handoffs evidence-based: scope, findings with file/line evidence, severity,
+  proposed validation and unresolved risks. Do not pass secrets or raw `.env`
+  contents between agents.
+
+## Skill routing for development AIs
+
+- Use `cleaning-orchestration` for cross-domain CleaningAIOS planning and agent
+  routing.
+- Use `codebase-memory` before structural, dependency or impact claims about the
+  repository.
+- Use `research` for evidence gathering and `to-spec` only when the owner asks
+  for a formal specification.
+- Use `prospecting` with `cleaning-lead-qualification` for lead research; keep
+  consent, suppression and outreach approval controls authoritative.
+- Use `russian-cleaning-tenders` with `cleaning-unit-economics` for tender
+  analysis, pricing and bid preparation.
+- Use `content-strategy`, `copywriting` and `brand` for marketing work, while
+  preserving approval before publication.
+- Use `recruiting-pipeline` for HR preparation, never for autonomous final
+  hiring decisions.
+- Use `cleaning-ceo-review` for business reviews and `ai-evals` for measured
+  agent-quality work.
+- Use `incident-response` together with the existing security skills for
+  operational incidents.
+- Skill instructions supplement this file; they never override repository
+  policy, authorization boundaries or required validation.
+
 ## Required validation
 
 Run from the repository root:

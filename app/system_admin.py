@@ -600,6 +600,9 @@ def _notification_body(report: dict[str, Any]) -> str:
         )
     if len(report["incidents"]) > 5:
         lines.append(f"Ещё инцидентов: {len(report['incidents']) - 5}.")
+    crm_url = str((report.get("links") or {}).get("crm") or "").strip()
+    if crm_url:
+        lines.append(f"CRM: {crm_url}")
     lines.append("Критические бизнес-действия и повторная рассылка автоматически не выполнялись.")
     return "\n".join(lines)
 
@@ -660,6 +663,8 @@ def run_system_admin_audit(
         now=now,
     )
     recent_requests = _recent_request_trace(db, now=now)
+    from .operational_links import operational_links
+
     report = {
         "outcome": "completed",
         "report_kind": "system_admin",
@@ -676,6 +681,7 @@ def run_system_admin_audit(
         "resolved": resolved,
         "recent_requests": recent_requests,
         "command_catalog": COMMAND_CATALOG,
+        "links": operational_links(),
         "safety": {
             "automatic_business_retry": False,
             "credentials_redacted": True,

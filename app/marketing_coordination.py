@@ -9,9 +9,10 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .autonomy import authority_context_digest
 from .config import settings
 from .management_companies import audit_management_company_contacts
-from .models import AuditLog, BusinessRecord, ContentItem, OutboundMessage, Task
+from .models import AuditLog, AuthorityEnvelope, AuthorityEnvelopeUse, BusinessRecord, ContactEvent, ContentItem, InboxMessage, OutboundMessage, Suppression, Task
 from .task_state import record_task_created
 
 
@@ -250,6 +251,179 @@ def prepare_lead_follow_up(db: Session, *, record_id: int, fingerprint: str = ""
                 "record_id": lead.id,
                 "contact_channels": channels,
                 "consent_source": "inbound_request",
+            }
+        ],
+    }
+
+
+def queue_inbound_lead_reply(
+    db: Session,
+    *,
+    record_id: int,
+    idempotency_key: str,
+    authority_envelope_use_id: int,
+    template_key: str,
+    task_id: int,
+    actor: str,
+    authority_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Queue one deterministic reply to a proven inbound lead under exact authority."""
+
+    if template_key != "inbound-reply-v1":
+        return {
+            "status": "template_not_allowed",
+            "record_id": record_id,
+            "evidence": [],
+        }
+    lead = db.get(BusinessRecord, record_id)
+    if not lead or lead.record_type != "lead":
+        return {"status": "not_found", "record_id": record_id, "evidence": []}
+    data = lead.data if isinstance(lead.data, dict) else {}
+    email = str(data.get("email") or "").strip().lower()
+    if not _has_inbound_consent(lead) or not email or "@" not in email:
+        return {
+            "status": "inbound_consent_or_email_required",
+            "record_id": record_id,
+            "evidence": [],
+        }
+    inbound = db.scalar(
+        select(InboxMessage)
+        .where(InboxMessage.record_id == lead.id)
+        .order_by(InboxMessage.id.desc())
+    )
+    if not inbound or not bool((inbound.data or {}).get("consent")):
+        return {
+            "status": "inbound_evidence_required",
+            "record_id": record_id,
+            "evidence": [],
+        }
+    if db.get(Suppression, email):
+        return {
+            "status": "suppressed",
+            "record_id": record_id,
+            "evidence": [],
+        }
+    bound_context = {
+        **authority_context,
+        "record_id": lead.id,
+        "recipient": email,
+    }
+    authority_use = db.get(AuthorityEnvelopeUse, authority_envelope_use_id)
+    envelope = (
+        db.get(AuthorityEnvelope, authority_use.envelope_id) if authority_use else None
+    )
+    current = utcnow()
+    if (
+        not authority_use
+        or authority_use.action != "inbound_lead_reply"
+        or authority_use.idempotency_key != idempotency_key
+        or authority_use.task_id != task_id
+        or authority_use.actor != actor
+        or authority_use.context_digest != authority_context_digest(bound_context)
+        or not envelope
+        or envelope.action != "inbound_lead_reply"
+        or envelope.status != "active"
+        or envelope.starts_at > current
+        or envelope.expires_at <= current
+    ):
+        return {
+            "status": "authority_unavailable",
+            "record_id": record_id,
+            "evidence": [],
+        }
+    draft_result = prepare_lead_follow_up(
+        db,
+        record_id=lead.id,
+        fingerprint=hashlib.sha256(idempotency_key.encode()).hexdigest(),
+    )
+    if draft_result.get("status") != "draft_prepared":
+        return {**draft_result, "evidence": []}
+    draft = draft_result["draft"]
+    campaign_key = f"inbound-reply-{hashlib.sha256(idempotency_key.encode()).hexdigest()[:32]}"
+    existing = db.scalar(
+        select(OutboundMessage).where(
+            OutboundMessage.campaign_key == campaign_key,
+            OutboundMessage.recipient == email,
+        )
+    )
+    created = existing is None
+    if existing is None:
+        smtp_ready = all(
+            (
+                settings.smtp_host,
+                settings.smtp_username,
+                settings.smtp_password,
+                settings.smtp_from_email,
+            )
+        )
+        existing = OutboundMessage(
+            campaign_key=campaign_key,
+            recipient=email,
+            subject=str(draft["subject"]),
+            body=str(draft["body"]),
+            status="queued" if smtp_ready else "waiting_configuration",
+            authority_envelope_use_id=authority_use.id,
+            scheduled_at=current,
+        )
+        db.add(existing)
+        db.flush()
+        db.add(
+            ContactEvent(
+                record_id=lead.id,
+                channel="email",
+                direction="outbound",
+                subject=existing.subject,
+                body=existing.body,
+                outcome="queued",
+            )
+        )
+        db.add(
+            AuditLog(
+                actor="sales",
+                action="lead.inbound_reply_queued",
+                resource_type="outbound_message",
+                resource_id=str(existing.id),
+                details={
+                    "lead_id": lead.id,
+                    "authority_envelope_use_id": authority_use.id,
+                    "template_key": template_key,
+                },
+            )
+        )
+        from .platform import event_bus
+
+        event_bus.publish(
+            db,
+            "lead.inbound_reply_queued",
+            "lead",
+            str(lead.id),
+            {
+                "outbound_message_id": existing.id,
+                "authority_envelope_use_id": authority_use.id,
+                "template_key": template_key,
+            },
+            idempotency_key=f"inbound-reply:{idempotency_key}",
+            actor="sales",
+        )
+    return {
+        "status": existing.status,
+        "record_id": lead.id,
+        "outbound_message_id": existing.id,
+        "created": created,
+        "automatic_send": False,
+        "queued_for_worker": existing.status == "queued",
+        "credentials_required": (
+            []
+            if existing.status == "queued"
+            else ["SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM_EMAIL"]
+        ),
+        "external_effect_idempotency_key": idempotency_key,
+        "evidence": [
+            {
+                "type": "outreach_message_queued",
+                "outbound_message_id": existing.id,
+                "authority_envelope_use_id": authority_use.id,
+                "status": existing.status,
             }
         ],
     }

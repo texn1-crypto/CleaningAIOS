@@ -16,7 +16,13 @@ from .capability_flags import (
     external_action_gate,
 )
 from .config import settings
-from .models import AgentRun, ApprovalRequest, CompanyKnowledge, DomainEvent, EventConsumerReceipt, Task
+from .autonomy import (
+    AutonomyMode,
+    action_policy,
+    authorize_within_envelope,
+)
+from .models import AgentRun, ApprovalRequest, AuditLog, BusinessRecord, CompanyKnowledge, DomainEvent, EventConsumerReceipt, Task
+from .skill_registry import agent_skill_context, skill_routing_evidence
 from .task_state import record_task_created, transition_task
 
 
@@ -230,11 +236,45 @@ class ApprovalEngine:
         return bool(row and row.action_kind == action_kind and row.status == "approved" and (resource_type is None or row.resource_type == resource_type) and (resource_id is None or row.resource_id == resource_id) and (expected_payload is None or row.payload == expected_payload))
 
 
+PROTECTED_AGENT_ACTIONS = {
+    ("sales", "execute_bulk_outreach_campaign"): "bulk_outreach",
+    ("sales", "queue_consented_sales_call"): "voice_call",
+}
+
+
 class DecisionEngine:
     """Deterministic policy layer; an LLM may propose, but policy decides execution."""
 
     def evaluate(self, db: Session, task: Task) -> dict[str, Any]:
-        action_kind = task.payload.get("action_kind")
+        executable_action = str(task.payload.get("action") or "").strip()
+        required_action_kind = PROTECTED_AGENT_ACTIONS.get(
+            (task.agent_type, executable_action)
+        )
+        if required_action_kind:
+            task.payload = {**task.payload, "action_kind": required_action_kind}
+        autonomy_action = str(task.payload.get("autonomy_action") or "").strip()
+        autonomy_policy = action_policy(autonomy_action) if autonomy_action else None
+        if autonomy_policy and autonomy_policy["mode"] == AutonomyMode.FORBIDDEN.value:
+            return {
+                "allowed": False,
+                "reason": "autonomy_action_forbidden",
+                "approval_id": None,
+                "autonomy": autonomy_policy,
+            }
+        if autonomy_policy and autonomy_policy.get("reason") == "unknown_action_fails_closed":
+            return {
+                "allowed": False,
+                "reason": "autonomy_action_unknown",
+                "approval_id": None,
+                "autonomy": autonomy_policy,
+            }
+        action_kind = required_action_kind or task.payload.get("action_kind")
+        if (
+            not action_kind
+            and autonomy_policy
+            and autonomy_policy["mode"] == AutonomyMode.APPROVAL_REQUIRED.value
+        ):
+            action_kind = autonomy_policy.get("approval_kind")
         if action_kind in approval_engine.protected_actions:
             tender_id = None
             if action_kind in TENDER_SCOPED_CAPABILITIES:
@@ -253,12 +293,132 @@ class DecisionEngine:
             if not gate["allowed"]:
                 return {**gate, "approval_id": None}
             supplied_id = task.payload.get("approval_id")
-            if approval_engine.authorized(db, action_kind, supplied_id, "task", str(task.id)):
-                return {"allowed": True, "reason": "owner_approved", "approval_id": supplied_id}
-            approval = approval_engine.request(db, action_kind, "task", str(task.id), task.agent_type, task.payload, "Protected business action")
-            task.payload = {**task.payload, "approval_id": approval.id}
-            if approval.status != "approved":
-                return {"allowed": False, "reason": "owner_approval_required", "approval_id": approval.id}
+            protected_authorized = approval_engine.authorized(
+                db, action_kind, supplied_id, "task", str(task.id)
+            )
+            if protected_authorized:
+                if not autonomy_policy or autonomy_policy["mode"] != AutonomyMode.AUTO_WITHIN_LIMIT.value:
+                    return {
+                        "allowed": True,
+                        "reason": "owner_approved",
+                        "approval_id": supplied_id,
+                        **({"autonomy": autonomy_policy} if autonomy_policy else {}),
+                    }
+            else:
+                approval = approval_engine.request(db, action_kind, "task", str(task.id), task.agent_type, task.payload, "Protected business action")
+                task.payload = {**task.payload, "approval_id": approval.id}
+                if approval.status != "approved":
+                    return {
+                        "allowed": False,
+                        "reason": "owner_approval_required",
+                        "approval_id": approval.id,
+                        **({"autonomy": autonomy_policy} if autonomy_policy else {}),
+                    }
+        if autonomy_policy:
+            if autonomy_policy["mode"] == AutonomyMode.AUTO_SAFE.value:
+                return {
+                    "allowed": True,
+                    "reason": "autonomy_auto_safe",
+                    "approval_id": None,
+                    "autonomy": autonomy_policy,
+                }
+            if autonomy_policy["mode"] == AutonomyMode.AUTO_WITHIN_LIMIT.value:
+                capability = str(autonomy_policy["capability"])
+                tender_id = None
+                if capability in TENDER_SCOPED_CAPABILITIES:
+                    raw_tender_id = task.payload.get("record_id")
+                    if (
+                        isinstance(raw_tender_id, int)
+                        and not isinstance(raw_tender_id, bool)
+                        and raw_tender_id > 0
+                    ):
+                        tender_id = raw_tender_id
+                gate = external_action_gate(db, capability, tender_id=tender_id)
+                if not gate["allowed"]:
+                    return {
+                        **gate,
+                        "approval_id": None,
+                        "autonomy": autonomy_policy,
+                    }
+                context = task.payload.get("autonomy_context")
+                if not isinstance(context, dict):
+                    context = {}
+                if autonomy_action == "inbound_lead_reply":
+                    record_id = task.payload.get("record_id")
+                    lead = (
+                        db.get(BusinessRecord, record_id)
+                        if isinstance(record_id, int) and not isinstance(record_id, bool)
+                        else None
+                    )
+                    lead_data = (
+                        lead.data if lead and isinstance(lead.data, dict) else {}
+                    )
+                    recipient = str(lead_data.get("email") or "").strip().lower()
+                    if not lead or lead.record_type != "lead" or not recipient:
+                        return {
+                            "allowed": False,
+                            "reason": "authority_context_invalid",
+                            "approval_id": None,
+                            "autonomy": autonomy_policy,
+                        }
+                    context = {
+                        **context,
+                        "record_id": lead.id,
+                        "recipient": recipient,
+                    }
+                decision = authorize_within_envelope(
+                    db,
+                    action=autonomy_action,
+                    context=context,
+                    idempotency_key=str(
+                        task.payload.get("autonomy_idempotency_key") or ""
+                    ),
+                    actor=task.agent_type,
+                    task_id=task.id,
+                )
+                if decision.get("allowed") and decision.get("usage_created"):
+                    audit_details = {
+                        "action": autonomy_action,
+                        "mode": decision["mode"],
+                        "envelope_id": decision["envelope_id"],
+                        "usage_id": decision["usage_id"],
+                        "context_digest_only": True,
+                    }
+                    db.add(
+                        AuditLog(
+                            actor=task.agent_type,
+                            action="autonomy.envelope_authorized",
+                            resource_type="task",
+                            resource_id=str(task.id),
+                            details=audit_details,
+                        )
+                    )
+                    event_bus.publish(
+                        db,
+                        "autonomy.envelope_authorized",
+                        "task",
+                        str(task.id),
+                        audit_details,
+                        idempotency_key=(
+                            f"autonomy-envelope-use:{decision['usage_id']}"
+                        ),
+                        actor=task.agent_type,
+                        correlation_id=str(
+                            task.payload.get("correlation_id") or f"task:{task.id}"
+                        ),
+                    )
+                if decision.get("allowed"):
+                    task.payload = {
+                        **task.payload,
+                        "autonomy_context": context,
+                        "authority_envelope_id": decision.get("envelope_id"),
+                        "authority_envelope_use_id": decision.get("usage_id"),
+                    }
+                return {
+                    **decision,
+                    "approval_id": None,
+                    "autonomy": autonomy_policy,
+                }
         return {"allowed": True, "reason": "policy_passed"}
 
 
@@ -281,24 +441,37 @@ class AgentRuntime:
         agent = AGENTS.get(task.agent_type)
         if not agent:
             raise ValueError(f"Unknown agent: {task.agent_type}")
-        run = AgentRun(agent_type=task.agent_type, task_id=task.id, correlation_id=str(task.payload.get("correlation_id", "")), input=task.payload)
+        base_payload = task.payload if isinstance(task.payload, dict) else {}
+        execution_payload = {
+            **base_payload,
+            "agent_skill_context": agent_skill_context(task.agent_type),
+            "_runtime_authority": {
+                "task_id": task.id,
+                "actor": task.agent_type,
+            },
+        }
+        run = AgentRun(
+            agent_type=task.agent_type,
+            task_id=task.id,
+            correlation_id=str(base_payload.get("correlation_id", "")),
+            input=execution_payload,
+        )
         db.add(run)
         heartbeat(db, task.agent_type, "running")
         db.flush()
         try:
-            execution_payload = task.payload
             tool_results: list[dict[str, Any]] = []
-            if "read_only_tools" in task.payload:
+            if "read_only_tools" in base_payload:
                 from .agent_tools import execute_read_only_tools
 
                 tool_results = execute_read_only_tools(
                     db,
                     run=run,
                     task=task,
-                    requests=task.payload.get("read_only_tools"),
+                    requests=base_payload.get("read_only_tools"),
                 )
                 execution_payload = {
-                    **task.payload,
+                    **execution_payload,
                     "read_only_tool_results": tool_results,
                 }
             if execution_payload.get("action") == "ceo_strategic_checkpoint":
@@ -310,6 +483,12 @@ class AgentRuntime:
             result = jsonable_encoder(raw_result)
             if not isinstance(result, dict):
                 raise TypeError("Agent result must be a JSON object")
+            skill_evidence = skill_routing_evidence(task.agent_type)
+            result = {
+                **result,
+                "active_skills": skill_evidence["skills"],
+                "skill_registry_version": skill_evidence["registry_version"],
+            }
             if task.agent_type == "orchestrator":
                 from .orchestrator_telemetry import record_routing_decisions
 
@@ -324,16 +503,17 @@ class AgentRuntime:
                         "routing_decision_ids": [row.id for row in routing_decisions],
                     }
             if tool_results:
-                evidence = (
-                    result.get("evidence")
-                    if isinstance(result.get("evidence"), list)
+                raw_result_evidence = result.get("evidence")
+                result_evidence: list[Any] = (
+                    list(raw_result_evidence)
+                    if isinstance(raw_result_evidence, list)
                     else []
                 )
                 result = {
                     **result,
                     "read_only_tool_results": tool_results,
                     "evidence": [
-                        *evidence,
+                        *result_evidence,
                         *[
                             {
                                 "type": "agent_read_tool_call",
@@ -345,7 +525,11 @@ class AgentRuntime:
                     ],
                 }
             run.output = result
-            run.evidence = result.get("evidence", []) if isinstance(result.get("evidence", []), list) else []
+            final_evidence = result.get("evidence", [])
+            run.evidence = [
+                *(list(final_evidence) if isinstance(final_evidence, list) else []),
+                skill_evidence,
+            ]
             run.cost = float(result.get("cost", 0) or 0)
             run.status = "succeeded"
             task.result = result
