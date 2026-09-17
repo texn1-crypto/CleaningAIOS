@@ -37,7 +37,9 @@ def test_watchdog_repairs_runtime_without_updating_code() -> None:
 def test_deploy_is_exact_release_and_refuses_dirty_checkout() -> None:
     deploy = (ROOT / "scripts" / "deploy_server.sh").read_text()
     assert 'TARGET_SHA" != "$remote_main' in deploy
-    assert "main:refs/remotes/origin/main" in deploy
+    assert 'deploy_ref="refs/cleaningaios/deploy/main"' in deploy
+    assert '"refs/heads/main:$deploy_ref"' in deploy
+    assert 'rev-parse "$deploy_ref^{commit}"' in deploy
     assert "git_safe status --porcelain" in deploy
     assert "Production checkout contains local changes; deployment refused" in deploy
     assert "telegram_getme=ok" in deploy
