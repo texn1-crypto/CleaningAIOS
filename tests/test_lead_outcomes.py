@@ -330,3 +330,38 @@ def test_goal_counts_only_reports_actually_sent_to_owner_this_month():
         assert result["current"] == 2
         assert result["sent_report_count"] == 1
         assert goal.current == 2
+
+
+def test_ceo_cycle_counts_a_guarded_tool_failure_once_for_candidate_retry_limit():
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        db.add(_goal())
+        company = _management_company(
+            "УК Некорректный Адрес",
+            "https://invalid-candidate.example/",
+            "info@invalid-candidate.example",
+        )
+        db.add(company)
+        db.flush()
+        failed = Task(
+            title="Failed guarded candidate verification",
+            agent_type="lead_coordinator",
+            status="failed",
+            payload={
+                "action": VERIFICATION_ACTION,
+                "record_id": company.id,
+                "candidate_url": "https://invalid-candidate.example/",
+            },
+            result={"error_type": "AgentToolDenied"},
+        )
+        db.add(failed)
+        db.flush()
+
+        first = run_ceo_lead_outcome_cycle(db, cycle_key="2045-06-05T12:00", now=now)
+        repeated = run_ceo_lead_outcome_cycle(db, cycle_key="2045-06-05T13:00", now=now)
+
+        assert first["failed_verification_reconciliation"]["reconciled_task_ids"] == [failed.id]
+        assert repeated["failed_verification_reconciliation"]["reconciled_task_ids"] == []
+        assert company.data["internet_verification_attempts"] == 1
+        assert company.data["internet_verification_last_failed_task_id"] == failed.id
