@@ -404,6 +404,67 @@ def _record_verification_failure(
     return attempts, manual_review
 
 
+def _reconcile_failed_verification_tasks(db: Session) -> dict[str, Any]:
+    """Apply the candidate retry limit when the guarded tool fails before agent execution."""
+
+    failed_tasks = db.scalars(
+        select(Task)
+        .where(
+            Task.agent_type == "lead_coordinator",
+            Task.status == "failed",
+            Task.payload["action"].as_string() == VERIFICATION_ACTION,
+        )
+        .order_by(Task.id.desc())
+        .limit(200)
+    ).all()
+    reconciled: list[int] = []
+    manual_review: list[int] = []
+    for task in failed_tasks:
+        result = task.result or {}
+        if result.get("error_type") not in {
+            "AgentToolDenied",
+            "AgentToolError",
+            "AgentToolTimedOut",
+        }:
+            continue
+        payload = task.payload or {}
+        try:
+            raw_record_id = payload.get("record_id")
+            if raw_record_id is None or isinstance(raw_record_id, bool):
+                continue
+            record_id = int(raw_record_id)
+        except (TypeError, ValueError):
+            continue
+        row = db.get(BusinessRecord, record_id)
+        if row is None or row.record_type != MANAGEMENT_COMPANY_RECORD_TYPE:
+            continue
+        data = row.data or {}
+        if data.get("internet_verification_last_failed_task_id") == task.id:
+            continue
+        source_url = _safe_candidate_url(payload.get("candidate_url"))
+        if source_url is None:
+            source_url = "invalid_candidate_url"
+        _, needs_manual_review = _record_verification_failure(
+            db,
+            row=row,
+            failure_status="candidate_tool_rejected",
+            reason=str(result.get("error_type") or "agent_tool_failure"),
+            checked_at=task.updated_at or utcnow(),
+            source_url=source_url,
+        )
+        row.data = {
+            **(row.data or {}),
+            "internet_verification_last_failed_task_id": task.id,
+        }
+        reconciled.append(task.id)
+        if needs_manual_review:
+            manual_review.append(row.id)
+    return {
+        "reconciled_task_ids": sorted(reconciled),
+        "manual_review_record_ids": sorted(manual_review),
+    }
+
+
 def verify_existing_management_company_candidate(
     db: Session,
     payload: dict[str, Any],
@@ -612,6 +673,7 @@ def run_ceo_lead_outcome_cycle(
     """Make the CEO accountable for measured owner handoffs, not task volume."""
 
     current = now or utcnow()
+    failed_verification_reconciliation = _reconcile_failed_verification_tasks(db)
     goal = reconcile_lead_handoff_goal(db, now=current)
     provider = _latest_provider_health(db)
     scheduled = (
@@ -737,6 +799,7 @@ def run_ceo_lead_outcome_cycle(
             "goal": goal,
             "provider_health": provider,
             "verification_work": scheduled,
+            "failed_verification_reconciliation": failed_verification_reconciliation,
             "manual_review_count": manual_review_count,
             "provider_recovery_task_id": (
                 provider_recovery_task.id if provider_recovery_task is not None else None
@@ -752,6 +815,7 @@ def run_ceo_lead_outcome_cycle(
         "goal": goal,
         "provider_health": provider,
         "verification_work": scheduled,
+        "failed_verification_reconciliation": failed_verification_reconciliation,
         "manual_review_count": manual_review_count,
         "provider_recovery_task_id": (
             provider_recovery_task.id if provider_recovery_task is not None else None
