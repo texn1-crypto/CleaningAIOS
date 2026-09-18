@@ -761,6 +761,10 @@ class LeadCoordinatorAgent:
     name = "lead_coordinator"
 
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "verify_existing_management_company_candidate":
+            from .lead_outcomes import verify_existing_management_company_candidate
+
+            return verify_existing_management_company_candidate(db, payload)
         from .lead_coordination import coordinate_lead_scouts
 
         return coordinate_lead_scouts(db, payload)

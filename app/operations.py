@@ -574,7 +574,9 @@ def review_ceo_strategy_portfolio(
     *,
     cycle_key: str,
 ) -> dict[str, Any]:
-    """Verify portfolio coverage and hand technical risks to system administration."""
+    """Verify portfolio coverage and control measured lead outcomes."""
+    from .lead_outcomes import run_ceo_lead_outcome_cycle
+
     expected_agents = sorted({str(item["agent_type"]) for item in CEO_DEVELOPMENT_BACKLOG})
     expected_titles = {str(item["title"]): str(item["agent_type"]) for item in CEO_DEVELOPMENT_BACKLOG}
     portfolio_tasks = [
@@ -668,10 +670,12 @@ def review_ceo_strategy_portfolio(
                 actor="ceo",
                 reason="strategy_risk_handoff",
             )
+    lead_outcome = run_ceo_lead_outcome_cycle(db, cycle_key=cycle_key)
+    lead_outcome_blocks = lead_outcome["status"] == "at_risk"
     return {
         "status": (
             "at_risk"
-            if missing or at_risk
+            if missing or at_risk or lead_outcome_blocks
             else "pending"
             if pending
             else "verified"
@@ -684,18 +688,22 @@ def review_ceo_strategy_portfolio(
         "pending_agent_types": pending,
         "verified_completed_agent_types": completed,
         "system_admin_task_id": sysadmin_task.id if sysadmin_task else None,
+        "lead_outcome": lead_outcome,
         "external_actions_executed": False,
-        "evidence": [{
-            "type": "ceo_portfolio_verification",
-            "cycle_key": cycle_key,
-            "covered_agent_types": len({row.agent_type for row in latest_by_title.values()}),
-            "expected_agent_types": len(expected_agents),
-            "covered_lanes": len(set(expected_titles) & set(latest_by_title)),
-            "expected_lanes": len(expected_titles),
-            "at_risk": len(at_risk),
-            "missing": len(missing),
-            "pending": len(pending),
-        }],
+        "evidence": [
+            {
+                "type": "ceo_portfolio_verification",
+                "cycle_key": cycle_key,
+                "covered_agent_types": len({row.agent_type for row in latest_by_title.values()}),
+                "expected_agent_types": len(expected_agents),
+                "covered_lanes": len(set(expected_titles) & set(latest_by_title)),
+                "expected_lanes": len(expected_titles),
+                "at_risk": len(at_risk),
+                "missing": len(missing),
+                "pending": len(pending),
+            },
+            *lead_outcome["evidence"],
+        ],
     }
 
 
