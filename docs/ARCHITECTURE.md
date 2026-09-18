@@ -22,6 +22,14 @@ contract.
    experiments and owner notifications. It writes into the same records and events;
    it is not a separate CRM.
 
+Twenty CRM is an optional downstream sales projection, not a second source of truth.
+The scheduler routes verified lead projection to the Sales agent; the adapter stores
+the remote company ID and a deterministic projection fingerprint on the authoritative
+lead, bounds and redacts provider failures, and audits every create/update. Only the
+organization name and verified public website leave CleaningAIOS. Contacts, consent,
+suppression and outreach state remain authoritative locally, and the connector never
+sends prospect messages. See [`TWENTY_CRM.md`](TWENTY_CRM.md).
+
 Tender Autopilot extends these same layers. Its current production foundation is an
 append-only, evidence-bound decision snapshot with Decimal economics and a guarded
 participation approval card. The snapshot now carries a versioned, deterministic

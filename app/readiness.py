@@ -7,6 +7,7 @@ from .crawl4ai_client import configuration_status as crawl4ai_configuration_stat
 from .improvements import workspace_agent_configuration_status
 from .llm import llm_advisor
 from .telephony import configuration_status as telephony_configuration_status
+from .twenty_crm import configuration_status as twenty_configuration_status
 
 
 def integration_status() -> dict[str, Any]:
@@ -72,6 +73,12 @@ def integration_status() -> dict[str, Any]:
             "provider": "carrier_neutral_voice_gateway",
             "mode": "consented_owner_approved_calls_only",
             "recording_default": "disabled",
+        },
+        "twenty_crm": {
+            "status": twenty_configuration_status(),
+            "mode": "verified_lead_projection",
+            "system_of_record": "cleaningaios",
+            "automatic_outreach": False,
         },
         "owner_hot_lead_email": {
             "status": "configured"
