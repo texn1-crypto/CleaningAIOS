@@ -196,6 +196,19 @@ lanes create one deduplicated critical System Admin task for the review cycle; n
 external action or protected approval is inferred. The operating strategy and
 multi-year horizons are documented in `docs/AI_AGENT_STRATEGY.md`.
 
+That hourly review also controls the commercial lead outcome. It reconciles the
+monthly goal only from unique CRM leads in a qualified review state whose discovery
+report was actually delivered to the owner. While the goal is short, it schedules a
+bounded batch of one-page Crawl4AI verification tasks against already imported
+in-scope management companies. A positive organization/domain/INN match creates an
+`owner_review` lead, an idempotent PDF report and an owner notification; it never
+grants outreach consent or sends a prospect message. External search failure creates
+a deduplicated System Admin recovery task and remains an explicit CEO risk instead of
+being counted as completed work. One daily owner plan records up to five priorities,
+responsible agents, metrics, deadlines, dependencies, approvals and stop conditions.
+Three failed checks move a candidate to explicit manual review instead of consuming
+the automated batch forever.
+
 `GET /api/ceo/brief` is a read-only primary-database snapshot with one freshness
 timestamp and explicit source endpoints/record IDs. Facts and deterministic
 recommendations are separate fields; facts are never attributed to an LLM. Telegram

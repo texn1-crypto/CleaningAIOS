@@ -6,7 +6,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.agents import AGENTS
 from app.db import Base
-from app.models import AuditLog, Task
+from app.models import AuditLog, BusinessGoal, Task
 from app.operations import (
     CEO_AGENT_GROWTH_STRATEGIES,
     CEO_DEVELOPMENT_BACKLOG,
@@ -28,6 +28,22 @@ def _session_factory():
     )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+def _add_satisfied_lead_goal(db):
+    db.add(
+        BusinessGoal(
+            title="Test lead goal",
+            status="active",
+            owner="lead_coordinator",
+            metric="qualified_owner_handoffs",
+            baseline=0,
+            target=0,
+            current=0,
+            unit="leads/month",
+        )
+    )
+    db.flush()
 
 
 def test_every_registered_agent_executes_an_evidence_backed_strategy_checkpoint():
@@ -228,6 +244,7 @@ def test_ceo_review_deduplicates_system_admin_handoff_for_failed_lane():
 def test_ceo_review_does_not_claim_queued_work_is_verified():
     session_factory = _session_factory()
     with session_factory() as db:
+        _add_satisfied_lead_goal(db)
         maintain_ceo_development_backlog(
             db,
             now=datetime(2026, 9, 9, 9, 0),
@@ -244,6 +261,7 @@ def test_ceo_review_does_not_claim_queued_work_is_verified():
 def test_ceo_review_is_verified_only_after_evidence_backed_completion():
     session_factory = _session_factory()
     with session_factory() as db:
+        _add_satisfied_lead_goal(db)
         tasks = maintain_ceo_development_backlog(
             db,
             now=datetime(2026, 9, 9, 9, 0),
