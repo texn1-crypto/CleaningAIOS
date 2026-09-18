@@ -354,6 +354,10 @@ class TenderAgent:
 class SalesAgent:
     name = "sales"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "sync_twenty_verified_leads":
+            from .twenty_crm import sync_verified_leads
+
+            return sync_verified_leads(db)
         if payload.get("action") == "queue_consented_sales_call":
             from .telephony import queue_consented_sales_call
 

@@ -9,7 +9,7 @@ from email.header import decode_header, make_header
 from email.policy import default
 from email.utils import parseaddr
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .models import AuditLog, InboxMessage, SenderMailbox
@@ -17,6 +17,19 @@ from .notifications import queue_owner_notification
 
 
 log = logging.getLogger("cleaningai.inbound_mail")
+INBOUND_MAIL_POLL_LOCK_KEY = 7_311_106_482_049_087_113
+
+
+def _acquire_poll_lock(db: Session) -> bool:
+    """Allow only one worker replica to poll IMAP in a transaction window."""
+    if db.get_bind().dialect.name != "postgresql":
+        return True
+    return bool(
+        db.scalar(
+            text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": INBOUND_MAIL_POLL_LOCK_KEY},
+        )
+    )
 
 
 def _plain_body(message: email.message.EmailMessage) -> str:
@@ -102,6 +115,14 @@ def collect_mailbox_replies(db: Session, mailbox: SenderMailbox, *, limit: int =
 
 
 def collect_inbound_replies(db: Session) -> dict:
+    if not _acquire_poll_lock(db):
+        return {
+            "status": "already_running",
+            "mailboxes": 0,
+            "received": 0,
+            "credentials_required": 0,
+            "failed": 0,
+        }
     mailboxes = db.scalars(
         select(SenderMailbox).where(
             SenderMailbox.active.is_(True), SenderMailbox.inbound_enabled.is_(True)
@@ -156,6 +177,7 @@ def collect_inbound_replies(db: Session) -> dict:
             )
     db.commit()
     return {
+        "status": "completed",
         "mailboxes": len(mailboxes),
         "received": received,
         "credentials_required": credentials_required,

@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     approval_ttl_hours: int = 24
     public_base_url: str = "http://localhost:8000"
     crm_public_url: str = ""
+    twenty_enabled: bool = False
+    twenty_base_url: str = "http://host.docker.internal:3020"
+    twenty_api_key: str = ""
+    twenty_sync_interval_minutes: int = 15
+    twenty_sync_batch_size: int = 25
+    twenty_timeout_seconds: float = 15.0
+    twenty_max_response_bytes: int = 128_000
     internal_api_url: str = ""
     worker_poll_seconds: float = 2.0
     agent_worker_replicas: int = 4

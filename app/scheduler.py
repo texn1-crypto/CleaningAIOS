@@ -144,6 +144,44 @@ def schedule_cycle() -> None:
             db.add(task)
             db.flush()
             record_task_created(db, task, actor="scheduler", reason="recurring_lead_intelligence_coordination")
+        twenty_interval = max(5, min(settings.twenty_sync_interval_minutes, 24 * 60))
+        twenty_window = owner_report_window(now, twenty_interval)
+        twenty_title = f"Twenty CRM lead sync · {twenty_window.isoformat()}"
+        twenty_active = db.scalar(
+            select(Task.id).where(
+                Task.agent_type == "sales",
+                Task.status.in_(["open", "queued", "running"]),
+                Task.payload["action"].as_string() == "sync_twenty_verified_leads",
+            )
+        )
+        if (
+            settings.twenty_enabled
+            and not twenty_active
+            and not db.scalar(select(Task.id).where(Task.title == twenty_title))
+        ):
+            task = Task(
+                title=twenty_title,
+                agent_type="sales",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=1,
+                payload={
+                    "action": "sync_twenty_verified_leads",
+                    "source": "scheduler",
+                    "projection_only": True,
+                    "automatic_outreach": False,
+                    "scheduled_window_start": twenty_window.isoformat(),
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(
+                db,
+                task,
+                actor="scheduler",
+                reason="recurring_twenty_crm_projection",
+            )
         system_admin_interval = max(
             1,
             min(settings.system_admin_interval_minutes, 24 * 60),

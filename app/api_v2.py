@@ -63,6 +63,7 @@ from .contact_directory import (
     verify_contact_export_artifact,
 )
 from .lead_reports import LEAD_REPORT_RECORD_TYPE, verify_lead_report_artifact
+from .twenty_crm import sync_status as twenty_sync_status
 from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, ensure_participation_review_task, evaluate_tender_viability, merge_registered_document_risks, screening_record_status
 from .tender_autopilot import (
     EvidenceBindingError,
@@ -127,6 +128,15 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+@router.get("/integrations/twenty")
+def twenty_integration_status(
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
+    require_role(actor, "manager")
+    return twenty_sync_status(db)
 
 
 @router.get("/money-opportunities")
