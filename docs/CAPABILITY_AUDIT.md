@@ -1,6 +1,6 @@
 # CleaningAIOS capability audit
 
-Initial audit date: 2026-08-13; updated 2026-09-18. Repository:
+Initial audit date: 2026-08-13; updated 2026-09-20. Repository:
 `texn1-crypto/CleaningAIOS`. Branch: `agent/cleaningai-os-production`.
 
 ## Runtime map
@@ -29,7 +29,7 @@ pytest -q                         461 passed
 python scripts/run_agent_evals.py 32 passed
 alembic upgrade/current/check     0034 head; no drift
 ruff + CI mypy targets            passed
-Python 3.12 dependency audit      no known vulnerabilities; 10 documented ignores
+Python 3.12 dependency audit      no known vulnerabilities; no ignored findings
 ```
 
 Compose configuration, deployment/watchdog shell syntax and an independent read-only
@@ -63,7 +63,7 @@ Claude review also passed. No production deployment was performed by this audit.
 | Telegram Control Center | PARTIAL | Exact user/chat RBAC bindings, pseudonymous denial audit, natural Russian text, assigned/due paginated task views, workflow correlation, signed durable approvals, acknowledged critical alerts and a source-linked CEO Brief work. Company Brain search is available through the protected API/tool gateway but has no dedicated Telegram ingestion wizard yet. |
 | Proactive automation | PARTIAL | Scheduler detects tender deadlines, overdue payments and unfilled shifts with deduplication. Selected high/critical events have correlated retrying Telegram alerts, dead-letter state, acknowledgement and metrics. Configurable cooldown/recipient groups and a broader trigger catalog remain missing. |
 | Observability | PARTIAL | Health/readiness, task/agent state, structured redacted JSON logs with HTTP correlation IDs, an authenticated Prometheus metrics endpoint and explicit agent success/latency/staleness SLOs are connected. Distributed tracing, dashboards and SLO alerts are still missing. |
-| CI/CD | PARTIAL | Tests, coverage, golden agent evals, Ruff, targeted strict mypy, dependency audit, CodeQL, Compose build, migrations and HTTP smoke are enforced. A fully resolved lockfile, container-image scanner and deployment environment approval gate are still missing. |
+| CI/CD | PARTIAL | Tests, coverage, golden agent evals, Ruff, targeted strict mypy, dependency audit, CodeQL, Compose build, migrations and HTTP smoke are enforced. Trivy builds the production application image on every PR, main push and daily schedule, blocks fixed high/critical OS or library vulnerabilities and detected image secrets, and uploads SARIF for same-repository runs. A fully resolved lockfile and deployment environment approval gate are still missing. |
 | Procurement execution | MISSING | No production ETP submission, signing, bidding, supplier ordering, payment or post-win procurement executor is connected. |
 | Production restore drill | UNVERIFIED | Backup/rollback commands are documented, but a restore verification result is not stored. |
 

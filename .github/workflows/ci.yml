@@ -15,6 +15,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  container-security:
+    name: Container security gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the production application image
+        run: >-
+          docker build
+          --build-arg RELEASE_SHA=${{ github.sha }}
+          --build-arg BUILD_TIME=ci
+          --tag cleaningaios:${{ github.sha }}
+          .
+      - name: Scan the image for fixed high-impact vulnerabilities and secrets
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cleaningaios:${{ github.sha }}
+          scanners: vuln,secret
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: "1"
+          limit-severities-for-sarif: true
+          version: v0.74.0
+      - name: Upload the scan to GitHub code scanning
+        if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -39,13 +72,7 @@ jobs:
       - name: Server automation syntax
         run: bash -n scripts/deploy_server.sh scripts/server_watchdog.sh scripts/install_server_watchdog.sh
       - name: Dependency vulnerability audit
-        run: >-
-          pip-audit -r requirements.txt
-          --ignore-vuln PYSEC-2026-161
-          --ignore-vuln PYSEC-2026-249
-          --ignore-vuln PYSEC-2026-248
-          --ignore-vuln PYSEC-2026-2281
-          --ignore-vuln PYSEC-2026-2280
+        run: pip-audit -r requirements.txt
       - run: pytest --cov=app --cov-report=term-missing
       - run: cp .env.example .env
       - run: python scripts/bootstrap_secrets.py .env
