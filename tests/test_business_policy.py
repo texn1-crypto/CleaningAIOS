@@ -31,19 +31,26 @@ def test_owner_business_policy_is_idempotent_and_keeps_contact_out_of_audit(monk
         "management_contact_regions",
         "Санкт-Петербург|Ленинградская область",
     )
+    monkeypatch.setattr(business_policy.settings, "lead_monthly_handoff_target", 20)
     session_factory = _session_factory()
 
     with session_factory() as db:
         first = business_policy.sync_owner_business_policy(db)
         second = business_policy.sync_owner_business_policy(db)
+        monkeypatch.setattr(business_policy.settings, "lead_monthly_handoff_target", 100)
+        increased = business_policy.sync_owner_business_policy(db)
+        repeated = business_policy.sync_owner_business_policy(db)
 
         assert first == {"knowledge_updated": 4, "goal_updated": 1}
         assert second == {"knowledge_updated": 0, "goal_updated": 0}
+        assert increased == {"knowledge_updated": 0, "goal_updated": 1}
+        assert repeated == {"knowledge_updated": 0, "goal_updated": 0}
         assert db.scalar(select(func.count(CompanyKnowledge.id))) == 4
         assert db.scalar(select(func.count(BusinessGoal.id))) == 1
-        assert db.scalar(select(func.count(DomainEvent.id))) == 5
+        assert db.scalar(select(BusinessGoal)).target == 100
+        assert db.scalar(select(func.count(DomainEvent.id))) == 6
         audit_rows = db.scalars(select(AuditLog)).all()
-        assert len(audit_rows) == 5
+        assert len(audit_rows) == 6
         assert all("+7 000" not in str(row.details) for row in audit_rows)
 
 

@@ -363,6 +363,7 @@ def test_scheduler_queues_one_twenty_projection_per_window(monkeypatch):
     session_factory = _session_factory()
     monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
     monkeypatch.setattr(scheduler.settings, "twenty_enabled", True)
+    monkeypatch.setattr(scheduler.settings, "twenty_api_key", "test-key")
     monkeypatch.setattr(scheduler.settings, "twenty_sync_interval_minutes", 15)
     monkeypatch.setattr(scheduler.settings, "tender_sources", "")
     monkeypatch.setattr(scheduler.settings, "perplexity_api_key", "")
@@ -381,6 +382,93 @@ def test_scheduler_queues_one_twenty_projection_per_window(monkeypatch):
         assert len(tasks) == 1
         assert tasks[0].payload["projection_only"] is True
         assert tasks[0].payload["automatic_outreach"] is False
+
+
+def test_scheduler_does_not_queue_twenty_projection_without_credentials(monkeypatch):
+    session_factory = _session_factory()
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    monkeypatch.setattr(scheduler.settings, "twenty_enabled", True)
+    monkeypatch.setattr(scheduler.settings, "twenty_api_key", "")
+    monkeypatch.setattr(scheduler.settings, "tender_sources", "")
+    monkeypatch.setattr(scheduler.settings, "perplexity_api_key", "")
+    monkeypatch.setattr(scheduler.settings, "evolution_research_queries", "")
+
+    scheduler.schedule_cycle()
+
+    with session_factory() as db:
+        assert not db.scalar(
+            select(Task.id).where(
+                Task.agent_type == "sales",
+                Task.payload["action"].as_string() == "sync_twenty_verified_leads",
+            )
+        )
+
+
+def test_scheduler_backs_off_after_twenty_credential_failure(monkeypatch):
+    session_factory = _session_factory()
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    monkeypatch.setattr(scheduler.settings, "twenty_enabled", True)
+    monkeypatch.setattr(scheduler.settings, "twenty_api_key", "configured-but-rejected")
+    monkeypatch.setattr(scheduler.settings, "tender_sources", "")
+    monkeypatch.setattr(scheduler.settings, "perplexity_api_key", "")
+    monkeypatch.setattr(scheduler.settings, "evolution_research_queries", "")
+
+    with session_factory() as db:
+        db.add(
+            Task(
+                title="Recent Twenty credential failure",
+                agent_type="sales",
+                status="blocked",
+                payload={"action": "sync_twenty_verified_leads"},
+                result={
+                    "status": "unavailable",
+                    "credentials_required": ["TWENTY_API_KEY"],
+                },
+            )
+        )
+        db.commit()
+
+    scheduler.schedule_cycle()
+
+    with session_factory() as db:
+        assert db.scalar(
+            select(func.count(Task.id)).where(
+                Task.payload["action"].as_string() == "sync_twenty_verified_leads"
+            )
+        ) == 1
+
+
+def test_scheduler_backs_off_after_lead_provider_credential_failure(monkeypatch):
+    session_factory = _session_factory()
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    monkeypatch.setattr(scheduler.settings, "twenty_enabled", False)
+    monkeypatch.setattr(scheduler.settings, "tender_sources", "")
+    monkeypatch.setattr(scheduler.settings, "perplexity_api_key", "configured-but-rejected")
+    monkeypatch.setattr(scheduler.settings, "evolution_research_queries", "")
+
+    with session_factory() as db:
+        db.add(
+            Task(
+                title="Recent lead provider credential failure",
+                agent_type="management_lead_scout",
+                status="blocked",
+                payload={"action": "discover_public_business_leads"},
+                result={
+                    "status": "unavailable",
+                    "handoff_status": "credentials_required",
+                },
+            )
+        )
+        db.commit()
+
+    scheduler.schedule_cycle()
+
+    with session_factory() as db:
+        assert not db.scalar(
+            select(Task.id).where(
+                Task.title.like("Lead intelligence coordination · %")
+            )
+        )
 
 
 def test_integration_catalog_reports_twenty_without_secret(client, monkeypatch):

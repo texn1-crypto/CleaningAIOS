@@ -27,6 +27,7 @@ from .money_opportunities import build_money_opportunities
 from .operations import goal_progress
 from .readiness import integration_status
 from .growth import growth_snapshot
+from .task_state import task_waits_for_configuration
 
 
 def _utcnow() -> datetime:
@@ -450,9 +451,18 @@ def build_ceo_brief(
     failed_tasks = list(db.scalars(
         select(Task).where(Task.status == "failed").order_by(Task.id.desc()).limit(20)
     ).all())
-    blocked_tasks = list(db.scalars(
-        select(Task).where(Task.status == "blocked").order_by(Task.id.desc()).limit(20)
+    all_blocked_tasks = list(db.scalars(
+        select(Task).where(Task.status == "blocked").order_by(Task.id.desc())
     ).all())
+    blocked_tasks = all_blocked_tasks[:20]
+    waiting_configuration = [
+        row for row in all_blocked_tasks if task_waits_for_configuration(row)
+    ]
+    actionable_blocked = [
+        row for row in all_blocked_tasks if not task_waits_for_configuration(row)
+    ]
+    waiting_configuration_tasks = waiting_configuration[:20]
+    actionable_blocked_tasks = actionable_blocked[:20]
     approvals = list(db.scalars(
         select(ApprovalRequest)
         .where(ApprovalRequest.status == "pending")
@@ -486,6 +496,8 @@ def build_ceo_brief(
     active_task_count = _count(db, Task, Task.status.in_(["open", "queued", "running"]))
     failed_task_count = _count(db, Task, Task.status == "failed")
     blocked_task_count = _count(db, Task, Task.status == "blocked")
+    waiting_configuration_count = len(waiting_configuration)
+    actionable_blocked_count = len(actionable_blocked)
     pending_approval_count = _count(db, ApprovalRequest, ApprovalRequest.status == "pending")
     unacknowledged_alert_count = _count(
         db,
@@ -552,9 +564,13 @@ def build_ceo_brief(
             "active": active_task_count,
             "failed": failed_task_count,
             "blocked": blocked_task_count,
+            "actionable_blocked": actionable_blocked_count,
+            "waiting_configuration": waiting_configuration_count,
             "active_ids": [row.id for row in active_tasks],
             "failed_ids": [row.id for row in failed_tasks],
             "blocked_ids": [row.id for row in blocked_tasks],
+            "actionable_blocked_ids": [row.id for row in actionable_blocked_tasks],
+            "waiting_configuration_ids": [row.id for row in waiting_configuration_tasks],
         },
         "approvals": {
             "pending": pending_approval_count,
@@ -595,6 +611,21 @@ def build_ceo_brief(
             **sales_summary,
             "new_leads_in_period": new_leads,
             "hot_lead_ids": hot_lead_ids,
+            "owner_handoff_goal": next(
+                (
+                    {
+                        "current": row.current,
+                        "target": row.target,
+                        "unit": row.unit,
+                        "status": (
+                            "target_met" if row.current >= row.target else "behind_target"
+                        ),
+                    }
+                    for row in goals
+                    if row.metric == "qualified_owner_handoffs"
+                ),
+                None,
+            ),
         },
         "tenders": tender_summary,
         "marketing": marketing_summary,
@@ -625,13 +656,15 @@ def build_ceo_brief(
         "integrations": credential_statuses,
     }
     recommendations: list[dict[str, Any]] = []
-    if failed_tasks or blocked_tasks:
+    if failed_tasks or actionable_blocked_tasks:
         recommendations.append(
             {
                 "kind": "create_review_task",
                 "priority": "high",
                 "text": "Разобрать failed/blocked задачи и назначить ответственных.",
-                "source_ids": [row.id for row in (failed_tasks + blocked_tasks)],
+                "source_ids": [
+                    row.id for row in (failed_tasks + actionable_blocked_tasks)
+                ],
             }
         )
     if approvals:
@@ -668,9 +701,9 @@ def build_ceo_brief(
         tenders=tender_summary,
         growth=growth,
         failed_tasks=failed_tasks,
-        blocked_tasks=blocked_tasks,
+        blocked_tasks=actionable_blocked_tasks,
         failed_task_count=failed_task_count,
-        blocked_task_count=blocked_task_count,
+        blocked_task_count=actionable_blocked_count,
         credential_statuses=credential_statuses,
         hot_lead_ids=hot_lead_ids,
     )
@@ -740,6 +773,7 @@ def format_ceo_brief(data: dict[str, Any]) -> str:
     growth = facts.get("growth") or {}
     recommendations = data.get("recommendations") or []
     execution_plan = data.get("execution_plan") or []
+    handoff_goal = sales.get("owner_handoff_goal") or {}
     success_rate = agents.get("success_rate_percent")
     success_rate_text = f"{success_rate}%" if success_rate is not None else "нет завершённых запусков"
     lines = [
@@ -749,7 +783,13 @@ def format_ceo_brief(data: dict[str, Any]) -> str:
         "ФАКТЫ ИЗ БД",
         (
             f"• Лиды: всего {sales.get('leads', 0)}, новых за период {sales.get('new_leads_in_period', 0)}, "
+            f"передано владельцу {sales.get('owner_review', 0)}, "
             f"qualified {sales.get('qualified', 0)}, won {sales.get('won', 0)}"
+        ),
+        (
+            f"• Цель передач: {handoff_goal.get('current', 0)} из "
+            f"{handoff_goal.get('target', 0)} {handoff_goal.get('unit', '')} · "
+            f"{handoff_goal.get('status', 'goal_not_initialized')}"
         ),
         (
             f"• Контракты: active {sales.get('active_contracts', 0)}, "
@@ -765,9 +805,14 @@ def format_ceo_brief(data: dict[str, Any]) -> str:
         ),
         (
             f"• Задачи сейчас: active {task_facts.get('active', 0)}, "
-            f"failed {task_facts.get('failed', 0)}, blocked {task_facts.get('blocked', 0)}"
+            f"failed {task_facts.get('failed', 0)}, "
+            f"actionable blocked {task_facts.get('actionable_blocked', task_facts.get('blocked', 0))}, "
+            f"waiting configuration {task_facts.get('waiting_configuration', 0)}"
         ),
-        f"  source task IDs: {(task_facts.get('failed_ids') or []) + (task_facts.get('blocked_ids') or [])}",
+        (
+            "  source task IDs: "
+            f"{(task_facts.get('failed_ids') or []) + (task_facts.get('actionable_blocked_ids') or task_facts.get('blocked_ids') or [])}"
+        ),
         f"• Тендеры: active {tenders.get('active', 0)}, owner review {tenders.get('ready_for_owner_review', 0)}",
         f"• Рост: {growth.get('status', 'goal_not_initialized')} · progress {growth.get('progress_percent', 0)}%",
         f"• Ожидают owner approval: {approval_facts.get('pending', 0)} · IDs {approval_facts.get('ids') or []}",

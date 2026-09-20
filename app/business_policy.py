@@ -127,6 +127,7 @@ def sync_owner_business_policy(db: Session) -> dict[str, int]:
         "proposal_policy": "sales_policy.proposal_requirements",
         "automatic_external_outreach": False,
     }
+    lead_target = max(1, min(int(settings.lead_monthly_handoff_target), 1_000))
     goal = db.scalar(select(BusinessGoal).where(BusinessGoal.title == LEAD_GOAL_TITLE))
     goal_updated = 0
     if goal is None:
@@ -141,7 +142,7 @@ def sync_owner_business_policy(db: Session) -> dict[str, int]:
             owner="lead_coordinator",
             metric="qualified_owner_handoffs",
             baseline=0,
-            target=20,
+            target=lead_target,
             current=0,
             unit="leads/month",
             strategy=strategy,
@@ -149,10 +150,15 @@ def sync_owner_business_policy(db: Session) -> dict[str, int]:
         db.add(goal)
         db.flush()
         goal_updated = 1
-    elif goal.strategy != strategy or goal.status != "active":
+    elif (
+        goal.strategy != strategy
+        or goal.status != "active"
+        or goal.target != lead_target
+    ):
         goal.strategy = strategy
         goal.status = "active"
         goal.owner = "lead_coordinator"
+        goal.target = lead_target
         goal_updated = 1
 
     if goal_updated:
@@ -162,7 +168,9 @@ def sync_owner_business_policy(db: Session) -> dict[str, int]:
             "business_goal",
             str(goal.id),
             {"metric": goal.metric, "status": goal.status},
-            idempotency_key=f"owner-business-goal:{goal.id}:{goal.metric}:{goal.status}",
+            idempotency_key=(
+                f"owner-business-goal:{goal.id}:{goal.metric}:{goal.status}:{lead_target}"
+            ),
             actor="owner_configuration",
         )
         db.add(
@@ -171,7 +179,11 @@ def sync_owner_business_policy(db: Session) -> dict[str, int]:
                 action="business_goal.updated",
                 resource_type="business_goal",
                 resource_id=str(goal.id),
-                details={"metric": goal.metric, "status": goal.status},
+                details={
+                    "metric": goal.metric,
+                    "status": goal.status,
+                    "target": lead_target,
+                },
             )
         )
 

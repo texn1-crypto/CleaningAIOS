@@ -10,6 +10,14 @@ from .models import Task, TaskTransition
 
 
 TASK_STATES = frozenset({"open", "queued", "running", "blocked", "done", "failed"})
+CONFIGURATION_WAIT_STATES = frozenset(
+    {
+        "credentials_required",
+        "mailbox_configuration_required",
+        "source_configuration_required",
+        "waiting_configuration",
+    }
+)
 ALLOWED_TRANSITIONS = {
     "open": frozenset({"queued", "running", "blocked", "done", "failed"}),
     "queued": frozenset({"running", "blocked", "done", "failed"}),
@@ -22,6 +30,22 @@ ALLOWED_TRANSITIONS = {
 
 class InvalidTaskTransition(ValueError):
     """Raised when a command violates the persisted task state machine."""
+
+
+def task_waits_for_configuration(task: Task) -> bool:
+    """Classify a blocked task without treating missing credentials as code failure."""
+
+    result = task.result if isinstance(task.result, dict) else {}
+    states = {
+        str(result.get(key) or "").strip().lower()
+        for key in ("status", "handoff_status", "failure_category")
+    }
+    if states & CONFIGURATION_WAIT_STATES:
+        return True
+    required = result.get("credentials_required")
+    if isinstance(required, str):
+        return bool(required.strip())
+    return isinstance(required, (list, tuple, set, dict)) and bool(required)
 
 
 def task_execution_lock_query(task_id: int):
