@@ -211,7 +211,9 @@ def _sales_lane(db: Session, current: datetime) -> dict[str, Any]:
     return {
         "summary": {
             "leads": len(leads),
+            "owner_review": statuses.get("owner_review", 0),
             "qualified": statuses.get("qualified", 0),
+            "sales_ready": statuses.get("sales_ready", 0),
             "won": statuses.get("won", 0),
             "lost": statuses.get("lost", 0),
             "outbound_sent": int(outbound_statuses.get("sent", 0)),

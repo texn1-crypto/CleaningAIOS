@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import SessionLocal
@@ -11,11 +12,14 @@ from .models import BusinessRecord, OperatingEntity, Task
 from .notifications import queue_missing_approval_notifications
 from .operations import maintain_ceo_development_backlog
 from .platform import event_bus
-from .task_state import record_task_created
+from .task_state import record_task_created, task_waits_for_configuration
+from .twenty_crm import configuration_status as twenty_configuration_status
 from .logging_config import configure_logging
 
 configure_logging("scheduler")
 log = logging.getLogger("cleaningai.scheduler")
+
+INTEGRATION_CONFIGURATION_BACKOFF_HOURS = 24
 
 
 def owner_report_window(now: datetime, interval_minutes: int) -> datetime:
@@ -24,6 +28,28 @@ def owner_report_window(now: datetime, interval_minutes: int) -> datetime:
     minute = int(utc_now.timestamp() // 60)
     window_minute = minute - minute % interval_minutes
     return datetime.fromtimestamp(window_minute * 60, tz=timezone.utc).replace(tzinfo=None)
+
+
+def _recent_configuration_block(
+    db: Session,
+    *,
+    now: datetime,
+    agent_types: set[str],
+    actions: set[str],
+) -> bool:
+    cutoff = now - timedelta(hours=INTEGRATION_CONFIGURATION_BACKOFF_HOURS)
+    rows = db.scalars(
+        select(Task).where(
+            Task.agent_type.in_(agent_types),
+            Task.status.in_(["blocked", "failed"]),
+            Task.updated_at >= cutoff,
+        )
+    ).all()
+    return any(
+        str((row.payload or {}).get("action") or "") in actions
+        and task_waits_for_configuration(row)
+        for row in rows
+    )
 
 
 def schedule_cycle() -> None:
@@ -123,7 +149,23 @@ def schedule_cycle() -> None:
                 Task.title.like("Lead intelligence coordination · %"),
             )
         )
-        if settings.perplexity_api_key and not contact_active and not contact_recent:
+        lead_provider_configuration_blocked = _recent_configuration_block(
+            db,
+            now=now,
+            agent_types={
+                "commercial_lead_scout",
+                "management_lead_scout",
+                "social_lead_scout",
+                "tender_lead_scout",
+            },
+            actions={"discover_public_business_leads"},
+        )
+        if (
+            settings.perplexity_api_key
+            and not contact_active
+            and not contact_recent
+            and not lead_provider_configuration_blocked
+        ):
             regions = [item.strip() for item in settings.management_contact_regions.split("|") if item.strip()]
             task = Task(
                 title=f"Lead intelligence coordination · {contact_window.isoformat()}",
@@ -154,9 +196,17 @@ def schedule_cycle() -> None:
                 Task.payload["action"].as_string() == "sync_twenty_verified_leads",
             )
         )
+        twenty_configuration_blocked = _recent_configuration_block(
+            db,
+            now=now,
+            agent_types={"sales"},
+            actions={"sync_twenty_verified_leads"},
+        )
         if (
             settings.twenty_enabled
+            and twenty_configuration_status() == "configured_not_verified"
             and not twenty_active
+            and not twenty_configuration_blocked
             and not db.scalar(select(Task.id).where(Task.title == twenty_title))
         ):
             task = Task(
@@ -286,9 +336,16 @@ def schedule_cycle() -> None:
                 Task.title.like("Perplexity agent coaching · %"),
             )
         )
+        perplexity_coaching_configuration_blocked = _recent_configuration_block(
+            db,
+            now=now,
+            agent_types={"meta_brain"},
+            actions={"perplexity_agent_coaching"},
+        )
         if (
             settings.perplexity_api_key
             and not perplexity_active
+            and not perplexity_coaching_configuration_blocked
             and not db.scalar(select(Task.id).where(Task.title == perplexity_title))
         ):
             task = Task(
@@ -331,11 +388,18 @@ def schedule_cycle() -> None:
                 Task.title.like("AI evolution research · %"),
             )
         )
+        evolution_configuration_blocked = _recent_configuration_block(
+            db,
+            now=now,
+            agent_types={"evolution_researcher"},
+            actions={"daily_source_grounded_evolution_research"},
+        )
         if (
             settings.perplexity_api_key
             and evolution_queries
             and evolution_local_now.hour >= max(0, min(settings.evolution_research_daily_hour, 23))
             and not evolution_active
+            and not evolution_configuration_blocked
             and not db.scalar(select(Task.id).where(Task.title == evolution_title))
         ):
             task = Task(

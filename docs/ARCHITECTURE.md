@@ -226,6 +226,17 @@ week the scheduler queues one idempotent CEO task and sends the same brief throu
 the protected owner-notification queue. The Telegram view remains read-only; its only
 write option creates a normal analytical CEO task through the shared Tasks API. No
 report path performs outreach, spending, submission or another critical action.
+Credential-dependent blocked tasks are reported separately from actionable workflow
+failures, so missing provider access cannot inflate the engineering recovery KPI.
+The sales facts also expose owner-review leads and the measured monthly handoff goal.
+
+Recurring external-integration work has configuration backpressure. Twenty projection
+is not queued until its local configuration is complete, and a recent credential
+failure pauses that projection for 24 hours. The same provider-specific pause applies
+to Perplexity-backed lead scouts, coaching and evolution research; internal agents and
+the Crawl4AI fallback continue independently. The monthly verified-owner-handoff
+target is configuration, not prompt text, and changing it does not grant outreach
+permission.
 
 Tasks can carry an exact internal assignee and due date. Telegram-created tasks are
 assigned to the already-authorized pseudonymous identity. The Control Center queries

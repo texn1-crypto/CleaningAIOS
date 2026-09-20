@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 def test_ceo_brief_separates_primary_facts_from_recommendations(client, monkeypatch):
     from app.agents import AGENTS
     from app.db import SessionLocal
-    from app.models import BusinessRecord, OwnerNotification
+    from app.models import BusinessRecord, OwnerNotification, Task
 
     class FailingAgent:
         name = "ceo_brief_failure"
@@ -54,10 +54,21 @@ def test_ceo_brief_separates_primary_facts_from_recommendations(client, monkeypa
             status="sent",
             sent_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
-        db.add_all([payment, alert])
+        waiting_configuration = Task(
+            title="CEO brief integration wait",
+            agent_type="sales",
+            status="blocked",
+            payload={"action": "sync_twenty_verified_leads"},
+            result={
+                "status": "unavailable",
+                "credentials_required": ["TWENTY_API_KEY"],
+            },
+        )
+        db.add_all([payment, alert, waiting_configuration])
         db.commit()
         payment_id = payment.id
         alert_id = alert.id
+        waiting_configuration_id = waiting_configuration.id
 
     response = client.get("/api/ceo/brief", headers={"X-Role": "manager"})
     assert response.status_code == 200
@@ -68,6 +79,9 @@ def test_ceo_brief_separates_primary_facts_from_recommendations(client, monkeypa
     assert brief["automatic_critical_action"] is False
     assert failed_task["id"] in brief["facts"]["tasks"]["failed_ids"]
     assert protected_task["id"] in brief["facts"]["tasks"]["blocked_ids"]
+    assert protected_task["id"] in brief["facts"]["tasks"]["actionable_blocked_ids"]
+    assert waiting_configuration_id in brief["facts"]["tasks"]["waiting_configuration_ids"]
+    assert brief["facts"]["tasks"]["waiting_configuration"] >= 1
     assert approval_id in brief["facts"]["approvals"]["ids"]
     assert alert_id in brief["facts"]["critical_alerts"]["ids"]
     assert payment_id in brief["facts"]["finance"]["payment_ids"]
@@ -169,7 +183,13 @@ def test_telegram_ceo_brief_is_read_only_and_task_button_uses_tasks_api(monkeypa
 
 def test_weekly_ceo_brief_joins_business_facts_and_reuses_notification(client):
     from app.db import SessionLocal
-    from app.models import AgentRun, BusinessRecord, OperatingEntity, OwnerNotification
+    from app.models import (
+        AgentRun,
+        BusinessGoal,
+        BusinessRecord,
+        OperatingEntity,
+        OwnerNotification,
+    )
     from app.reports import format_ceo_brief
 
     suffix = uuid4().hex[:8]
@@ -184,6 +204,13 @@ def test_weekly_ceo_brief_joins_business_facts_and_reuses_notification(client):
                     score=90,
                     source="weekly-ceo-test",
                     data={"next_action": "owner_review"},
+                ),
+                BusinessRecord(
+                    record_type="lead",
+                    title=f"Weekly CEO owner review lead {suffix}",
+                    status="owner_review",
+                    score=90,
+                    source="weekly-ceo-test",
                 ),
                 BusinessRecord(
                     record_type="tender",
@@ -213,6 +240,16 @@ def test_weekly_ceo_brief_joins_business_facts_and_reuses_notification(client):
                     finished_at=current,
                     evidence=[{"type": "weekly_ceo_test"}],
                 ),
+                BusinessGoal(
+                    title=f"Weekly CEO handoff goal {suffix}",
+                    owner="lead_coordinator",
+                    metric="qualified_owner_handoffs",
+                    baseline=0,
+                    current=23,
+                    target=100,
+                    unit="leads/month",
+                    status="active",
+                ),
             ]
         )
         db.commit()
@@ -224,6 +261,9 @@ def test_weekly_ceo_brief_joins_business_facts_and_reuses_notification(client):
     assert brief["period"]["days"] == 7
     assert brief["facts"]["sales"]["new_leads_in_period"] >= 1
     assert brief["facts"]["sales"]["qualified"] >= 1
+    assert brief["facts"]["sales"]["owner_review"] >= 1
+    assert brief["facts"]["sales"]["owner_handoff_goal"]["current"] == 23
+    assert brief["facts"]["sales"]["owner_handoff_goal"]["target"] == 100
     assert brief["facts"]["sales"]["active_contracts"] >= 1
     assert float(brief["facts"]["sales"]["active_monthly_revenue"]) >= 125000
     assert brief["facts"]["tenders"]["active"] >= 1
@@ -236,6 +276,7 @@ def test_weekly_ceo_brief_joins_business_facts_and_reuses_notification(client):
     assert all(item["automatic_external_action"] is False for item in brief["execution_plan"])
     rendered = format_ceo_brief(brief)
     assert "ПЛАН НА 7 ДНЕЙ" in rendered
+    assert "передано владельцу" in rendered
     assert "внешние сообщения автоматически не выполнялись" in rendered
     assert len(rendered) < 4096
     assert client.get("/api/ceo/brief?period_days=32", headers={"X-Role": "manager"}).status_code == 422

@@ -20,7 +20,11 @@ def _session_factory():
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
-def test_hourly_report_accounts_for_every_agent_and_social_blockers():
+def test_hourly_report_accounts_for_every_agent_and_social_blockers(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "public_base_url", "http://localhost:8000")
+    monkeypatch.setattr(settings, "crm_public_url", "")
     session_factory = _session_factory()
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with session_factory() as db:
