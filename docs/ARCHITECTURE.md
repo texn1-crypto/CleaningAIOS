@@ -217,12 +217,15 @@ responsible agents, metrics, deadlines, dependencies, approvals and stop conditi
 Three failed checks move a candidate to explicit manual review instead of consuming
 the automated batch forever.
 
-`GET /api/ceo/brief` is a read-only primary-database snapshot with one freshness
-timestamp and explicit source endpoints/record IDs. Facts and deterministic
-recommendations are separate fields; facts are never attributed to an LLM. Telegram
-renders the same response. Its only write option creates a normal analytical CEO
-task through the shared Tasks API, and the payload explicitly forbids an automatic
-critical action.
+`GET /api/ceo/brief` is a read-only cross-domain primary-database snapshot with a
+bounded reporting period, per-source freshness and explicit source endpoints/record
+IDs. It joins sales, lead, contract, tender, marketing, finance, workflow, growth and
+per-agent facts into a deterministic seven-day KPI plan. Facts and recommendations
+remain separate and facts are never attributed to an LLM. Once per configured local
+week the scheduler queues one idempotent CEO task and sends the same brief through
+the protected owner-notification queue. The Telegram view remains read-only; its only
+write option creates a normal analytical CEO task through the shared Tasks API. No
+report path performs outreach, spending, submission or another critical action.
 
 Tasks can carry an exact internal assignee and due date. Telegram-created tasks are
 assigned to the already-authorized pseudonymous identity. The Control Center queries

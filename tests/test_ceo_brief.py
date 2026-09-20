@@ -1,5 +1,8 @@
 import asyncio
 from datetime import datetime, timezone
+from uuid import uuid4
+
+from sqlalchemy import func, select
 
 
 def test_ceo_brief_separates_primary_facts_from_recommendations(client, monkeypatch):
@@ -162,3 +165,167 @@ def test_telegram_ceo_brief_is_read_only_and_task_button_uses_tasks_api(monkeypa
     assert task_payload["agent_type"] == "ceo"
     assert task_payload["payload"]["automatic_critical_action"] is False
     assert "Критические действия не запускались" in update.effective_message.replies[-1][0]
+
+
+def test_weekly_ceo_brief_joins_business_facts_and_reuses_notification(client):
+    from app.db import SessionLocal
+    from app.models import AgentRun, BusinessRecord, OperatingEntity, OwnerNotification
+    from app.reports import format_ceo_brief
+
+    suffix = uuid4().hex[:8]
+    current = datetime.now(timezone.utc).replace(tzinfo=None)
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                BusinessRecord(
+                    record_type="lead",
+                    title=f"Weekly CEO lead {suffix}",
+                    status="qualified",
+                    score=90,
+                    source="weekly-ceo-test",
+                    data={"next_action": "owner_review"},
+                ),
+                BusinessRecord(
+                    record_type="tender",
+                    title=f"Weekly CEO tender {suffix}",
+                    status="qualified",
+                    source=f"weekly-ceo-test-{suffix}",
+                    external_id=f"weekly-ceo-tender-{suffix}",
+                ),
+                BusinessRecord(
+                    record_type="marketing_experiment",
+                    title=f"Weekly CEO marketing {suffix}",
+                    status="running",
+                    source="telegram",
+                    external_id=f"weekly-ceo-marketing-{suffix}",
+                    data={"spent": 1000},
+                ),
+                OperatingEntity(
+                    entity_type="contract",
+                    name=f"Weekly CEO contract {suffix}",
+                    status="active",
+                    data={"monthly_revenue": 125000},
+                ),
+                AgentRun(
+                    agent_type="sales",
+                    status="succeeded",
+                    started_at=current,
+                    finished_at=current,
+                    evidence=[{"type": "weekly_ceo_test"}],
+                ),
+            ]
+        )
+        db.commit()
+
+    response = client.get("/api/ceo/brief?period_days=7", headers={"X-Role": "manager"})
+    assert response.status_code == 200
+    brief = response.json()
+    assert brief["report_kind"] == "weekly_ceo_brief"
+    assert brief["period"]["days"] == 7
+    assert brief["facts"]["sales"]["new_leads_in_period"] >= 1
+    assert brief["facts"]["sales"]["qualified"] >= 1
+    assert brief["facts"]["sales"]["active_contracts"] >= 1
+    assert float(brief["facts"]["sales"]["active_monthly_revenue"]) >= 125000
+    assert brief["facts"]["tenders"]["active"] >= 1
+    assert brief["facts"]["marketing"]["running"] >= 1
+    assert brief["facts"]["agents"]["succeeded"] >= 1
+    assert brief["freshness"]["sources"]["business_records"]
+    assert brief["execution_plan"]
+    assert all(item["owner_agent"] for item in brief["execution_plan"])
+    assert all(item["deadline"] for item in brief["execution_plan"])
+    assert all(item["automatic_external_action"] is False for item in brief["execution_plan"])
+    rendered = format_ceo_brief(brief)
+    assert "ПЛАН НА 7 ДНЕЙ" in rendered
+    assert "внешние сообщения автоматически не выполнялись" in rendered
+    assert len(rendered) < 4096
+    assert client.get("/api/ceo/brief?period_days=32", headers={"X-Role": "manager"}).status_code == 422
+
+    notification_key = f"weekly-ceo-brief-test:{suffix}"
+    payload = {
+        "action": "weekly_business_brief",
+        "period_days": 7,
+        "report_at": current.isoformat(),
+        "scheduled_week_start": current.date().isoformat(),
+        "notify_owner": True,
+        "notification_idempotency_key": notification_key,
+        "automatic_external_action": False,
+    }
+    first_task = client.post(
+        "/api/tasks",
+        json={
+            "title": f"Weekly CEO brief first {suffix}",
+            "agent_type": "ceo",
+            "payload": payload,
+            "max_attempts": 1,
+        },
+    ).json()
+    second_task = client.post(
+        "/api/tasks",
+        json={
+            "title": f"Weekly CEO brief retry {suffix}",
+            "agent_type": "ceo",
+            "payload": payload,
+            "max_attempts": 1,
+        },
+    ).json()
+    first = client.post(f"/api/tasks/{first_task['id']}/run").json()
+    second = client.post(f"/api/tasks/{second_task['id']}/run").json()
+    assert first["status"] == "done"
+    assert second["status"] == "done"
+    assert first["result"]["owner_notification_id"] == second["result"]["owner_notification_id"]
+    assert first["result"]["automatic_critical_action"] is False
+    assert first["result"]["ai_generated_facts"] is False
+    assert len(first["result"]["execution_plan"]) <= 5
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(func.count())
+            .select_from(OwnerNotification)
+            .where(OwnerNotification.idempotency_key == notification_key)
+        ) == 1
+
+
+def test_scheduler_creates_one_weekly_ceo_brief_per_local_week(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app import scheduler
+    from app.db import Base
+    from app.models import Task
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    monkeypatch.setattr(scheduler.settings, "ceo_weekly_brief_timezone", "UTC")
+    monkeypatch.setattr(
+        scheduler.settings,
+        "ceo_weekly_brief_weekday",
+        datetime.now(timezone.utc).weekday(),
+    )
+    monkeypatch.setattr(scheduler.settings, "ceo_weekly_brief_hour", 0)
+    monkeypatch.setattr(scheduler.settings, "tender_sources", "")
+    monkeypatch.setattr(scheduler.settings, "perplexity_api_key", "")
+    monkeypatch.setattr(scheduler.settings, "evolution_research_queries", "")
+
+    scheduler.schedule_cycle()
+    scheduler.schedule_cycle()
+
+    with session_factory() as db:
+        tasks = db.scalars(
+            select(Task).where(Task.title.like("Weekly CEO brief · %"))
+        ).all()
+        assert len(tasks) == 1
+        task = tasks[0]
+        assert task.agent_type == "ceo"
+        assert task.payload["action"] == "weekly_business_brief"
+        assert task.payload["notify_owner"] is True
+        assert task.payload["period_days"] == 7
+        assert task.payload["automatic_external_action"] is False
+        assert task.payload["notification_idempotency_key"].startswith(
+            "weekly-ceo-brief:"
+        )

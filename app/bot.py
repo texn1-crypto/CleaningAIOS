@@ -356,42 +356,9 @@ async def social_dashboard(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 def format_ceo_brief(data: dict) -> str:
-    facts = data.get("facts") or {}
-    task_facts = facts.get("tasks") or {}
-    approval_facts = facts.get("approvals") or {}
-    alert_facts = facts.get("critical_alerts") or {}
-    finance = facts.get("finance") or {}
-    recommendations = data.get("recommendations") or []
-    lines = [
-        "🤖 AI CEO · Brief",
-        f"Актуально на: {data.get('generated_at')}",
-        "",
-        "ФАКТЫ ИЗ БД",
-        (
-            f"• Задачи: active {task_facts.get('active', 0)}, "
-            f"failed {task_facts.get('failed', 0)}, blocked {task_facts.get('blocked', 0)}"
-        ),
-        f"  source task IDs: {(task_facts.get('failed_ids') or []) + (task_facts.get('blocked_ids') or [])}",
-        f"• Ожидают owner approval: {approval_facts.get('pending', 0)} · IDs {approval_facts.get('ids') or []}",
-        (
-            f"• Неподтверждённые alerts: {alert_facts.get('unacknowledged', 0)} "
-            f"· dead-letter {alert_facts.get('dead_letter', 0)} · IDs {alert_facts.get('ids') or []}"
-        ),
-        (
-            f"• Просроченные платежи: {finance.get('overdue_payments', 0)} "
-            f"на {finance.get('overdue_amount', 0)} ₽ · IDs {finance.get('payment_ids') or []}"
-        ),
-        "",
-        "РЕКОМЕНДАЦИИ (НЕ ВЫПОЛНЕНЫ)",
-    ]
-    lines.extend(
-        f"• [{item.get('priority', 'normal')}] {item.get('text')} · source IDs {item.get('source_ids') or []}"
-        for item in recommendations
-    )
-    if not recommendations:
-        lines.append("• Срочных рекомендаций по текущему snapshot нет.")
-    lines.append("\nКритические действия автоматически не выполнялись.")
-    return "\n".join(lines)
+    from .reports import format_ceo_brief as render_ceo_brief
+
+    return render_ceo_brief(data)
 
 
 async def ceo_brief(update: Update, _: ContextTypes.DEFAULT_TYPE):

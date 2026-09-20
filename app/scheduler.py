@@ -393,6 +393,51 @@ def schedule_cycle() -> None:
                 actor="scheduler",
                 reason="daily_owner_pdf_pack",
             )
+        weekly_ceo_local_now = now.replace(tzinfo=timezone.utc).astimezone(
+            ZoneInfo(settings.ceo_weekly_brief_timezone)
+        )
+        weekly_ceo_week_start = weekly_ceo_local_now.date() - timedelta(
+            days=weekly_ceo_local_now.weekday()
+        )
+        weekly_ceo_release_at = datetime.combine(
+            weekly_ceo_week_start
+            + timedelta(days=max(0, min(settings.ceo_weekly_brief_weekday, 6))),
+            datetime.min.time(),
+            tzinfo=ZoneInfo(settings.ceo_weekly_brief_timezone),
+        ).replace(hour=max(0, min(settings.ceo_weekly_brief_hour, 23)))
+        weekly_ceo_title = f"Weekly CEO brief · {weekly_ceo_week_start.isoformat()}"
+        if (
+            weekly_ceo_local_now >= weekly_ceo_release_at
+            and not db.scalar(select(Task.id).where(Task.title == weekly_ceo_title))
+        ):
+            task = Task(
+                title=weekly_ceo_title,
+                agent_type="ceo",
+                status="queued",
+                priority="high",
+                run_after=now,
+                max_attempts=3,
+                payload={
+                    "action": "weekly_business_brief",
+                    "source": "scheduler",
+                    "notify_owner": True,
+                    "period_days": 7,
+                    "report_at": now.isoformat(),
+                    "scheduled_week_start": weekly_ceo_week_start.isoformat(),
+                    "notification_idempotency_key": (
+                        f"weekly-ceo-brief:{weekly_ceo_week_start.isoformat()}:telegram"
+                    ),
+                    "automatic_external_action": False,
+                },
+            )
+            db.add(task)
+            db.flush()
+            record_task_created(
+                db,
+                task,
+                actor="scheduler",
+                reason="weekly_cross_domain_ceo_brief",
+            )
         budget_advisor_local_now = now.replace(tzinfo=timezone.utc).astimezone(
             ZoneInfo(settings.marketing_budget_advisor_timezone)
         )

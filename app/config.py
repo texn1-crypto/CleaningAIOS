@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     telephony_daily_start_hour: int = 10
     telephony_daily_end_hour: int = 18
     ceo_review_interval_hours: int = 24
+    ceo_weekly_brief_timezone: str = "Europe/Moscow"
+    ceo_weekly_brief_weekday: int = 0
+    ceo_weekly_brief_hour: int = 9
     owner_activity_report_interval_minutes: int = 60
     daily_owner_pack_timezone: str = "Europe/Moscow"
     daily_owner_pack_hour: int = 18

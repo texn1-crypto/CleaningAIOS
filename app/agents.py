@@ -545,6 +545,63 @@ class CEOAgent:
                 db,
                 cycle_key=str(payload.get("cycle_key") or "unspecified"),
             )
+        if payload.get("action") == "weekly_business_brief":
+            from .notifications import queue_owner_notification
+            from .reports import build_ceo_brief, format_ceo_brief
+
+            report_at = (
+                datetime.fromisoformat(str(payload["report_at"]))
+                if payload.get("report_at")
+                else None
+            )
+            result = build_ceo_brief(
+                db,
+                generated_at=report_at,
+                period_days=int(payload.get("period_days") or 7),
+            )
+            if payload.get("notify_owner"):
+                notification = queue_owner_notification(
+                    db,
+                    idempotency_key=str(
+                        payload.get("notification_idempotency_key")
+                        or f"weekly-ceo-brief:{result['period']['start']}"
+                    ),
+                    channel="telegram",
+                    resource_type="weekly_ceo_brief",
+                    resource_id=str(
+                        payload.get("scheduled_week_start")
+                        or result["period"]["start"]
+                    ),
+                    subject="📊 AI CEO: план на неделю",
+                    body=format_ceo_brief(result),
+                    data={
+                        "report_kind": result["report_kind"],
+                        "generated_at": result["generated_at"],
+                        "period": result["period"],
+                        "priority_count": len(result["execution_plan"]),
+                        "automatic_external_action": False,
+                    },
+                    severity=(
+                        "high"
+                        if result["facts"]["tasks"]["failed"]
+                        or result["facts"]["tasks"]["blocked"]
+                        else "normal"
+                    ),
+                    correlation_id=str(
+                        payload.get("scheduled_week_start")
+                        or result["period"]["start"]
+                    )[:128],
+                )
+                result["owner_notification"] = notification.status
+                result["owner_notification_id"] = notification.id
+                result["evidence"].append(
+                    {
+                        "type": "owner_notification_queued",
+                        "notification_id": notification.id,
+                        "status": notification.status,
+                    }
+                )
+            return result
         if payload.get("action") == "agent_incident_report":
             return {
                 "outcome": "completed",
