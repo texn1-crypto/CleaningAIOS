@@ -9,6 +9,7 @@ RUN if [ "$DEBIAN_MIRROR" != "deb.debian.org" ]; then \
         sed -i "s#deb.debian.org#${DEBIAN_MIRROR}#g" /etc/apt/sources.list.d/debian.sources; \
     fi \
     && apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 upgrade -y \
     && apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 install -y --no-install-recommends fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 RUN addgroup --system cleaningai && adduser --system --ingroup cleaningai cleaningai && mkdir -p /data/documents && chown -R cleaningai:cleaningai /data
