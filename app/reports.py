@@ -21,7 +21,9 @@ from .models import (
     MediaAsset,
     OwnerNotification,
     Task,
+    TaskTransition,
 )
+from .money_opportunities import build_money_opportunities
 from .operations import goal_progress
 from .readiness import integration_status
 from .growth import growth_snapshot
@@ -216,28 +218,248 @@ def _agent_activity(db: Session, *, cutoff: datetime) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: str(row["agent_type"]))
 
 
-def build_ceo_brief(db: Session) -> dict[str, Any]:
-    """Build a read-only, source-linked brief without using an LLM as a fact source."""
-    generated_at = _utcnow()
-    active_tasks = db.scalars(
+def _latest_timestamp(db: Session, column: Any) -> str | None:
+    value = db.scalar(select(func.max(column)))
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _integration_summary() -> dict[str, str]:
+    summary: dict[str, str] = {}
+
+    def collect(prefix: str, value: object) -> None:
+        if not isinstance(value, dict):
+            return
+        status = value.get("status")
+        if isinstance(status, str):
+            summary[prefix] = status
+        for key, nested in value.items():
+            if key == "status":
+                continue
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if isinstance(nested, dict):
+                collect(path, nested)
+            elif not isinstance(status, str) and isinstance(nested, str):
+                summary[path] = nested
+
+    for integration, details in integration_status().items():
+        collect(str(integration), details)
+    return dict(sorted(summary.items()))
+
+
+def _weekly_ceo_plan(
+    *,
+    generated_at: datetime,
+    goals: list[BusinessGoal],
+    sales: dict[str, Any],
+    tenders: dict[str, Any],
+    growth: dict[str, Any],
+    failed_tasks: list[Task],
+    blocked_tasks: list[Task],
+    failed_task_count: int,
+    blocked_task_count: int,
+    credential_statuses: dict[str, str],
+    hot_lead_ids: list[int],
+) -> list[dict[str, Any]]:
+    deadline = (generated_at + timedelta(days=7)).date().isoformat()
+    priorities: list[dict[str, Any]] = []
+    lead_goal = next(
+        (row for row in goals if row.metric == "qualified_owner_handoffs"),
+        None,
+    )
+    if lead_goal is not None and lead_goal.current < lead_goal.target:
+        priorities.append(
+            {
+                "rank": 1,
+                "owner_agent": lead_goal.owner or "lead_coordinator",
+                "action": "increase_verified_owner_handoffs",
+                "outcome": "Передать владельцу новые проверенные коммерческие лиды.",
+                "metric": lead_goal.metric,
+                "baseline": lead_goal.current,
+                "target": min(lead_goal.target, lead_goal.current + 5),
+                "unit": lead_goal.unit,
+                "deadline": deadline,
+                "source_endpoint": "/api/goals",
+                "source_ids": [lead_goal.id],
+                "requires_owner_approval": False,
+                "automatic_external_action": False,
+            }
+        )
+    elif lead_goal is None:
+        priorities.append(
+            {
+                "rank": 1,
+                "owner_agent": "ceo",
+                "action": "configure_verified_owner_handoff_goal",
+                "outcome": "Зафиксировать месячную цель по проверенным передачам лидов.",
+                "metric": "qualified_owner_handoffs",
+                "baseline": 0,
+                "target": 20,
+                "unit": "leads/month",
+                "deadline": deadline,
+                "source_endpoint": "/api/goals",
+                "source_ids": [],
+                "requires_owner_approval": False,
+                "automatic_external_action": False,
+            }
+        )
+
+    overdue_next_actions = int(sales.get("overdue_next_actions") or 0)
+    if overdue_next_actions:
+        priorities.append(
+            {
+                "rank": len(priorities) + 1,
+                "owner_agent": "sales",
+                "action": "clear_overdue_lead_next_actions",
+                "outcome": "Разобрать просроченные следующие шаги по лидам без автоматической рассылки.",
+                "metric": "overdue_next_actions",
+                "baseline": overdue_next_actions,
+                "target": 0,
+                "unit": "leads",
+                "deadline": deadline,
+                "source_endpoint": "/api/records?record_type=lead",
+                "source_ids": hot_lead_ids,
+                "requires_owner_approval": False,
+                "automatic_external_action": False,
+            }
+        )
+
+    unhealthy_tasks = failed_tasks + blocked_tasks
+    unhealthy_task_count = failed_task_count + blocked_task_count
+    if unhealthy_task_count:
+        priorities.append(
+            {
+                "rank": len(priorities) + 1,
+                "owner_agent": "system_admin",
+                "action": "recover_failed_or_blocked_work",
+                "outcome": "Устранить подтверждённые причины сбоев и блокировок задач.",
+                "metric": "failed_and_blocked_tasks",
+                "baseline": unhealthy_task_count,
+                "target": 0,
+                "unit": "tasks",
+                "deadline": deadline,
+                "source_endpoint": "/api/tasks",
+                "source_ids": [row.id for row in unhealthy_tasks[:20]],
+                "requires_owner_approval": False,
+                "automatic_external_action": False,
+            }
+        )
+
+    if growth.get("status") == "behind_plan":
+        priorities.append(
+            {
+                "rank": len(priorities) + 1,
+                "owner_agent": "growth_officer",
+                "action": "recover_revenue_run_rate_pace",
+                "outcome": "Подготовить измеримый план прироста активной месячной выручки.",
+                "metric": "annual_revenue_run_rate_rub",
+                "baseline": growth.get("current_rub", 0),
+                "target": growth.get("expected_today_rub", 0),
+                "unit": "RUB/year",
+                "deadline": deadline,
+                "source_endpoint": "/api/goals",
+                "source_ids": [growth["goal_id"]] if growth.get("goal_id") else [],
+                "requires_owner_approval": False,
+                "automatic_external_action": False,
+            }
+        )
+
+    ready_tenders = int(tenders.get("ready_for_owner_review") or 0)
+    if ready_tenders:
+        priorities.append(
+            {
+                "rank": len(priorities) + 1,
+                "owner_agent": "tender",
+                "action": "prepare_tender_owner_reviews",
+                "outcome": "Подготовить доказательства и экономику тендеров, готовых к решению владельца.",
+                "metric": "tenders_ready_for_owner_review",
+                "baseline": ready_tenders,
+                "target": 0,
+                "unit": "tenders_pending_review",
+                "deadline": deadline,
+                "source_endpoint": "/api/money-opportunities",
+                "source_ids": [],
+                "requires_owner_approval": True,
+                "automatic_external_action": False,
+            }
+        )
+
+    missing_credentials = sorted(
+        key
+        for key, value in credential_statuses.items()
+        if value in {"credentials_required", "mailbox_configuration_required", "source_configuration_required"}
+    )
+    if missing_credentials and len(priorities) < 5:
+        priorities.append(
+            {
+                "rank": len(priorities) + 1,
+                "owner_agent": "system_admin",
+                "action": "prepare_external_integration_recovery",
+                "outcome": "Показать владельцу точный список недостающих авторизаций без передачи секретов агентам.",
+                "metric": "blocked_integrations",
+                "baseline": len(missing_credentials),
+                "target": 0,
+                "unit": "integrations",
+                "deadline": deadline,
+                "source_endpoint": "/api/integrations",
+                "source_ids": [],
+                "blocked_integrations": missing_credentials,
+                "requires_owner_approval": True,
+                "automatic_external_action": False,
+            }
+        )
+
+    if not priorities:
+        priorities.append(
+            {
+                "rank": 1,
+                "owner_agent": "lead_coordinator",
+                "action": "maintain_verified_lead_flow",
+                "outcome": "Сохранить недельный поток проверенных лидов и передач владельцу.",
+                "metric": "qualified_leads",
+                "baseline": int(sales.get("qualified") or 0),
+                "target": int(sales.get("qualified") or 0) + 5,
+                "unit": "leads",
+                "deadline": deadline,
+                "source_endpoint": "/api/records?record_type=lead",
+                "source_ids": hot_lead_ids,
+                "requires_owner_approval": False,
+                "automatic_external_action": False,
+            }
+        )
+    return priorities[:5]
+
+
+def build_ceo_brief(
+    db: Session,
+    *,
+    generated_at: datetime | None = None,
+    period_days: int = 7,
+) -> dict[str, Any]:
+    """Build a cross-domain, source-linked brief without using an LLM as a fact source."""
+    generated_at = generated_at or _utcnow()
+    if generated_at.tzinfo is not None:
+        generated_at = generated_at.astimezone(timezone.utc).replace(tzinfo=None)
+    period_days = max(1, min(int(period_days), 31))
+    period_start = generated_at - timedelta(days=period_days)
+    active_tasks = list(db.scalars(
         select(Task)
         .where(Task.status.in_(["open", "queued", "running"]))
         .order_by(Task.priority.desc(), Task.id.desc())
         .limit(20)
-    ).all()
-    failed_tasks = db.scalars(
+    ).all())
+    failed_tasks = list(db.scalars(
         select(Task).where(Task.status == "failed").order_by(Task.id.desc()).limit(20)
-    ).all()
-    blocked_tasks = db.scalars(
+    ).all())
+    blocked_tasks = list(db.scalars(
         select(Task).where(Task.status == "blocked").order_by(Task.id.desc()).limit(20)
-    ).all()
-    approvals = db.scalars(
+    ).all())
+    approvals = list(db.scalars(
         select(ApprovalRequest)
         .where(ApprovalRequest.status == "pending")
         .order_by(ApprovalRequest.id.desc())
         .limit(20)
-    ).all()
-    alerts = db.scalars(
+    ).all())
+    alerts = list(db.scalars(
         select(OwnerNotification)
         .where(
             OwnerNotification.severity.in_(["high", "critical"]),
@@ -245,38 +467,101 @@ def build_ceo_brief(db: Session) -> dict[str, Any]:
         )
         .order_by(OwnerNotification.id.desc())
         .limit(20)
-    ).all()
-    goals = db.scalars(
+    ).all())
+    goals = list(db.scalars(
         select(BusinessGoal)
         .where(BusinessGoal.status == "active")
         .order_by(BusinessGoal.id.desc())
         .limit(20)
-    ).all()
-    overdue_payments = db.scalars(
+    ).all())
+    overdue_payments = list(db.scalars(
         select(BusinessRecord)
         .where(
             BusinessRecord.record_type == "payment",
             BusinessRecord.status == "overdue",
         )
         .order_by(BusinessRecord.id.desc())
-        .limit(20)
-    ).all()
+    ).all())
+
+    active_task_count = _count(db, Task, Task.status.in_(["open", "queued", "running"]))
+    failed_task_count = _count(db, Task, Task.status == "failed")
+    blocked_task_count = _count(db, Task, Task.status == "blocked")
+    pending_approval_count = _count(db, ApprovalRequest, ApprovalRequest.status == "pending")
+    unacknowledged_alert_count = _count(
+        db,
+        OwnerNotification,
+        OwnerNotification.severity.in_(["high", "critical"]),
+        OwnerNotification.acknowledged_at.is_(None),
+    )
+
+    opportunities = build_money_opportunities(db)
+    sales_lane = opportunities.get("sales") or {}
+    sales_summary = dict(sales_lane.get("summary") or {})
+    tender_summary = dict((opportunities.get("tenders") or {}).get("summary") or {})
+    marketing_summary = dict((opportunities.get("marketing") or {}).get("summary") or {})
+    credential_statuses = {
+        **dict(opportunities.get("credentials") or {}),
+        **_integration_summary(),
+    }
+    hot_lead_ids = [
+        int(row["record_id"])
+        for row in (sales_lane.get("hot_leads") or [])
+        if isinstance(row, dict) and str(row.get("record_id") or "").isdigit()
+    ][:20]
+    growth = growth_snapshot(db, now=generated_at)
+    agent_activity = _agent_activity(db, cutoff=period_start)
+    runtime_agent_activity = [
+        row
+        for row in agent_activity
+        if row.get("agent_type") not in {"social_image", "social_publisher"}
+    ]
+    agent_runs = sum(int(row.get("runs") or 0) for row in runtime_agent_activity)
+    agent_succeeded = sum(
+        int(row.get("succeeded") or 0) for row in runtime_agent_activity
+    )
+    agent_failed = sum(int(row.get("failed") or 0) for row in runtime_agent_activity)
+    finished_runs = agent_succeeded + agent_failed
+    new_leads = _count(
+        db,
+        BusinessRecord,
+        BusinessRecord.record_type == "lead",
+        BusinessRecord.created_at >= period_start,
+    )
+    workflow_created = _count(db, Task, Task.created_at >= period_start)
+    workflow_done = int(
+        db.scalar(
+            select(func.count(func.distinct(TaskTransition.task_id))).where(
+                TaskTransition.to_status == "done",
+                TaskTransition.created_at >= period_start,
+            )
+        )
+        or 0
+    )
+    workflow_failed = int(
+        db.scalar(
+            select(func.count(func.distinct(TaskTransition.task_id))).where(
+                TaskTransition.to_status == "failed",
+                TaskTransition.created_at >= period_start,
+            )
+        )
+        or 0
+    )
 
     facts = {
         "tasks": {
-            "active": len(active_tasks),
-            "failed": len(failed_tasks),
-            "blocked": len(blocked_tasks),
+            "active": active_task_count,
+            "failed": failed_task_count,
+            "blocked": blocked_task_count,
             "active_ids": [row.id for row in active_tasks],
             "failed_ids": [row.id for row in failed_tasks],
             "blocked_ids": [row.id for row in blocked_tasks],
         },
         "approvals": {
-            "pending": len(approvals),
+            "pending": pending_approval_count,
             "ids": [row.id for row in approvals],
         },
         "critical_alerts": {
-            "unacknowledged": len(alerts),
+            "unacknowledged": unacknowledged_alert_count,
             "ids": [row.id for row in alerts],
             "dead_letter": _count(
                 db, OwnerNotification, OwnerNotification.status == "dead_letter"
@@ -288,6 +573,11 @@ def build_ceo_brief(db: Session) -> dict[str, Any]:
                 {
                     "id": row.id,
                     "title": row.title,
+                    "owner": row.owner,
+                    "metric": row.metric,
+                    "current": row.current,
+                    "target": row.target,
+                    "unit": row.unit,
                     "progress_percent": goal_progress(row)["progress_percent"],
                 }
                 for row in goals
@@ -295,12 +585,44 @@ def build_ceo_brief(db: Session) -> dict[str, Any]:
         },
         "finance": {
             "overdue_payments": len(overdue_payments),
-            "payment_ids": [row.id for row in overdue_payments],
+            "payment_ids": [row.id for row in overdue_payments[:20]],
             "overdue_amount": round(
                 sum(float((row.data or {}).get("amount", 0) or 0) for row in overdue_payments),
                 2,
             ),
         },
+        "sales": {
+            **sales_summary,
+            "new_leads_in_period": new_leads,
+            "hot_lead_ids": hot_lead_ids,
+        },
+        "tenders": tender_summary,
+        "marketing": marketing_summary,
+        "growth": growth,
+        "agents": {
+            "registered": len(runtime_agent_activity),
+            "observed_components": len(agent_activity),
+            "runs": agent_runs,
+            "succeeded": agent_succeeded,
+            "failed": agent_failed,
+            "success_rate_percent": (
+                round(agent_succeeded / finished_runs * 100, 2)
+                if finished_runs
+                else None
+            ),
+            "inactive_agents": [
+                str(row.get("agent_type"))
+                for row in runtime_agent_activity
+                if not row.get("did_work")
+            ],
+            "activity": agent_activity,
+        },
+        "workflow": {
+            "created_in_period": workflow_created,
+            "completed_in_period": workflow_done,
+            "failed_in_period": workflow_failed,
+        },
+        "integrations": credential_statuses,
     }
     recommendations: list[dict[str, Any]] = []
     if failed_tasks or blocked_tasks:
@@ -336,24 +658,148 @@ def build_ceo_brief(db: Session) -> dict[str, Any]:
                 "kind": "create_review_task",
                 "priority": "high",
                 "text": "Создать безопасную задачу Finance на разбор просроченной дебиторки.",
-                "source_ids": [row.id for row in overdue_payments],
+                "source_ids": [row.id for row in overdue_payments[:20]],
             }
         )
+    execution_plan = _weekly_ceo_plan(
+        generated_at=generated_at,
+        goals=goals,
+        sales=sales_summary,
+        tenders=tender_summary,
+        growth=growth,
+        failed_tasks=failed_tasks,
+        blocked_tasks=blocked_tasks,
+        failed_task_count=failed_task_count,
+        blocked_task_count=blocked_task_count,
+        credential_statuses=credential_statuses,
+        hot_lead_ids=hot_lead_ids,
+    )
+    source_freshness = {
+        "tasks": _latest_timestamp(db, Task.updated_at),
+        "agent_runs": _latest_timestamp(db, AgentRun.started_at),
+        "business_records": _latest_timestamp(db, BusinessRecord.updated_at),
+        "goals": _latest_timestamp(db, BusinessGoal.updated_at),
+        "owner_notifications": _latest_timestamp(db, OwnerNotification.created_at),
+    }
     return {
+        "report_kind": "weekly_ceo_brief",
         "generated_at": generated_at.isoformat(),
-        "freshness": {"as_of": generated_at.isoformat(), "source": "primary_database"},
+        "period": {
+            "days": period_days,
+            "start": period_start.isoformat(),
+            "end": generated_at.isoformat(),
+        },
+        "freshness": {
+            "as_of": generated_at.isoformat(),
+            "source": "primary_database",
+            "sources": source_freshness,
+        },
         "facts": facts,
         "recommendations": recommendations,
+        "execution_plan": execution_plan,
         "sources": [
             {"resource": "tasks", "endpoint": "/api/tasks"},
+            {"resource": "agent_runs", "endpoint": "/api/agent-runs"},
             {"resource": "approvals", "endpoint": "/api/approvals"},
             {"resource": "alerts", "endpoint": "/api/owner-notifications"},
             {"resource": "goals", "endpoint": "/api/goals"},
             {"resource": "payments", "endpoint": "/api/finance/payment-calendar"},
+            {"resource": "sales_marketing_tenders", "endpoint": "/api/money-opportunities"},
+        ],
+        "evidence": [
+            {
+                "type": "cross_domain_primary_database_snapshot",
+                "period_start": period_start.isoformat(),
+                "period_end": generated_at.isoformat(),
+                "source_record_ids": {
+                    "tasks": [row.id for row in active_tasks + failed_tasks + blocked_tasks],
+                    "approvals": [row.id for row in approvals],
+                    "alerts": [row.id for row in alerts],
+                    "goals": [row.id for row in goals],
+                    "payments": [row.id for row in overdue_payments[:20]],
+                    "hot_leads": hot_lead_ids,
+                },
+            }
         ],
         "ai_generated_facts": False,
         "automatic_critical_action": False,
     }
+
+
+def format_ceo_brief(data: dict[str, Any]) -> str:
+    """Render the source-linked CEO brief within Telegram's message budget."""
+    facts = data.get("facts") or {}
+    task_facts = facts.get("tasks") or {}
+    approval_facts = facts.get("approvals") or {}
+    alert_facts = facts.get("critical_alerts") or {}
+    finance = facts.get("finance") or {}
+    sales = facts.get("sales") or {}
+    agents = facts.get("agents") or {}
+    workflow = facts.get("workflow") or {}
+    tenders = facts.get("tenders") or {}
+    growth = facts.get("growth") or {}
+    recommendations = data.get("recommendations") or []
+    execution_plan = data.get("execution_plan") or []
+    success_rate = agents.get("success_rate_percent")
+    success_rate_text = f"{success_rate}%" if success_rate is not None else "нет завершённых запусков"
+    lines = [
+        "🤖 AI CEO · Недельный brief",
+        f"Актуально на: {data.get('generated_at')}",
+        "",
+        "ФАКТЫ ИЗ БД",
+        (
+            f"• Лиды: всего {sales.get('leads', 0)}, новых за период {sales.get('new_leads_in_period', 0)}, "
+            f"qualified {sales.get('qualified', 0)}, won {sales.get('won', 0)}"
+        ),
+        (
+            f"• Контракты: active {sales.get('active_contracts', 0)}, "
+            f"месячная выручка {sales.get('active_monthly_revenue', '0.00')} ₽"
+        ),
+        (
+            f"• Агенты: {agents.get('succeeded', 0)}/{agents.get('runs', 0)} успешно, "
+            f"ошибок {agents.get('failed', 0)}, success rate {success_rate_text}"
+        ),
+        (
+            f"• Workflow: создано {workflow.get('created_in_period', 0)}, "
+            f"завершено {workflow.get('completed_in_period', 0)}, failed {workflow.get('failed_in_period', 0)}"
+        ),
+        (
+            f"• Задачи сейчас: active {task_facts.get('active', 0)}, "
+            f"failed {task_facts.get('failed', 0)}, blocked {task_facts.get('blocked', 0)}"
+        ),
+        f"  source task IDs: {(task_facts.get('failed_ids') or []) + (task_facts.get('blocked_ids') or [])}",
+        f"• Тендеры: active {tenders.get('active', 0)}, owner review {tenders.get('ready_for_owner_review', 0)}",
+        f"• Рост: {growth.get('status', 'goal_not_initialized')} · progress {growth.get('progress_percent', 0)}%",
+        f"• Ожидают owner approval: {approval_facts.get('pending', 0)} · IDs {approval_facts.get('ids') or []}",
+        (
+            f"• Неподтверждённые alerts: {alert_facts.get('unacknowledged', 0)} "
+            f"· dead-letter {alert_facts.get('dead_letter', 0)} · IDs {alert_facts.get('ids') or []}"
+        ),
+        (
+            f"• Просроченные платежи: {finance.get('overdue_payments', 0)} "
+            f"на {finance.get('overdue_amount', 0)} ₽ · IDs {finance.get('payment_ids') or []}"
+        ),
+        "",
+        "ПЛАН НА 7 ДНЕЙ",
+    ]
+    for item in execution_plan:
+        lines.append(
+            f"• #{item.get('rank')} {item.get('owner_agent')}: {item.get('outcome')} "
+            f"KPI {item.get('baseline')} → {item.get('target')} {item.get('unit', '')} "
+            f"до {item.get('deadline')}"
+        )
+    if not execution_plan:
+        lines.append("• План не сформирован: требуется проверка источников.")
+    lines.append("\nРЕКОМЕНДАЦИИ (НЕ ВЫПОЛНЕНЫ)")
+    lines.extend(
+        f"• [{item.get('priority', 'normal')}] {item.get('text')} · source IDs {item.get('source_ids') or []}"
+        for item in recommendations
+    )
+    if not recommendations:
+        lines.append("• Срочных рекомендаций по текущему snapshot нет.")
+    lines.append("\nКритические действия и внешние сообщения автоматически не выполнялись.")
+    rendered = "\n".join(lines)
+    return rendered if len(rendered) <= 3900 else rendered[:3899] + "…"
 
 
 def build_activity_report(

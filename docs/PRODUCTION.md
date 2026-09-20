@@ -186,6 +186,13 @@ Admin. These recurring tasks only analyse data and prepare recommendations.
 Publication, outreach, spending and contractual actions still require the existing
 owner approvals. See `docs/AI_AGENT_STRATEGY.md`.
 
+`CEO_WEEKLY_BRIEF_TIMEZONE=Europe/Moscow`, `CEO_WEEKLY_BRIEF_WEEKDAY=0` and
+`CEO_WEEKLY_BRIEF_HOUR=9` schedule one Monday owner brief per local week. The task
+reads primary PostgreSQL facts for the preceding seven days, records source
+freshness, creates a bounded KPI plan and queues one idempotent Telegram
+notification. Re-running the same weekly task reuses the notification key. The brief
+does not send prospect messages or execute financial, contractual or tender actions.
+
 Telegram's cloud Bot API cannot download files larger than 20 MB. For larger
 commercial-proposal attachments, operate the official local Bot API server
 separately, provide `api_id` and `api_hash` only to that server, expose it on the

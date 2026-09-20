@@ -1249,9 +1249,13 @@ def ceo_review(db: Session = Depends(get_db), actor: Principal = Depends(princip
 
 
 @router.get("/ceo/brief")
-def ceo_brief(db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+def ceo_brief(
+    period_days: int = Query(default=7, ge=1, le=31),
+    db: Session = Depends(get_db),
+    actor: Principal = Depends(principal),
+):
     require_role(actor, "manager")
-    return build_ceo_brief(db)
+    return build_ceo_brief(db, period_days=period_days)
 
 
 @router.post("/structured-decisions", status_code=201)
