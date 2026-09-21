@@ -22,6 +22,19 @@ The main PostgreSQL workflow, RBAC, approval, audit, consent, suppression, and
 idempotency controls remain authoritative. Advice that should become work must be
 submitted as a normal CleaningAIOS task and follows those controls.
 
+## Local workstation mode
+
+A workstation that already runs the loopback-only OpenJarvis service may set
+`BOT_OPENJARVIS_BASE_URL=http://host.docker.internal:8011`. The Telegram bot then
+reuses that local service instead of requiring a second model runtime. Start only
+the bot with Compose `--no-deps` after the normal web service is healthy. Leaving
+the variable empty preserves the production default, `http://openjarvis:8011`,
+and the isolated container topology described above.
+
+The client still accepts only the fixed local host allowlist and port 8011,
+redacts common secret patterns, bounds the request and response, and gives Jarvis
+no CleaningAIOS tools or execution authority.
+
 ## Owner usage
 
 In the private authorized Telegram chat, send:
