@@ -80,3 +80,14 @@ def test_openjarvis_is_bounded_for_the_production_vm() -> None:
     assert 'OLLAMA_NUM_PARALLEL: "1"' in compose
     assert 'JARVIS_NUM_CTX: "4096"' in compose
     assert '"max_tokens": 512' in client
+
+
+def test_bot_openjarvis_route_preserves_isolated_default_and_allows_local_override() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text()
+    example = (ROOT / ".env.example").read_text()
+
+    assert (
+        "OPENJARVIS_BASE_URL: "
+        "${BOT_OPENJARVIS_BASE_URL:-http://openjarvis:8011}"
+    ) in compose
+    assert "BOT_OPENJARVIS_BASE_URL=" in example

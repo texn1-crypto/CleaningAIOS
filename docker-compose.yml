@@ -106,7 +106,7 @@ services:
       RELEASE_SHA: ${RELEASE_SHA:-development}
       BUILD_TIME: ${BUILD_TIME:-unknown}
       OPENJARVIS_ENABLED: "true"
-      OPENJARVIS_BASE_URL: http://openjarvis:8011
+      OPENJARVIS_BASE_URL: ${BOT_OPENJARVIS_BASE_URL:-http://openjarvis:8011}
       OPENJARVIS_API_KEY: ${OPENJARVIS_API_KEY:-}
       OPENJARVIS_MODEL: qwen3:0.6b
     # Some cloud routes intermittently black-hole Telegram's DNS-selected IP.
