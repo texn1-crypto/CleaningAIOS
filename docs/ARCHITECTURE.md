@@ -132,6 +132,9 @@ ledger, and published as a domain event. Task approval automatically returns the
 blocked task to the queue through an idempotent transition key, so concurrent or
 duplicate decisions cannot resume the workflow twice. “Request changes” records a
 terminal review outcome without resuming execution.
+The scheduler also persists due approval expiry through that same append-only
+decision, event and audit path. Expiry never resumes the protected task, and repeated
+scheduler cycles cannot create a second terminal decision.
 
 The persisted global external-actions stop, optional per-tender stop and exact
 per-capability flag are evaluated by one deterministic gate, in that order, before
@@ -238,6 +241,11 @@ as a stalled worker queue.
 Likewise, the CEO brief separates reconciled historical failures from actionable
 failures and excludes the reconciled set from recovery priorities while retaining
 their task IDs as evidence.
+It also separates current owner alerts from superseded snapshots, resolved task
+alerts and historical delivery failures. Pending approval facts exclude rows whose
+TTL has elapsed even before the scheduler persists their terminal expiry. System
+Admin sends an owner alert only for a new, changed or resolved incident state;
+unchanged audit cycles remain persisted without producing another Telegram alert.
 The sales facts also expose owner-review leads and the measured monthly handoff goal.
 
 Recurring external-integration work has configuration backpressure. Twenty projection

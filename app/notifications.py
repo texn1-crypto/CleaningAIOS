@@ -85,6 +85,33 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def notification_failure_is_active(
+    db: Session,
+    row: OwnerNotification,
+    *,
+    now: datetime,
+    latest_sent_at: datetime | None,
+) -> bool:
+    """Return whether a delivery failure still needs operator attention."""
+    data = row.data or {}
+    approval_id = data.get("approval_id")
+    if approval_id:
+        try:
+            approval_key = int(approval_id)
+        except (TypeError, ValueError):
+            return True
+        approval = db.get(ApprovalRequest, approval_key)
+        return bool(
+            approval
+            and approval.status == "pending"
+            and (approval.expires_at is None or approval.expires_at > now)
+        )
+    if row.status != "dead_letter" or latest_sent_at is None:
+        return True
+    failed_at = row.dead_lettered_at or row.created_at
+    return bool(latest_sent_at <= failed_at)
+
+
 def _mailbox_smtp(mailbox: SenderMailbox | None) -> tuple[str, int, str, str, str] | None:
     if mailbox is None or not mailbox.active:
         return None

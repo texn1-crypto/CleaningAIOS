@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -65,7 +66,7 @@ def _decision_result(
     execution: str = "not_executed",
     task_status: str | None = None,
     idempotent_replay: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     return {
         "id": row.id,
         "status": row.status,
@@ -78,9 +79,14 @@ def _decision_result(
     }
 
 
-def _expire_pending(db: Session, row: ApprovalRequest) -> None:
+def _expire_pending(
+    db: Session,
+    row: ApprovalRequest,
+    *,
+    decided_at: datetime | None = None,
+) -> None:
     version = row.decision_version
-    decided_at = now_utc()
+    decided_at = decided_at or now_utc()
     claimed = db.execute(
         update(ApprovalRequest)
         .where(
@@ -128,6 +134,34 @@ def _expire_pending(db: Session, row: ApprovalRequest) -> None:
         {"approval_id": row.id, "request_version": version},
     )
     db.flush()
+
+
+def expire_due_approvals(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    limit: int = 500,
+) -> list[int]:
+    """Persist expiry for due approvals without executing their protected action."""
+    current = now or now_utc()
+    rows = list(
+        db.scalars(
+            select(ApprovalRequest)
+            .where(
+                ApprovalRequest.status == "pending",
+                ApprovalRequest.expires_at.is_not(None),
+                ApprovalRequest.expires_at <= current,
+            )
+            .order_by(ApprovalRequest.id)
+            .limit(max(1, min(limit, 5000)))
+            .with_for_update(skip_locked=True)
+        ).all()
+    )
+    expired_ids: list[int] = []
+    for row in rows:
+        _expire_pending(db, row, decided_at=current)
+        expired_ids.append(row.id)
+    return expired_ids
 
 
 def _apply_resource_transition(
@@ -239,7 +273,7 @@ def decide_approval(
     channel: str = "api",
     expected_version: int | None = None,
     idempotent: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     """Atomically persist one decision and resume its workflow at most once."""
 
     if action not in ALLOWED_DECISIONS:

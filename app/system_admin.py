@@ -22,7 +22,8 @@ from .models import (
     Task,
     TaskTransition,
 )
-from .notifications import queue_owner_notification
+from .notifications import notification_failure_is_active, queue_owner_notification
+from .task_state import task_failure_is_reconciled, task_waits_for_configuration
 
 
 COMMAND_CATALOG = [
@@ -54,7 +55,7 @@ def now_utc() -> datetime:
 
 
 def _safe_text(value: Any, limit: int = 1000) -> str:
-    return redact_sensitive_text(str(value or "")).strip()[:limit]
+    return str(redact_sensitive_text(str(value or ""))).strip()[:limit]
 
 
 def _fingerprint(kind: str, resource_type: str, resource_id: str) -> str:
@@ -93,30 +94,24 @@ def _is_owner_approval_wait(task: Task, transition: TaskTransition | None) -> bo
     )
 
 
-def _notification_failure_is_active(
-    db: Session,
-    row: OwnerNotification,
-    *,
-    now: datetime,
-    latest_sent_at: datetime | None,
-) -> bool:
-    data = row.data or {}
-    approval_id = data.get("approval_id")
-    if approval_id:
-        try:
-            approval_key = int(approval_id)
-        except (TypeError, ValueError):
-            return True
-        approval = db.get(ApprovalRequest, approval_key)
-        return bool(
-            approval
-            and approval.status == "pending"
-            and (approval.expires_at is None or approval.expires_at > now)
-        )
-    if row.status != "dead_letter" or latest_sent_at is None:
-        return True
-    failed_at = row.dead_lettered_at or row.created_at
-    return latest_sent_at <= failed_at
+def _agent_failure_is_reconciled(db: Session, state: AgentState) -> bool:
+    latest_run = db.scalar(
+        select(AgentRun)
+        .where(AgentRun.agent_type == state.agent_type)
+        .order_by(AgentRun.id.desc())
+        .limit(1)
+    )
+    if latest_run is None or latest_run.status != "failed" or latest_run.task_id is None:
+        return False
+    run_finished_at = latest_run.finished_at or latest_run.started_at
+    if (
+        state.last_heartbeat_at is not None
+        and run_finished_at is not None
+        and abs((run_finished_at - state.last_heartbeat_at).total_seconds()) > 1
+    ):
+        return False
+    task = db.get(Task, latest_run.task_id)
+    return bool(task and task_failure_is_reconciled(task))
 
 
 def _notification_credentials_required(
@@ -172,6 +167,8 @@ def collect_incidents(
         )
     ).all()
     for task in tasks:
+        if task.status == "failed" and task_failure_is_reconciled(task):
+            continue
         transition = _latest_transition(db, task.id)
         if task.status == "blocked" and _is_owner_approval_wait(task, transition):
             continue
@@ -189,7 +186,8 @@ def collect_incidents(
                 ),
                 severity="critical" if stale or task.status == "failed" else "high",
                 credentials_required=bool(
-                    result.get("credentials_required")
+                    task_waits_for_configuration(task)
+                    or result.get("credentials_required")
                     or result.get("status") in {"credentials_required", "configuration_required"}
                 ),
                 data={"task_id": task.id, "agent_type": task.agent_type, "status": task.status},
@@ -285,7 +283,7 @@ def collect_incidents(
     channel_groups: dict[str, dict[str, Any]] = {}
     for row in failed_notifications:
         channel_key = str(row.channel or "unknown")
-        if not _notification_failure_is_active(
+        if not notification_failure_is_active(
             db,
             row,
             now=now,
@@ -326,6 +324,8 @@ def collect_incidents(
     ).all()
     for state in agent_states:
         if state.agent_type == "system_admin":
+            continue
+        if _agent_failure_is_reconciled(db, state):
             continue
         incidents.append(
             _incident(
@@ -692,7 +692,12 @@ def run_system_admin_audit(
             {"type": "request_trace", "requests_checked": len(recent_requests)},
         ],
     }
-    if notify_owner and (incidents or resolved):
+    material_update = bool(
+        report["summary"]["new"]
+        or report["summary"]["changed"]
+        or report["summary"]["resolved"]
+    )
+    if notify_owner and material_update:
         notification = queue_owner_notification(
             db,
             idempotency_key=(
@@ -714,6 +719,8 @@ def run_system_admin_audit(
         )
         report["owner_notification"] = notification.status
         report["owner_notification_id"] = notification.id
+    elif notify_owner and incidents:
+        report["owner_notification"] = "not_queued_no_material_change"
     db.add(
         AuditLog(
             actor="system_admin",

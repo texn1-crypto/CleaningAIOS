@@ -290,6 +290,112 @@ def test_task_configuration_wait_supports_legacy_payload_without_false_positive(
     assert task_waits_for_configuration(operational_wait) is False
 
 
+def test_ceo_brief_separates_current_alerts_and_approval_expiry(client):
+    from app.db import SessionLocal
+    from app.models import ApprovalRequest, OwnerNotification, Task
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with SessionLocal() as db:
+        configuration_wait = Task(
+            title="Alert configuration wait",
+            agent_type="sales",
+            status="blocked",
+            result={"credentials_required": ["TWENTY_API_KEY"]},
+        )
+        reconciled_failure = Task(
+            title="Alert reconciled failure",
+            agent_type="lead_coordinator",
+            status="failed",
+            result={
+                "resolution_status": "reconciled",
+                "resolution_kind": "verification_candidate_retry_accounted",
+            },
+        )
+        db.add_all([configuration_wait, reconciled_failure])
+        db.flush()
+        expired = ApprovalRequest(
+            action_kind="financial",
+            status="pending",
+            expires_at=now - timedelta(minutes=1),
+        )
+        current = ApprovalRequest(
+            action_kind="financial",
+            status="pending",
+            expires_at=now + timedelta(hours=1),
+        )
+        db.add_all([expired, current])
+        db.flush()
+        old_snapshot = OwnerNotification(
+            idempotency_key=f"old-system-admin-{uuid4().hex}",
+            channel="telegram",
+            resource_type="system_admin_report",
+            resource_id="old",
+            severity="high",
+            status="sent",
+            sent_at=now - timedelta(minutes=5),
+            created_at=now - timedelta(minutes=5),
+        )
+        current_snapshot = OwnerNotification(
+            idempotency_key=f"current-system-admin-{uuid4().hex}",
+            channel="telegram",
+            resource_type="system_admin_report",
+            resource_id="current",
+            severity="high",
+            status="sent",
+            sent_at=now,
+            created_at=now,
+        )
+        configuration_alert = OwnerNotification(
+            idempotency_key=f"configuration-alert-{uuid4().hex}",
+            channel="telegram",
+            resource_type="task",
+            resource_id=str(configuration_wait.id),
+            severity="critical",
+            status="sent",
+            sent_at=now,
+            data={"event_type": "agent.incident_reported"},
+        )
+        reconciled_alert = OwnerNotification(
+            idempotency_key=f"reconciled-alert-{uuid4().hex}",
+            channel="telegram",
+            resource_type="task",
+            resource_id=str(reconciled_failure.id),
+            severity="critical",
+            status="sent",
+            sent_at=now,
+            data={"event_type": "task.failed"},
+        )
+        db.add_all(
+            [
+                old_snapshot,
+                current_snapshot,
+                configuration_alert,
+                reconciled_alert,
+            ]
+        )
+        db.commit()
+        current_approval_id = current.id
+        expired_approval_id = expired.id
+        old_snapshot_id = old_snapshot.id
+        current_snapshot_id = current_snapshot.id
+        configuration_alert_id = configuration_alert.id
+        reconciled_alert_id = reconciled_alert.id
+
+    brief = client.get("/api/ceo/brief", headers={"X-Role": "manager"}).json()
+    approvals = brief["facts"]["approvals"]
+    alerts = brief["facts"]["critical_alerts"]
+    assert current_approval_id in approvals["ids"]
+    assert expired_approval_id not in approvals["ids"]
+    assert expired_approval_id in approvals["expired_pending_ids"]
+    assert approvals["pending_total"] == approvals["pending"] + approvals["expired_pending"]
+    assert current_snapshot_id in alerts["ids"]
+    assert old_snapshot_id not in alerts["ids"]
+    assert configuration_alert_id not in alerts["ids"]
+    assert reconciled_alert_id not in alerts["ids"]
+    assert alerts["historical_or_superseded"] >= 3
+    assert alerts["unacknowledged"] >= alerts["actionable"]
+
+
 def test_weekly_ceo_brief_joins_business_facts_and_reuses_notification(client):
     from app.db import SessionLocal
     from app.models import (
@@ -441,7 +547,7 @@ def test_scheduler_creates_one_weekly_ceo_brief_per_local_week(monkeypatch):
 
     from app import scheduler
     from app.db import Base
-    from app.models import Task
+    from app.models import ApprovalRequest, Task
 
     engine = create_engine(
         "sqlite://",
@@ -462,10 +568,21 @@ def test_scheduler_creates_one_weekly_ceo_brief_per_local_week(monkeypatch):
     monkeypatch.setattr(scheduler.settings, "perplexity_api_key", "")
     monkeypatch.setattr(scheduler.settings, "evolution_research_queries", "")
 
+    with session_factory() as db:
+        expired = ApprovalRequest(
+            action_kind="financial",
+            status="pending",
+            expires_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1),
+        )
+        db.add(expired)
+        db.commit()
+        expired_id = expired.id
+
     scheduler.schedule_cycle()
     scheduler.schedule_cycle()
 
     with session_factory() as db:
+        assert db.get(ApprovalRequest, expired_id).status == "expired"
         tasks = db.scalars(
             select(Task).where(Task.title.like("Weekly CEO brief · %"))
         ).all()
