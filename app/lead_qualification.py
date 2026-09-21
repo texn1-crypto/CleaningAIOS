@@ -51,6 +51,46 @@ def qualification_candidate_count(db: Session) -> int:
     )
 
 
+def _qualification_input_fingerprint(data: dict[str, Any]) -> str:
+    relevant = {
+        key: data.get(key)
+        for key in (
+            "area_m2",
+            "budget",
+            "buyer_role",
+            "city",
+            "decision_maker_role",
+            "estimated_monthly_value",
+            "expected_margin",
+            "facility_type",
+            "frequency",
+            "last_verified_at",
+            "need_by",
+            "object_area",
+            "organization_type",
+            "procurement_route",
+            "procurement_timing",
+            "public_emails",
+            "public_need_evidence",
+            "public_phones",
+            "region",
+            "service_scope",
+            "source_urls",
+            "target_price",
+            "verification_reasons",
+        )
+    }
+    return hashlib.sha256(
+        json.dumps(
+            relevant,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode()
+    ).hexdigest()
+
+
 def qualification_backlog(db: Session) -> dict[str, Any]:
     """Return a stable key for candidates not yet processed by qualification."""
 
@@ -62,17 +102,24 @@ def qualification_backlog(db: Session) -> dict[str, Any]:
         )
         .order_by(BusinessRecord.id)
     ).all()
-    lead_ids = [
-        row.id
+    lead_inputs = [
+        {
+            "lead_id": row.id,
+            "input_fingerprint": _qualification_input_fingerprint(row.data or {}),
+        }
         for row in rows
         if row.status == "researched"
         or not str((row.data or {}).get("qualification_fingerprint") or "")
     ]
     fingerprint = hashlib.sha256(
-        ",".join(str(lead_id) for lead_id in lead_ids).encode()
+        json.dumps(
+            lead_inputs,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
     ).hexdigest()
     return {
-        "count": len(lead_ids),
+        "count": len(lead_inputs),
         "fingerprint": fingerprint,
     }
 
@@ -132,6 +179,18 @@ def _fresh_verification(data: dict[str, Any], *, current: datetime) -> bool:
 
 def _truthy_any(data: dict[str, Any], keys: tuple[str, ...]) -> bool:
     return any(bool(data.get(key)) for key in keys)
+
+
+def _organization_verified(lead: BusinessRecord, data: dict[str, Any]) -> bool:
+    source_urls = _string_list(data.get("source_urls"))
+    if bool(data.get("verification_reasons")) and bool(source_urls):
+        return True
+    return bool(
+        lead.source == LEGACY_PUBLIC_RESEARCH_SOURCE
+        and data.get("contact_scope") == "organization"
+        and data.get("last_verified_at")
+        and source_urls
+    )
 
 
 def _organization_type(data: dict[str, Any]) -> str:
@@ -196,7 +255,7 @@ def _qualification_snapshot(
         "shopping_center",
         "warehouse",
     }
-    organization_verified = bool(data.get("verification_reasons")) and bool(source_urls)
+    organization_verified = _organization_verified(lead, data)
     fresh = _fresh_verification(data, current=current)
     organization_channel = bool(emails or phones)
     approved_channel = _approved_contact_path(db, lead_id=lead.id, emails=emails)

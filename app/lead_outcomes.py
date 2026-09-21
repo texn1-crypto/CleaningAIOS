@@ -16,6 +16,7 @@ from .lead_qualification import (
     qualification_backlog,
     qualification_candidate_count,
 )
+from .lead_research import schedule_public_lead_research
 from .lead_reports import LEAD_REPORT_RECORD_TYPE, build_instant_lead_report
 from .management_companies import normalize_emails, normalize_phones
 from .models import AuditLog, BusinessGoal, BusinessRecord, OwnerNotification, Task
@@ -768,6 +769,11 @@ def run_ceo_lead_outcome_cycle(
                 actor="ceo",
                 reason="owner_review_qualification_due",
             )
+    research_work = schedule_public_lead_research(
+        db,
+        current=current,
+        cycle_key=cycle_key,
+    )
     scheduled = (
         _schedule_verification_tasks(db, current=current, cycle_key=cycle_key)
         if goal["status"] != "target_met"
@@ -828,6 +834,25 @@ def run_ceo_lead_outcome_cycle(
     priorities = [
         {
             "priority": 1,
+            "accountable_agent": "lead_scout",
+            "action": (
+                "Найти по конкретным организациям публичные доказательства спроса, "
+                "объёма, сроков и закупочного маршрута."
+            ),
+            "metric": (
+                f"до {research_work['batch_limit']} исследований за цикл; "
+                f"создано задач: {len(research_work['tasks_created'])}"
+            ),
+            "deadline": deadline,
+            "dependencies": ["Perplexity", "CRM lead evidence"],
+            "approval_required": False,
+            "stop_condition": (
+                "по лиду сохранены цитируемые факты или зафиксировано отсутствие "
+                "публичного сигнала"
+            ),
+        },
+        {
+            "priority": 2,
             "accountable_agent": "lead_coordinator",
             "action": "Проверить публичные сайты уже собранных управляющих компаний через Crawl4AI и создать карточки лидов в CRM.",
             "metric": (
@@ -840,7 +865,7 @@ def run_ceo_lead_outcome_cycle(
             "stop_condition": "цель месяца достигнута или проверяемые кандидаты исчерпаны",
         },
         {
-            "priority": 2,
+            "priority": 3,
             "accountable_agent": "sales",
             "action": "Ранжировать owner_review-лиды, сохранить пробелы и следующий исследовательский шаг без контакта с потенциальными заказчиками.",
             "metric": (
@@ -853,7 +878,7 @@ def run_ceo_lead_outcome_cycle(
             "stop_condition": "у каждой карточки есть доказательный разбор и следующий шаг",
         },
         {
-            "priority": 3,
+            "priority": 4,
             "accountable_agent": "ceo",
             "action": "Считать результатом только лиды, чей отчёт фактически доставлен владельцу.",
             "metric": f"{goal['current']} из {goal['target']} передач за текущий месяц",
@@ -863,7 +888,7 @@ def run_ceo_lead_outcome_cycle(
             "stop_condition": "метрика подтверждена доставленными уведомлениями",
         },
         {
-            "priority": 4,
+            "priority": 5,
             "accountable_agent": "system_admin",
             "action": "Восстановить внешний канал поиска, если последняя проверка провайдера недоступна.",
             "metric": "последний запуск каждого lead scout завершён с доступным провайдером",
@@ -871,16 +896,6 @@ def run_ceo_lead_outcome_cycle(
             "dependencies": ["Perplexity/API configuration"],
             "approval_required": provider["status"] == "unavailable",
             "stop_condition": "контрольный поиск возвращает валидные публичные результаты",
-        },
-        {
-            "priority": 5,
-            "accountable_agent": "sales",
-            "action": "Держать новые карточки в owner_review; не отправлять сообщения без подтверждённого согласия и отдельного допуска.",
-            "metric": "0 несанкционированных внешних сообщений",
-            "deadline": deadline,
-            "dependencies": ["consent registry", "suppression list"],
-            "approval_required": True,
-            "stop_condition": "владелец выбрал дальнейшее действие по конкретному лиду",
         },
     ]
     risk_reasons: list[str] = []
@@ -894,6 +909,8 @@ def run_ceo_lead_outcome_cycle(
         risk_reasons.append("verified_fallback_candidates_exhausted")
     if manual_review_count:
         risk_reasons.append("management_company_candidates_need_manual_review")
+    if research_work.get("status") == "credentials_required":
+        risk_reasons.append("lead_evidence_research_credentials_required")
     status = "on_track" if not risk_reasons else "at_risk"
     notification = queue_owner_notification(
         db,
@@ -904,7 +921,8 @@ def run_ceo_lead_outcome_cycle(
         subject="CEO-план лидогенерации на 24 часа",
         body=(
             f"Результат месяца: {goal['current']} из {goal['target']} подтверждённых передач. "
-            f"CEO поставил {len(scheduled['tasks_created'])} новых проверок базы. "
+            f"CEO поставил {len(research_work['tasks_created'])} исследований существующих лидов и "
+            f"{len(scheduled['tasks_created'])} новых проверок базы. "
             f"Статус внешнего поиска: {provider['status']}. Автоматическая рассылка не выполняется."
         ),
         data={
@@ -920,6 +938,7 @@ def run_ceo_lead_outcome_cycle(
             "qualification_task_id": (
                 qualification_task.id if qualification_task is not None else None
             ),
+            "lead_research_work": research_work,
             "provider_recovery_task_id": (
                 provider_recovery_task.id if provider_recovery_task is not None else None
             ),
@@ -942,6 +961,7 @@ def run_ceo_lead_outcome_cycle(
         "qualification_task_id": (
             qualification_task.id if qualification_task is not None else None
         ),
+        "lead_research_work": research_work,
         "provider_recovery_task_id": (
             provider_recovery_task.id if provider_recovery_task is not None else None
         ),
@@ -955,6 +975,7 @@ def run_ceo_lead_outcome_cycle(
                 "goal_current": goal["current"],
                 "goal_target": goal["target"],
                 "fallback_tasks_created": len(scheduled["tasks_created"]),
+                "lead_research_tasks_created": len(research_work["tasks_created"]),
                 "provider_status": provider["status"],
             }
         ],

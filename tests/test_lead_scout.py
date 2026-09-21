@@ -139,6 +139,9 @@ def test_public_lead_scout_filters_personal_uncited_and_out_of_region_contacts(
         ]
         assert northern.data["public_phones"] == ["+78125550101"]
         assert northern.data["source_urls"] == [cited]
+        assert northern.data["verification_reasons"] == [
+            "cited_public_organization_contact"
+        ]
         assert northern.data["outreach_consent"] == "not_verified"
         assert db.scalar(select(func.count(OutreachConsent.address))) == consent_count_before
         assert db.scalar(select(func.count(OutboundMessage.id))) == outbound_count_before

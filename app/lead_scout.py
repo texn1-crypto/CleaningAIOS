@@ -225,6 +225,10 @@ def persist_public_business_leads(
             "public_phones": public_phones,
             "source_urls": source_urls,
             "last_verified_at": current.isoformat(),
+            "verification_reasons": sorted(
+                set(old_data.get("verification_reasons") or [])
+                | {"cited_public_organization_contact"}
+            ),
             "contact_scope": "organization",
             "outreach_consent": "not_verified",
             "marketing_contact_allowed": False,
