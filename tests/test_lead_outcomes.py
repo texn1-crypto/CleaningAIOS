@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app import agent_tools, lead_reports
+from app import agent_tools, lead_outcomes, lead_reports
 from app.business_policy import LEAD_GOAL_TITLE
 from app.db import Base, SessionLocal
 from app.lead_outcomes import (
@@ -64,9 +64,12 @@ def _management_company(title: str, website: str, email: str) -> BusinessRecord:
     )
 
 
-def test_ceo_cycle_schedules_bounded_idempotent_crawl_work_and_daily_plan():
+def test_ceo_cycle_schedules_bounded_idempotent_crawl_work_and_daily_plan(
+    monkeypatch,
+):
     session_factory = _session_factory()
     now = datetime(2045, 6, 5, 12, 0)
+    monkeypatch.setattr(lead_outcomes.settings, "lead_verification_batch_size", 8)
     with session_factory() as db:
         db.add(_goal())
         for index in range(12):

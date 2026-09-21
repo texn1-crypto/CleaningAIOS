@@ -10,7 +10,12 @@ from urllib.parse import urlparse, urlunparse
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
-from .lead_qualification import QUALIFICATION_ACTION
+from .config import settings
+from .lead_qualification import (
+    QUALIFICATION_ACTION,
+    qualification_backlog,
+    qualification_candidate_count,
+)
 from .lead_reports import LEAD_REPORT_RECORD_TYPE, build_instant_lead_report
 from .management_companies import normalize_emails, normalize_phones
 from .models import AuditLog, BusinessGoal, BusinessRecord, OwnerNotification, Task
@@ -21,7 +26,6 @@ from .task_state import RECONCILED_FAILURE_STATUS, record_task_created
 LEAD_HANDOFF_METRIC = "qualified_owner_handoffs"
 MANAGEMENT_COMPANY_RECORD_TYPE = "management_company"
 VERIFICATION_ACTION = "verify_existing_management_company_candidate"
-VERIFICATION_BATCH_SIZE = 8
 VERIFICATION_MAX_ATTEMPTS = 3
 VERIFICATION_FAILURE_RESOLUTION_KIND = "verification_candidate_retry_accounted"
 _TITLE_STOP_WORDS = {
@@ -56,6 +60,10 @@ _FREE_MAIL_DOMAINS = {
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _verification_batch_size() -> int:
+    return max(1, min(int(settings.lead_verification_batch_size), 48))
 
 
 def _month_bounds(current: datetime) -> tuple[datetime, datetime]:
@@ -272,8 +280,9 @@ def _schedule_verification_tasks(
     created: list[int] = []
     reused: list[int] = []
     candidates = _verification_candidates(db)
+    batch_limit = _verification_batch_size()
     day_key = current.date().isoformat()
-    for row, url in candidates[:VERIFICATION_BATCH_SIZE]:
+    for row, url in candidates[:batch_limit]:
         digest = hashlib.sha256(url.encode()).hexdigest()[:12]
         title = f"Lead outcome · verify management company {row.id} · {day_key} · {digest}"
         existing = db.scalar(select(Task).where(Task.title == title))
@@ -320,7 +329,7 @@ def _schedule_verification_tasks(
         "eligible_candidates": len(candidates),
         "tasks_created": created,
         "tasks_reused": reused,
-        "batch_limit": VERIFICATION_BATCH_SIZE,
+        "batch_limit": batch_limit,
     }
 
 
@@ -712,10 +721,17 @@ def run_ceo_lead_outcome_cycle(
         )
         or 0
     )
+    qualification_candidates = qualification_candidate_count(db)
+    qualification_backlog_state = qualification_backlog(db)
     qualification_task: Task | None = None
-    if owner_review_count:
+    if qualification_candidates:
         qualification_title = (
-            f"CEO → Sales · Owner-review qualification · {current.date().isoformat()}"
+            "CEO → Sales · Owner-review qualification · "
+            + (
+                f"backlog-{qualification_backlog_state['fingerprint'][:16]}"
+                if qualification_backlog_state["count"]
+                else current.date().isoformat()
+            )
         )
         qualification_task = db.scalar(
             select(Task).where(Task.title == qualification_title)
@@ -725,7 +741,8 @@ def run_ceo_lead_outcome_cycle(
                 title=qualification_title,
                 description=(
                     "Ранжировать лиды owner_review по проверяемым данным, сохранить "
-                    "пробелы и следующий шаг, затем отправить владельцу одну сводку."
+                    "пробелы и следующий шаг, безопасно включить ранее проверенные "
+                    "публичные карточки, затем отправить владельцу одну сводку."
                 ),
                 agent_type="sales",
                 status="queued",
@@ -737,6 +754,10 @@ def run_ceo_lead_outcome_cycle(
                     "action": QUALIFICATION_ACTION,
                     "notify_owner": True,
                     "automatic_outreach": False,
+                    "backlog_fingerprint": qualification_backlog_state[
+                        "fingerprint"
+                    ],
+                    "backlog_count": qualification_backlog_state["count"],
                 },
             )
             db.add(qualification_task)
@@ -750,7 +771,12 @@ def run_ceo_lead_outcome_cycle(
     scheduled = (
         _schedule_verification_tasks(db, current=current, cycle_key=cycle_key)
         if goal["status"] != "target_met"
-        else {"eligible_candidates": 0, "tasks_created": [], "tasks_reused": [], "batch_limit": VERIFICATION_BATCH_SIZE}
+        else {
+            "eligible_candidates": 0,
+            "tasks_created": [],
+            "tasks_reused": [],
+            "batch_limit": _verification_batch_size(),
+        }
     )
     manual_review_count = int(
         db.scalar(
@@ -804,7 +830,10 @@ def run_ceo_lead_outcome_cycle(
             "priority": 1,
             "accountable_agent": "lead_coordinator",
             "action": "Проверить публичные сайты уже собранных управляющих компаний через Crawl4AI и создать карточки лидов в CRM.",
-            "metric": f"до {VERIFICATION_BATCH_SIZE} проверок за цикл; создано задач: {len(scheduled['tasks_created'])}",
+            "metric": (
+                f"до {scheduled['batch_limit']} проверок за цикл; "
+                f"создано задач: {len(scheduled['tasks_created'])}"
+            ),
             "deadline": deadline,
             "dependencies": ["Crawl4AI", "CRM management_company"],
             "approval_required": False,
@@ -814,7 +843,10 @@ def run_ceo_lead_outcome_cycle(
             "priority": 2,
             "accountable_agent": "sales",
             "action": "Ранжировать owner_review-лиды, сохранить пробелы и следующий исследовательский шаг без контакта с потенциальными заказчиками.",
-            "metric": f"{owner_review_count} карточек ожидают квалификации владельца",
+            "metric": (
+                f"{qualification_candidates} карточек в контуре квалификации, "
+                f"новых или неразобранных: {qualification_backlog_state['count']}"
+            ),
             "deadline": deadline,
             "dependencies": ["CRM lead evidence", "consent registry"],
             "approval_required": False,
@@ -883,6 +915,8 @@ def run_ceo_lead_outcome_cycle(
             "failed_verification_reconciliation": failed_verification_reconciliation,
             "manual_review_count": manual_review_count,
             "owner_review_count": owner_review_count,
+            "qualification_candidate_count": qualification_candidates,
+            "qualification_backlog": qualification_backlog_state,
             "qualification_task_id": (
                 qualification_task.id if qualification_task is not None else None
             ),
@@ -903,6 +937,8 @@ def run_ceo_lead_outcome_cycle(
         "failed_verification_reconciliation": failed_verification_reconciliation,
         "manual_review_count": manual_review_count,
         "owner_review_count": owner_review_count,
+        "qualification_candidate_count": qualification_candidates,
+        "qualification_backlog": qualification_backlog_state,
         "qualification_task_id": (
             qualification_task.id if qualification_task is not None else None
         ),

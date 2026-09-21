@@ -7,7 +7,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -24,6 +24,57 @@ QUALIFICATION_ACTION = "prioritize_owner_review_leads"
 QUALIFICATION_RECORD_TYPE = "lead_qualification_digest"
 QUALIFICATION_SCHEMA_VERSION = 1
 QUALIFICATION_LIMIT = 200
+LEGACY_PUBLIC_RESEARCH_SOURCE = "perplexity_public_business_search"
+
+
+def _qualification_candidate_clause() -> Any:
+    return or_(
+        BusinessRecord.status == "owner_review",
+        and_(
+            BusinessRecord.status == "researched",
+            BusinessRecord.source == LEGACY_PUBLIC_RESEARCH_SOURCE,
+        ),
+    )
+
+
+def qualification_candidate_count(db: Session) -> int:
+    """Count owner-review leads plus legacy validated public leads awaiting promotion."""
+
+    return int(
+        db.scalar(
+            select(func.count(BusinessRecord.id)).where(
+                BusinessRecord.record_type == "lead",
+                _qualification_candidate_clause(),
+            )
+        )
+        or 0
+    )
+
+
+def qualification_backlog(db: Session) -> dict[str, Any]:
+    """Return a stable key for candidates not yet processed by qualification."""
+
+    rows = db.scalars(
+        select(BusinessRecord)
+        .where(
+            BusinessRecord.record_type == "lead",
+            _qualification_candidate_clause(),
+        )
+        .order_by(BusinessRecord.id)
+    ).all()
+    lead_ids = [
+        row.id
+        for row in rows
+        if row.status == "researched"
+        or not str((row.data or {}).get("qualification_fingerprint") or "")
+    ]
+    fingerprint = hashlib.sha256(
+        ",".join(str(lead_id) for lead_id in lead_ids).encode()
+    ).hexdigest()
+    return {
+        "count": len(lead_ids),
+        "fingerprint": fingerprint,
+    }
 
 
 def utcnow() -> datetime:
@@ -278,18 +329,18 @@ def prioritize_owner_review_leads(
     evaluated_at = current or utcnow()
     if evaluated_at.tzinfo is not None:
         evaluated_at = evaluated_at.astimezone(timezone.utc).replace(tzinfo=None)
-    owner_review_leads = list(
+    candidate_leads = list(
         db.scalars(
             select(BusinessRecord)
             .where(
                 BusinessRecord.record_type == "lead",
-                BusinessRecord.status == "owner_review",
+                _qualification_candidate_clause(),
             )
             .order_by(BusinessRecord.id.desc())
         ).all()
     )
     leads = sorted(
-        owner_review_leads,
+        candidate_leads,
         key=lambda lead: (
             bool((lead.data or {}).get("qualification_fingerprint")),
             -float(lead.score or 0),
@@ -298,7 +349,14 @@ def prioritize_owner_review_leads(
     )[:QUALIFICATION_LIMIT]
     changed_ids: list[int] = []
     unchanged_ids: list[int] = []
+    promoted_ids: list[int] = []
     for lead in leads:
+        if (
+            lead.status == "researched"
+            and lead.source == LEGACY_PUBLIC_RESEARCH_SOURCE
+        ):
+            lead.status = "owner_review"
+            promoted_ids.append(lead.id)
         snapshot = _qualification_snapshot(db, lead, current=evaluated_at)
         fingerprint = _fingerprint(snapshot)
         data = lead.data if isinstance(lead.data, dict) else {}
@@ -324,6 +382,22 @@ def prioritize_owner_review_leads(
         for lead in ranked
     )
     top = ranked[:5]
+    batch_fingerprint = hashlib.sha256(
+        json.dumps(
+            [
+                {
+                    "lead_id": lead.id,
+                    "qualification_fingerprint": (lead.data or {}).get(
+                        "qualification_fingerprint"
+                    ),
+                }
+                for lead in ranked
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
     day = evaluated_at.date().isoformat()
     external_id = f"lead-qualification:{day}"
     digest = db.scalar(
@@ -350,6 +424,8 @@ def prioritize_owner_review_leads(
         "generated_at": evaluated_at.isoformat(),
         "lead_count": len(leads),
         "changed_count": len(changed_ids),
+        "promoted_count": len(promoted_ids),
+        "batch_fingerprint": batch_fingerprint,
         "outcomes": dict(sorted(outcomes.items())),
         "priority_lead_ids": [lead.id for lead in top],
         "automatic_outreach": False,
@@ -360,7 +436,9 @@ def prioritize_owner_review_leads(
         names = ", ".join(_text(lead.title)[:80] for lead in top) or "очередь пуста"
         notification = queue_owner_notification(
             db,
-            idempotency_key=f"lead-qualification:{day}:telegram",
+            idempotency_key=(
+                f"lead-qualification:{day}:{batch_fingerprint[:20]}:telegram"
+            ),
             channel="telegram",
             resource_type=QUALIFICATION_RECORD_TYPE,
             resource_id=str(digest.id),
@@ -376,6 +454,8 @@ def prioritize_owner_review_leads(
             data={
                 "digest_id": digest.id,
                 "lead_count": len(leads),
+                "promoted_count": len(promoted_ids),
+                "batch_fingerprint": batch_fingerprint,
                 "outcomes": dict(sorted(outcomes.items())),
                 "priority_lead_ids": [lead.id for lead in top],
                 "automatic_outreach": False,
@@ -383,7 +463,7 @@ def prioritize_owner_review_leads(
             severity="normal",
             correlation_id=f"lead-qualification:{day}",
         )
-    if digest_created or changed_ids:
+    if digest_created or changed_ids or promoted_ids:
         db.add(
             AuditLog(
                 actor="sales",
@@ -394,6 +474,8 @@ def prioritize_owner_review_leads(
                     "lead_count": len(leads),
                     "changed_count": len(changed_ids),
                     "unchanged_count": len(unchanged_ids),
+                    "promoted_count": len(promoted_ids),
+                    "promoted_lead_ids": promoted_ids,
                     "outcomes": dict(sorted(outcomes.items())),
                     "priority_lead_ids": [lead.id for lead in top],
                     "automatic_outreach": False,
@@ -405,6 +487,7 @@ def prioritize_owner_review_leads(
         "lead_count": len(leads),
         "changed_lead_ids": changed_ids,
         "unchanged_lead_ids": unchanged_ids,
+        "promoted_lead_ids": promoted_ids,
         "outcomes": dict(sorted(outcomes.items())),
         "priority_lead_ids": [lead.id for lead in top],
         "digest_id": digest.id,
