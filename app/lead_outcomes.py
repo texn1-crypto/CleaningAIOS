@@ -10,6 +10,7 @@ from urllib.parse import urlparse, urlunparse
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
+from .lead_qualification import QUALIFICATION_ACTION
 from .lead_reports import LEAD_REPORT_RECORD_TYPE, build_instant_lead_report
 from .management_companies import normalize_emails, normalize_phones
 from .models import AuditLog, BusinessGoal, BusinessRecord, OwnerNotification, Task
@@ -702,6 +703,50 @@ def run_ceo_lead_outcome_cycle(
     failed_verification_reconciliation = _reconcile_failed_verification_tasks(db)
     goal = reconcile_lead_handoff_goal(db, now=current)
     provider = _latest_provider_health(db)
+    owner_review_count = int(
+        db.scalar(
+            select(func.count(BusinessRecord.id)).where(
+                BusinessRecord.record_type == "lead",
+                BusinessRecord.status == "owner_review",
+            )
+        )
+        or 0
+    )
+    qualification_task: Task | None = None
+    if owner_review_count:
+        qualification_title = (
+            f"CEO → Sales · Owner-review qualification · {current.date().isoformat()}"
+        )
+        qualification_task = db.scalar(
+            select(Task).where(Task.title == qualification_title)
+        )
+        if qualification_task is None:
+            qualification_task = Task(
+                title=qualification_title,
+                description=(
+                    "Ранжировать лиды owner_review по проверяемым данным, сохранить "
+                    "пробелы и следующий шаг, затем отправить владельцу одну сводку."
+                ),
+                agent_type="sales",
+                status="queued",
+                priority="high",
+                max_attempts=3,
+                run_after=current,
+                due_at=current + timedelta(hours=4),
+                payload={
+                    "action": QUALIFICATION_ACTION,
+                    "notify_owner": True,
+                    "automatic_outreach": False,
+                },
+            )
+            db.add(qualification_task)
+            db.flush()
+            record_task_created(
+                db,
+                qualification_task,
+                actor="ceo",
+                reason="owner_review_qualification_due",
+            )
     scheduled = (
         _schedule_verification_tasks(db, current=current, cycle_key=cycle_key)
         if goal["status"] != "target_met"
@@ -767,6 +812,16 @@ def run_ceo_lead_outcome_cycle(
         },
         {
             "priority": 2,
+            "accountable_agent": "sales",
+            "action": "Ранжировать owner_review-лиды, сохранить пробелы и следующий исследовательский шаг без контакта с потенциальными заказчиками.",
+            "metric": f"{owner_review_count} карточек ожидают квалификации владельца",
+            "deadline": deadline,
+            "dependencies": ["CRM lead evidence", "consent registry"],
+            "approval_required": False,
+            "stop_condition": "у каждой карточки есть доказательный разбор и следующий шаг",
+        },
+        {
+            "priority": 3,
             "accountable_agent": "ceo",
             "action": "Считать результатом только лиды, чей отчёт фактически доставлен владельцу.",
             "metric": f"{goal['current']} из {goal['target']} передач за текущий месяц",
@@ -776,7 +831,7 @@ def run_ceo_lead_outcome_cycle(
             "stop_condition": "метрика подтверждена доставленными уведомлениями",
         },
         {
-            "priority": 3,
+            "priority": 4,
             "accountable_agent": "system_admin",
             "action": "Восстановить внешний канал поиска, если последняя проверка провайдера недоступна.",
             "metric": "последний запуск каждого lead scout завершён с доступным провайдером",
@@ -786,7 +841,7 @@ def run_ceo_lead_outcome_cycle(
             "stop_condition": "контрольный поиск возвращает валидные публичные результаты",
         },
         {
-            "priority": 4,
+            "priority": 5,
             "accountable_agent": "sales",
             "action": "Держать новые карточки в owner_review; не отправлять сообщения без подтверждённого согласия и отдельного допуска.",
             "metric": "0 несанкционированных внешних сообщений",
@@ -827,6 +882,10 @@ def run_ceo_lead_outcome_cycle(
             "verification_work": scheduled,
             "failed_verification_reconciliation": failed_verification_reconciliation,
             "manual_review_count": manual_review_count,
+            "owner_review_count": owner_review_count,
+            "qualification_task_id": (
+                qualification_task.id if qualification_task is not None else None
+            ),
             "provider_recovery_task_id": (
                 provider_recovery_task.id if provider_recovery_task is not None else None
             ),
@@ -843,6 +902,10 @@ def run_ceo_lead_outcome_cycle(
         "verification_work": scheduled,
         "failed_verification_reconciliation": failed_verification_reconciliation,
         "manual_review_count": manual_review_count,
+        "owner_review_count": owner_review_count,
+        "qualification_task_id": (
+            qualification_task.id if qualification_task is not None else None
+        ),
         "provider_recovery_task_id": (
             provider_recovery_task.id if provider_recovery_task is not None else None
         ),

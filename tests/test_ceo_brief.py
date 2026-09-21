@@ -492,6 +492,7 @@ def test_weekly_ceo_brief_joins_business_facts_and_reuses_notification(client):
     rendered = format_ceo_brief(brief)
     assert "ПЛАН НА 7 ДНЕЙ" in rendered
     assert "передано владельцу" in rendered
+    assert "ещё не квалифицировано" in rendered
     assert "внешние сообщения автоматически не выполнялись" in rendered
     assert len(rendered) < 4096
     assert client.get("/api/ceo/brief?period_days=32", headers={"X-Role": "manager"}).status_code == 422

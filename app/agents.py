@@ -354,6 +354,13 @@ class TenderAgent:
 class SalesAgent:
     name = "sales"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "prioritize_owner_review_leads":
+            from .lead_qualification import prioritize_owner_review_leads
+
+            return prioritize_owner_review_leads(
+                db,
+                notify_owner=bool(payload.get("notify_owner", True)),
+            )
         if payload.get("action") == "sync_twenty_verified_leads":
             from .twenty_crm import sync_verified_leads
 
