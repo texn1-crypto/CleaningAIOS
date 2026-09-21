@@ -64,11 +64,23 @@ def test_ceo_brief_separates_primary_facts_from_recommendations(client, monkeypa
                 "credentials_required": ["TWENTY_API_KEY"],
             },
         )
-        db.add_all([payment, alert, waiting_configuration])
+        reconciled_failure = Task(
+            title="CEO brief reconciled verification failure",
+            agent_type="lead_coordinator",
+            status="failed",
+            payload={"action": "verify_existing_management_company_candidate"},
+            result={
+                "error_type": "AgentToolDenied",
+                "resolution_status": "reconciled",
+                "resolution_kind": "verification_candidate_retry_accounted",
+            },
+        )
+        db.add_all([payment, alert, waiting_configuration, reconciled_failure])
         db.commit()
         payment_id = payment.id
         alert_id = alert.id
         waiting_configuration_id = waiting_configuration.id
+        reconciled_failure_id = reconciled_failure.id
 
     response = client.get("/api/ceo/brief", headers={"X-Role": "manager"})
     assert response.status_code == 200
@@ -78,6 +90,11 @@ def test_ceo_brief_separates_primary_facts_from_recommendations(client, monkeypa
     assert brief["ai_generated_facts"] is False
     assert brief["automatic_critical_action"] is False
     assert failed_task["id"] in brief["facts"]["tasks"]["failed_ids"]
+    assert failed_task["id"] in brief["facts"]["tasks"]["actionable_failed_ids"]
+    assert reconciled_failure_id in brief["facts"]["tasks"]["failed_ids"]
+    assert reconciled_failure_id in brief["facts"]["tasks"]["reconciled_failed_ids"]
+    assert reconciled_failure_id not in brief["facts"]["tasks"]["actionable_failed_ids"]
+    assert brief["facts"]["tasks"]["reconciled_failed"] >= 1
     assert protected_task["id"] in brief["facts"]["tasks"]["blocked_ids"]
     assert protected_task["id"] in brief["facts"]["tasks"]["actionable_blocked_ids"]
     assert waiting_configuration_id in brief["facts"]["tasks"]["waiting_configuration_ids"]
@@ -105,8 +122,11 @@ def test_telegram_ceo_brief_is_read_only_and_task_button_uses_tasks_api(monkeypa
             "tasks": {
                 "active": 2,
                 "failed": 1,
+                "actionable_failed": 1,
+                "reconciled_failed": 0,
                 "blocked": 1,
                 "failed_ids": [10],
+                "actionable_failed_ids": [10],
                 "blocked_ids": [11],
             },
             "approvals": {"pending": 1, "ids": [22]},
@@ -179,6 +199,29 @@ def test_telegram_ceo_brief_is_read_only_and_task_button_uses_tasks_api(monkeypa
     assert task_payload["agent_type"] == "ceo"
     assert task_payload["payload"]["automatic_critical_action"] is False
     assert "Критические действия не запускались" in update.effective_message.replies[-1][0]
+
+
+def test_ceo_brief_does_not_render_reconciled_failures_as_actionable_sources():
+    from app.reports import format_ceo_brief
+
+    rendered = format_ceo_brief(
+        {
+            "generated_at": "2045-06-05T12:00:00",
+            "facts": {
+                "tasks": {
+                    "failed": 1,
+                    "actionable_failed": 0,
+                    "reconciled_failed": 1,
+                    "failed_ids": [17],
+                    "actionable_failed_ids": [],
+                }
+            },
+        }
+    )
+
+    assert "actionable failed 0" in rendered
+    assert "reconciled failed 1" in rendered
+    assert "source task IDs: []" in rendered
 
 
 def test_weekly_ceo_brief_joins_business_facts_and_reuses_notification(client):

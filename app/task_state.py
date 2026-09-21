@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from .models import Task, TaskTransition
@@ -16,6 +16,12 @@ CONFIGURATION_WAIT_STATES = frozenset(
         "mailbox_configuration_required",
         "source_configuration_required",
         "waiting_configuration",
+    }
+)
+RECONCILED_FAILURE_STATUS = "reconciled"
+RECONCILED_FAILURE_KINDS = frozenset(
+    {
+        "verification_candidate_retry_accounted",
     }
 )
 ALLOWED_TRANSITIONS = {
@@ -48,7 +54,19 @@ def task_waits_for_configuration(task: Task) -> bool:
     return isinstance(required, (list, tuple, set, dict)) and bool(required)
 
 
-def task_execution_lock_query(task_id: int):
+def task_failure_is_reconciled(task: Task) -> bool:
+    """Return whether a terminal failure has been durably handled by its workflow."""
+
+    if task.status != "failed":
+        return False
+    result = task.result if isinstance(task.result, dict) else {}
+    return (
+        result.get("resolution_status") == RECONCILED_FAILURE_STATUS
+        and result.get("resolution_kind") in RECONCILED_FAILURE_KINDS
+    )
+
+
+def task_execution_lock_query(task_id: int) -> Select[tuple[Task]]:
     """Build the row-locking query shared by competing task executors."""
 
     return select(Task).where(Task.id == task_id).with_for_update()

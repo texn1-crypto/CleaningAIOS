@@ -365,3 +365,102 @@ def test_ceo_cycle_counts_a_guarded_tool_failure_once_for_candidate_retry_limit(
         assert repeated["failed_verification_reconciliation"]["reconciled_task_ids"] == []
         assert company.data["internet_verification_attempts"] == 1
         assert company.data["internet_verification_last_failed_task_id"] == failed.id
+        assert failed.result["resolution_status"] == "reconciled"
+        assert failed.result["resolution_kind"] == "verification_candidate_retry_accounted"
+
+
+def test_ceo_cycle_reconciles_each_failed_verification_task_once_for_same_candidate():
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        db.add(_goal())
+        company = _management_company(
+            "УК Два Сбоя",
+            "https://two-failures.example/",
+            "info@two-failures.example",
+        )
+        db.add(company)
+        db.flush()
+        first_failure = Task(
+            title="First guarded candidate verification failure",
+            agent_type="lead_coordinator",
+            status="failed",
+            payload={
+                "action": VERIFICATION_ACTION,
+                "record_id": company.id,
+                "candidate_url": "https://two-failures.example/",
+            },
+            result={"error_type": "AgentToolDenied"},
+        )
+        db.add(first_failure)
+        db.flush()
+
+        run_ceo_lead_outcome_cycle(db, cycle_key="2045-06-05T12:00", now=now)
+        second_failure = Task(
+            title="Second guarded candidate verification failure",
+            agent_type="lead_coordinator",
+            status="failed",
+            payload={
+                "action": VERIFICATION_ACTION,
+                "record_id": company.id,
+                "candidate_url": "https://two-failures.example/",
+            },
+            result={"error_type": "AgentToolError"},
+        )
+        db.add(second_failure)
+        db.flush()
+
+        second = run_ceo_lead_outcome_cycle(db, cycle_key="2045-06-05T13:00", now=now)
+        repeated = run_ceo_lead_outcome_cycle(db, cycle_key="2045-06-05T14:00", now=now)
+
+        assert second["failed_verification_reconciliation"]["reconciled_task_ids"] == [
+            second_failure.id
+        ]
+        assert repeated["failed_verification_reconciliation"]["reconciled_task_ids"] == []
+        assert company.data["internet_verification_attempts"] == 2
+        assert first_failure.result["resolution_status"] == "reconciled"
+        assert second_failure.result["resolution_status"] == "reconciled"
+
+
+def test_ceo_cycle_backfills_legacy_reconciliation_without_incrementing_attempts():
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        db.add(_goal())
+        company = _management_company(
+            "УК Старый Учёт",
+            "https://legacy-failure.example/",
+            "info@legacy-failure.example",
+        )
+        db.add(company)
+        db.flush()
+        failure = Task(
+            title="Legacy reconciled verification failure",
+            agent_type="lead_coordinator",
+            status="failed",
+            payload={
+                "action": VERIFICATION_ACTION,
+                "record_id": company.id,
+                "candidate_url": "https://legacy-failure.example/",
+            },
+            result={"error_type": "AgentToolDenied"},
+        )
+        db.add(failure)
+        db.flush()
+        company.data = {
+            **(company.data or {}),
+            "internet_verification_attempts": 1,
+            "internet_verification_last_failed_task_id": failure.id,
+        }
+
+        result = run_ceo_lead_outcome_cycle(
+            db,
+            cycle_key="2045-06-05T12:00",
+            now=now,
+        )
+
+        reconciliation = result["failed_verification_reconciliation"]
+        assert reconciliation["reconciled_task_ids"] == []
+        assert reconciliation["backfilled_task_ids"] == [failure.id]
+        assert company.data["internet_verification_attempts"] == 1
+        assert failure.result["resolution_status"] == "reconciled"
