@@ -83,6 +83,23 @@ def _truthy_any(data: dict[str, Any], keys: tuple[str, ...]) -> bool:
     return any(bool(data.get(key)) for key in keys)
 
 
+def _organization_type(data: dict[str, Any]) -> str:
+    value = _text(data.get("organization_type")).casefold().replace("ё", "е")
+    aliases = {
+        "бизнес-центр": "business_center",
+        "бизнес центр": "business_center",
+        "склад": "warehouse",
+        "торговый центр": "shopping_center",
+        "тк": "shopping_center",
+        "трк": "shopping_center",
+        "трц": "shopping_center",
+        "тц": "shopping_center",
+        "ук": "management_company",
+        "управляющая компания": "management_company",
+    }
+    return aliases.get(value, value.replace(" ", "_"))
+
+
 def _approved_contact_path(
     db: Session,
     *,
@@ -119,7 +136,8 @@ def _qualification_snapshot(
     phones = sorted(set(_string_list(data.get("public_phones"))))
     source_urls = sorted(set(_string_list(data.get("source_urls"))))
     region_fit = _service_area_fit(data)
-    property_fit = _text(data.get("organization_type")) in {
+    organization_type = _organization_type(data)
+    property_fit = organization_type in {
         "business_center",
         "commercial_property",
         "management_company",
@@ -213,7 +231,7 @@ def _qualification_snapshot(
         "next_research_step": next_step,
         "responsible_scout": (
             "management_lead_scout"
-            if _text(data.get("organization_type")) == "management_company"
+            if organization_type == "management_company"
             else "commercial_lead_scout"
         ),
         "contact_path": "approved" if approved_channel else "consent_or_lawful_basis_required",
