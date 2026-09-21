@@ -174,8 +174,16 @@ def _sales_lane(db: Session, current: datetime) -> dict[str, Any]:
     )
     overdue_next_actions = 0
     hot_cards: list[dict[str, Any]] = []
+    qualification_outcomes: Counter[str] = Counter()
+    owner_review_untriaged = 0
     for lead in leads:
         data = lead.data if isinstance(lead.data, dict) else {}
+        if lead.status == "owner_review":
+            qualification = data.get("qualification")
+            if isinstance(qualification, dict) and qualification.get("outcome"):
+                qualification_outcomes[str(qualification["outcome"])] += 1
+            else:
+                owner_review_untriaged += 1
         due_raw = data.get("next_action_at")
         if isinstance(due_raw, str):
             try:
@@ -212,6 +220,13 @@ def _sales_lane(db: Session, current: datetime) -> dict[str, Any]:
         "summary": {
             "leads": len(leads),
             "owner_review": statuses.get("owner_review", 0),
+            "owner_review_triaged": sum(qualification_outcomes.values()),
+            "owner_review_untriaged": owner_review_untriaged,
+            "owner_action_queue": qualification_outcomes.get("owner_review", 0),
+            "qualification_research": qualification_outcomes.get("research", 0),
+            "qualification_nurture": qualification_outcomes.get("nurture", 0),
+            "qualification_sales_ready": qualification_outcomes.get("sales_ready", 0),
+            "qualification_reject": qualification_outcomes.get("reject", 0),
             "qualified": statuses.get("qualified", 0),
             "sales_ready": statuses.get("sales_ready", 0),
             "won": statuses.get("won", 0),

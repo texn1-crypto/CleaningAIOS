@@ -989,6 +989,8 @@ def format_ceo_brief(data: dict[str, Any]) -> str:
         (
             f"• Лиды: всего {sales.get('leads', 0)}, новых за период {sales.get('new_leads_in_period', 0)}, "
             f"передано владельцу {sales.get('owner_review', 0)}, "
+            f"разобрано {sales.get('owner_review_triaged', 0)}, "
+            f"ещё не квалифицировано {sales.get('owner_review_untriaged', 0)}, "
             f"qualified {sales.get('qualified', 0)}, won {sales.get('won', 0)}"
         ),
         (

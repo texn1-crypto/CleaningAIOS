@@ -223,6 +223,16 @@ but reconciliation writes a per-task resolution marker in the same transaction a
 the candidate retry accounting. The marker makes repeated CEO cycles idempotent even
 when several failed checks refer to the same candidate.
 
+When `owner_review` leads exist, the same CEO cycle creates one idempotent daily Sales
+task. Sales applies a deterministic qualification rubric to service-area fit,
+property type, organization evidence, freshness, public organization contacts,
+verified outreach consent, demand, scope, timing, buyer route and economics. The
+result stores a score breakdown, evidence gaps, responsible scout and next research
+step on each lead, plus one daily digest and owner notification. A recommendation can
+be `sales_ready` only when the required evidence and a verified, unsuppressed contact
+path exist. The task does not change the CRM lifecycle status, infer consent, create
+an outbound message or contact a prospect.
+
 `GET /api/ceo/brief` is a read-only cross-domain primary-database snapshot with a
 bounded reporting period, per-source freshness and explicit source endpoints/record
 IDs. It joins sales, lead, contract, tender, marketing, finance, workflow, growth and
