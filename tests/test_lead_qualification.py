@@ -119,6 +119,24 @@ def test_owner_review_qualification_records_evidence_gaps_without_outreach():
         assert db.scalar(select(func.count()).select_from(OutboundMessage)) == 0
 
 
+def test_russian_management_company_type_is_normalized():
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        lead = _lead(title="УК с русским типом")
+        lead.data = {**lead.data, "organization_type": "УК"}
+        db.add(lead)
+        db.flush()
+
+        result = prioritize_owner_review_leads(db, current=now)
+
+        qualification = lead.data["qualification"]
+        assert result["outcomes"] == {"owner_review": 1}
+        assert qualification["score_breakdown"]["property_type_fit"] == 15
+        assert qualification["responsible_scout"] == "management_lead_scout"
+        assert "property_type" not in qualification["missing_facts"]
+
+
 def test_sales_agent_routes_the_persisted_qualification_action():
     session_factory = _session_factory()
     with session_factory() as db:
