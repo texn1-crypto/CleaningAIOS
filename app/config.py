@@ -137,6 +137,7 @@ class Settings(BaseSettings):
     management_contact_scout_max_results: int = 20
     management_contact_regions: str = "Санкт-Петербург|Ленинградская область|Москва|Московская область"
     lead_monthly_handoff_target: int = 20
+    lead_verification_batch_size: int = 24
     lead_report_timezone: str = "Europe/Moscow"
     contact_export_timezone: str = "Europe/Moscow"
     contact_export_weekday: int = 0

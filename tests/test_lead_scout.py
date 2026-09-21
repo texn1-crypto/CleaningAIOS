@@ -130,6 +130,9 @@ def test_public_lead_scout_filters_personal_uncited_and_out_of_region_contacts(
         ).all()
         assert len(leads) == lead_count_before + 2
         northern = next(row for row in leads if row.title == "Бизнес-центр Север")
+        moscow = next(row for row in leads if row.title == "Московский офис")
+        assert northern.status == "owner_review"
+        assert moscow.status == "owner_review"
         assert northern.data["public_emails"] == [
             "info@business-center.example",
             "sales@business-center.example",
@@ -139,6 +142,8 @@ def test_public_lead_scout_filters_personal_uncited_and_out_of_region_contacts(
         assert northern.data["outreach_consent"] == "not_verified"
         assert db.scalar(select(func.count(OutreachConsent.address))) == consent_count_before
         assert db.scalar(select(func.count(OutboundMessage.id))) == outbound_count_before
+        northern.status = "won"
+        db.commit()
 
     repeated_task = client.post(
         "/api/tasks",
@@ -159,6 +164,13 @@ def test_public_lead_scout_filters_personal_uncited_and_out_of_region_contacts(
                 BusinessRecord.source == "perplexity_public_business_search"
             )
         ) == lead_count_before + 2
+        northern = db.scalar(
+            select(BusinessRecord).where(
+                BusinessRecord.title == "Бизнес-центр Север"
+            )
+        )
+        assert northern is not None
+        assert northern.status == "won"
 
 
 def test_chat_routes_public_customer_search_to_lead_scout():

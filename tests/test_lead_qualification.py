@@ -119,6 +119,32 @@ def test_owner_review_qualification_records_evidence_gaps_without_outreach():
         assert db.scalar(select(func.count()).select_from(OutboundMessage)) == 0
 
 
+def test_legacy_public_researched_lead_is_promoted_into_owner_review_pipeline():
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        lead = _lead(title="Публичный БЦ")
+        lead.status = "researched"
+        lead.source = "perplexity_public_business_search"
+        db.add(lead)
+        db.flush()
+
+        result = prioritize_owner_review_leads(db, current=now, notify_owner=False)
+
+        assert result["promoted_lead_ids"] == [lead.id]
+        assert lead.status == "owner_review"
+        assert lead.data["qualification"]["outcome"] == "owner_review"
+        assert db.scalar(select(func.count()).select_from(OutboundMessage)) == 0
+        db.flush()
+        audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "lead.owner_review_prioritized"
+            )
+        )
+        assert audit is not None
+        assert audit.details["promoted_lead_ids"] == [lead.id]
+
+
 def test_russian_management_company_type_is_normalized():
     session_factory = _session_factory()
     now = datetime(2045, 6, 5, 12, 0)
@@ -302,6 +328,21 @@ def test_qualification_retry_reuses_daily_digest_notification_and_audit():
         ) == 1
         assert db.scalar(select(func.count()).select_from(OutboundMessage)) == 0
 
+        new_lead = _lead(title="Новая карточка в тот же день")
+        db.add(new_lead)
+        db.flush()
+        changed_batch = prioritize_owner_review_leads(db, current=now)
+        db.flush()
+
+        assert changed_batch["digest_id"] == first["digest_id"]
+        assert changed_batch["notification_id"] != first["notification_id"]
+        assert db.scalar(select(func.count()).select_from(OwnerNotification)) == 2
+        assert db.scalar(
+            select(func.count()).select_from(AuditLog).where(
+                AuditLog.action == "lead.owner_review_prioritized"
+            )
+        ) == 2
+
 
 def test_ceo_schedules_one_daily_sales_qualification_task():
     session_factory = _session_factory()
@@ -322,6 +363,8 @@ def test_ceo_schedules_one_daily_sales_qualification_task():
             "action": QUALIFICATION_ACTION,
             "notify_owner": True,
             "automatic_outreach": False,
+            "backlog_fingerprint": first["qualification_backlog"]["fingerprint"],
+            "backlog_count": 1,
         }
         assert db.scalar(
             select(func.count()).select_from(Task).where(
@@ -329,3 +372,56 @@ def test_ceo_schedules_one_daily_sales_qualification_task():
             )
         ) == 1
         assert db.scalar(select(func.count()).select_from(OutboundMessage)) == 0
+
+
+def test_ceo_schedules_qualification_for_legacy_public_researched_lead():
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        lead = _lead(title="Старая публичная карточка")
+        lead.status = "researched"
+        lead.source = "perplexity_public_business_search"
+        db.add_all([_goal(), lead])
+        db.flush()
+
+        result = run_ceo_lead_outcome_cycle(
+            db,
+            cycle_key="2045-06-05T12:00",
+            now=now,
+        )
+
+        assert result["owner_review_count"] == 0
+        assert result["qualification_candidate_count"] == 1
+        assert result["qualification_backlog"]["count"] == 1
+        assert result["qualification_task_id"] is not None
+
+
+def test_ceo_creates_new_same_day_task_when_qualification_backlog_changes():
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        first_lead = _lead(title="Первая карточка")
+        db.add_all([_goal(), first_lead])
+        db.flush()
+
+        first = run_ceo_lead_outcome_cycle(
+            db,
+            cycle_key="2045-06-05T12:00",
+            now=now,
+        )
+        prioritize_owner_review_leads(db, current=now, notify_owner=False)
+        first_task = db.get(Task, first["qualification_task_id"])
+        assert first_task is not None
+        first_task.status = "done"
+
+        second_lead = _lead(title="Вторая карточка")
+        db.add(second_lead)
+        db.flush()
+        second = run_ceo_lead_outcome_cycle(
+            db,
+            cycle_key="2045-06-05T13:00",
+            now=now,
+        )
+
+        assert second["qualification_backlog"]["count"] == 1
+        assert second["qualification_task_id"] != first["qualification_task_id"]

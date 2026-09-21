@@ -62,6 +62,10 @@ ROLE_MAILBOXES = {
     "zakupki",
 }
 EMAIL_PATTERN = re.compile(r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,63}$", re.IGNORECASE)
+PUBLIC_LEAD_REVIEW_STATUS = "owner_review"
+PUBLIC_LEAD_PRESERVED_STATUSES = frozenset(
+    {"qualified", "sales_ready", "won", "lost"}
+)
 
 
 def _utcnow() -> datetime:
@@ -235,7 +239,7 @@ def persist_public_business_leads(
                 record_type="lead",
                 external_id=external_id,
                 title=name,
-                status="researched",
+                status=PUBLIC_LEAD_REVIEW_STATUS,
                 owner="sales",
                 source="perplexity_public_business_search",
                 data=data,
@@ -246,7 +250,8 @@ def persist_public_business_leads(
             created += 1
         else:
             row.title = name
-            row.status = "researched"
+            if row.status not in PUBLIC_LEAD_PRESERVED_STATUSES:
+                row.status = PUBLIC_LEAD_REVIEW_STATUS
             row.owner = "sales"
             row.data = data
             updated += 1
