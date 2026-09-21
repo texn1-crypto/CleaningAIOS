@@ -123,6 +123,42 @@ def test_research_scheduler_does_not_queue_without_provider_credentials(monkeypa
         assert db.scalar(select(func.count()).select_from(Task)) == 0
 
 
+def test_research_scheduler_backs_off_after_provider_configuration_failure(monkeypatch):
+    monkeypatch.setattr(lead_research.settings, "lead_research_batch_size", 2)
+    monkeypatch.setattr(lead_research.settings, "perplexity_api_key", "configured")
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        db.add_all([_lead("Первая"), _lead("Вторая"), _lead("Третья")])
+        db.flush()
+        first = schedule_public_lead_research(
+            db,
+            current=now,
+            cycle_key="2045-06-05T12:00",
+        )
+        blocking_task = db.get(Task, first["tasks_created"][0])
+        assert blocking_task is not None
+        blocking_task.status = "blocked"
+        blocking_task.updated_at = now
+        blocking_task.result = {
+            "status": "unavailable",
+            "handoff_status": "credentials_required",
+            "provider": "perplexity_sonar",
+        }
+        db.flush()
+
+        repeated = schedule_public_lead_research(
+            db,
+            current=now,
+            cycle_key="2045-06-05T13:00",
+        )
+
+        assert repeated["status"] == "credentials_required"
+        assert repeated["tasks_created"] == []
+        assert repeated["configuration_blocking_task_ids"] == [blocking_task.id]
+        assert db.scalar(select(func.count()).select_from(Task)) == 2
+
+
 def test_targeted_research_persists_only_exact_cited_facts(monkeypatch):
     session_factory = _session_factory()
     now = datetime(2045, 6, 5, 12, 0)

@@ -13,10 +13,11 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .llm import llm_advisor
 from .models import AuditLog, BusinessRecord, Task
-from .task_state import record_task_created
+from .task_state import record_task_created, task_waits_for_configuration
 
 
 LEAD_RESEARCH_ACTION = "research_public_lead_evidence"
+LEAD_RESEARCH_CONFIGURATION_BACKOFF_HOURS = 24
 LEAD_RESEARCH_OUTCOMES = frozenset({"owner_review", "research"})
 LEAD_RESEARCH_FIELDS = frozenset(
     {
@@ -159,6 +160,34 @@ def schedule_public_lead_research(
             "eligible_leads": len(eligible),
             "tasks_created": [],
             "tasks_reused": [],
+            "batch_limit": _batch_size(),
+            "external_messages_sent": False,
+        }
+    configuration_cutoff = current - timedelta(
+        hours=LEAD_RESEARCH_CONFIGURATION_BACKOFF_HOURS
+    )
+    recent_terminal_tasks = db.scalars(
+        select(Task).where(
+            Task.agent_type.in_(_SCOUT_AGENTS),
+            Task.status.in_({"blocked", "failed"}),
+            Task.updated_at >= configuration_cutoff,
+        )
+    ).all()
+    configuration_blocks = [
+        task
+        for task in recent_terminal_tasks
+        if str((task.payload or {}).get("action") or "") == LEAD_RESEARCH_ACTION
+        and task_waits_for_configuration(task)
+    ]
+    if configuration_blocks:
+        return {
+            "status": "credentials_required" if eligible else "idle",
+            "eligible_leads": len(eligible),
+            "tasks_created": [],
+            "tasks_reused": [],
+            "configuration_blocking_task_ids": sorted(
+                task.id for task in configuration_blocks
+            ),
             "batch_limit": _batch_size(),
             "external_messages_sent": False,
         }
