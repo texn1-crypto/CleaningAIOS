@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .approval_service import expire_due_approvals
 from .config import settings
 from .db import SessionLocal
 from .models import BusinessRecord, OperatingEntity, Task
@@ -55,6 +56,7 @@ def _recent_configuration_block(
 def schedule_cycle() -> None:
     with SessionLocal() as db:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+        expire_due_approvals(db, now=now)
         strategy_tasks = maintain_ceo_development_backlog(
             db,
             now=now,

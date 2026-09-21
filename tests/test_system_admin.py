@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base
 from app.models import (
     AgentRun,
+    AgentState,
     ApprovalRequest,
     AuditLog,
     ImprovementRequest,
@@ -281,6 +282,110 @@ def test_system_admin_does_not_treat_owner_approval_as_technical_failure(monkeyp
         db.commit()
         report = system_admin.run_system_admin_audit(db, now=now)
         assert report["summary"]["active"] == 0
+
+
+def test_system_admin_ignores_reconciled_failure_and_its_agent_state(monkeypatch):
+    from app import system_admin
+
+    session_factory = _session_factory()
+    now = datetime(2040, 1, 1, 12, 0)
+    monkeypatch.setattr(
+        system_admin,
+        "retry_workspace_handoff",
+        lambda row: {"status": "not_needed"},
+    )
+    with session_factory() as db:
+        task = Task(
+            title="Reconciled guarded crawl failure",
+            agent_type="lead_coordinator",
+            status="failed",
+            result={
+                "resolution_status": "reconciled",
+                "resolution_kind": "verification_candidate_retry_accounted",
+            },
+        )
+        db.add(task)
+        db.flush()
+        db.add_all(
+            [
+                AgentRun(
+                    agent_type="lead_coordinator",
+                    task_id=task.id,
+                    status="failed",
+                    started_at=now,
+                    finished_at=now,
+                ),
+                AgentState(
+                    agent_type="lead_coordinator",
+                    status="error",
+                    last_error="AgentToolDenied: Agent execution failed",
+                    last_heartbeat_at=now,
+                ),
+            ]
+        )
+        db.commit()
+
+        report = system_admin.run_system_admin_audit(db, now=now)
+        assert report["summary"]["active"] == 0
+
+        state = db.get(AgentState, "lead_coordinator")
+        state.last_heartbeat_at = now + timedelta(minutes=5)
+        db.commit()
+        later_component_error = system_admin.run_system_admin_audit(
+            db,
+            now=now + timedelta(minutes=5),
+        )
+        assert later_component_error["summary"]["active"] == 1
+        assert later_component_error["incidents"][0]["resource_type"] == "agent_state"
+
+
+def test_system_admin_notifies_only_when_incident_state_changes(monkeypatch):
+    from app import notifications, system_admin
+
+    session_factory = _session_factory()
+    now = datetime(2040, 1, 1, 12, 0)
+    monkeypatch.setattr(
+        system_admin,
+        "retry_workspace_handoff",
+        lambda row: {"status": "credentials_required"},
+    )
+    monkeypatch.setattr(notifications.settings, "owner_telegram_id", "123")
+    monkeypatch.setattr(notifications.settings, "telegram_bot_token", "configured")
+    with session_factory() as db:
+        db.add(
+            Task(
+                title="Configuration wait",
+                agent_type="sales",
+                status="blocked",
+                payload={"action": "sync_twenty_verified_leads"},
+                result={"credentials_required": ["TWENTY_API_KEY"]},
+            )
+        )
+        db.commit()
+
+        first = system_admin.run_system_admin_audit(
+            db,
+            now=now,
+            notify_owner=True,
+            notification_idempotency_key="system-admin-change-first",
+        )
+        db.commit()
+        assert first["owner_notification"] == "queued"
+
+        repeated = system_admin.run_system_admin_audit(
+            db,
+            now=now + timedelta(minutes=5),
+            notify_owner=True,
+            notification_idempotency_key="system-admin-change-second",
+        )
+        db.commit()
+        assert repeated["summary"]["new"] == 0
+        assert repeated["summary"]["changed"] == 0
+        assert repeated["summary"]["resolved"] == 0
+        assert repeated["owner_notification"] == "not_queued_no_material_change"
+        assert db.scalar(
+            select(func.count()).select_from(OwnerNotification)
+        ) == 1
 
 
 def test_system_admin_resolves_historical_notification_failure_after_success(monkeypatch):

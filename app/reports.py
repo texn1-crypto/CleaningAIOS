@@ -24,6 +24,7 @@ from .models import (
     TaskTransition,
 )
 from .money_opportunities import build_money_opportunities
+from .notifications import notification_failure_is_active
 from .operations import goal_progress
 from .readiness import integration_status
 from .growth import growth_snapshot
@@ -41,6 +42,85 @@ def _count(db: Session, model: type, *criteria: Any) -> int:
 def _short_text(value: object, limit: int = 120) -> str:
     compact = " ".join(redact_sensitive_text(str(value or "")).split())
     return compact if len(compact) <= limit else compact[: limit - 1] + "…"
+
+
+def _alert_thread_key(row: OwnerNotification) -> tuple[str, str, str]:
+    data = row.data or {}
+    if row.resource_type in {"system_admin_report", "weekly_ceo_brief"}:
+        return row.resource_type, "current_snapshot", ""
+    approval_id = data.get("approval_id")
+    if approval_id not in (None, ""):
+        return "approval", str(approval_id), ""
+    return (
+        str(row.resource_type or "notification"),
+        str(row.resource_id or row.id),
+        str(data.get("event_type") or ""),
+    )
+
+
+def _alert_is_actionable(
+    db: Session,
+    row: OwnerNotification,
+    *,
+    now: datetime,
+    latest_sent_by_channel: dict[str, datetime],
+) -> bool:
+    if row.status in {"retry", "dead_letter", "waiting_configuration"} and not (
+        notification_failure_is_active(
+            db,
+            row,
+            now=now,
+            latest_sent_at=latest_sent_by_channel.get(str(row.channel or "unknown")),
+        )
+    ):
+        return False
+    data = row.data or {}
+    approval_id = data.get("approval_id")
+    if approval_id not in (None, ""):
+        try:
+            approval = db.get(ApprovalRequest, int(str(approval_id)))
+        except (TypeError, ValueError):
+            return True
+        return bool(
+            approval
+            and approval.status == "pending"
+            and (approval.expires_at is None or approval.expires_at > now)
+        )
+    if row.resource_type != "task":
+        return True
+    try:
+        task = db.get(Task, int(row.resource_id))
+    except (TypeError, ValueError):
+        return True
+    if task is None:
+        return True
+    if task.status == "failed":
+        return not task_failure_is_reconciled(task)
+    if task.status == "blocked":
+        return not task_waits_for_configuration(task)
+    return False
+
+
+def _current_alerts(
+    db: Session,
+    rows: list[OwnerNotification],
+    *,
+    now: datetime,
+    latest_sent_by_channel: dict[str, datetime],
+) -> list[OwnerNotification]:
+    latest_by_thread: dict[tuple[str, str, str], OwnerNotification] = {}
+    for row in rows:
+        latest_by_thread.setdefault(_alert_thread_key(row), row)
+    return [
+        row
+        for row in latest_by_thread.values()
+        if _alert_is_actionable(
+            db,
+            row,
+            now=now,
+            latest_sent_by_channel=latest_sent_by_channel,
+        )
+    ]
 
 
 def _social_runtime_activity(db: Session, *, cutoff: datetime) -> list[dict[str, Any]]:
@@ -488,21 +568,72 @@ def build_ceo_brief(
     ]
     waiting_configuration_tasks = waiting_configuration[:20]
     actionable_blocked_tasks = actionable_blocked[:20]
-    approvals = list(db.scalars(
+    all_pending_approvals = list(db.scalars(
         select(ApprovalRequest)
         .where(ApprovalRequest.status == "pending")
         .order_by(ApprovalRequest.id.desc())
-        .limit(20)
     ).all())
-    alerts = list(db.scalars(
+    current_pending_approvals = [
+        row
+        for row in all_pending_approvals
+        if row.expires_at is None or row.expires_at > generated_at
+    ]
+    expired_pending_approvals = [
+        row
+        for row in all_pending_approvals
+        if row.expires_at is not None and row.expires_at <= generated_at
+    ]
+    approvals = current_pending_approvals[:20]
+    alert_scan_limit = 5000
+    all_alert_rows = list(db.scalars(
         select(OwnerNotification)
         .where(
             OwnerNotification.severity.in_(["high", "critical"]),
             OwnerNotification.acknowledged_at.is_(None),
         )
         .order_by(OwnerNotification.id.desc())
-        .limit(20)
+        .limit(alert_scan_limit)
     ).all())
+    latest_sent_by_channel = {
+        str(channel): sent_at
+        for channel, sent_at in db.execute(
+            select(
+                OwnerNotification.channel,
+                func.max(OwnerNotification.sent_at),
+            )
+            .where(OwnerNotification.status == "sent")
+            .group_by(OwnerNotification.channel)
+        ).all()
+        if sent_at is not None
+    }
+    actionable_alerts = _current_alerts(
+        db,
+        all_alert_rows,
+        now=generated_at,
+        latest_sent_by_channel=latest_sent_by_channel,
+    )
+    alerts = actionable_alerts[:20]
+    all_dead_letter_count = _count(
+        db,
+        OwnerNotification,
+        OwnerNotification.status == "dead_letter",
+    )
+    dead_letter_rows = list(db.scalars(
+        select(OwnerNotification)
+        .where(OwnerNotification.status == "dead_letter")
+        .order_by(OwnerNotification.id.desc())
+        .limit(alert_scan_limit)
+    ).all())
+    actionable_dead_letters = [
+        row
+        for row in dead_letter_rows
+        if notification_failure_is_active(
+            db,
+            row,
+            now=generated_at,
+            latest_sent_at=latest_sent_by_channel.get(str(row.channel or "unknown")),
+        )
+    ]
     goals = list(db.scalars(
         select(BusinessGoal)
         .where(BusinessGoal.status == "active")
@@ -527,13 +658,16 @@ def build_ceo_brief(
     blocked_task_count = _count(db, Task, Task.status == "blocked")
     waiting_configuration_count = len(waiting_configuration)
     actionable_blocked_count = len(actionable_blocked)
-    pending_approval_count = _count(db, ApprovalRequest, ApprovalRequest.status == "pending")
+    pending_approval_count = len(current_pending_approvals)
+    pending_approval_total_count = len(all_pending_approvals)
+    expired_pending_approval_count = len(expired_pending_approvals)
     unacknowledged_alert_count = _count(
         db,
         OwnerNotification,
         OwnerNotification.severity.in_(["high", "critical"]),
         OwnerNotification.acknowledged_at.is_(None),
     )
+    historical_alert_count = max(0, len(all_alert_rows) - len(actionable_alerts))
 
     opportunities = build_money_opportunities(db)
     sales_lane = opportunities.get("sales") or {}
@@ -616,13 +750,32 @@ def build_ceo_brief(
         },
         "approvals": {
             "pending": pending_approval_count,
+            "pending_total": pending_approval_total_count,
+            "expired_pending": expired_pending_approval_count,
             "ids": [row.id for row in approvals],
+            "expired_pending_ids": [row.id for row in expired_pending_approvals[:20]],
         },
         "critical_alerts": {
             "unacknowledged": unacknowledged_alert_count,
+            "actionable": len(actionable_alerts),
+            "historical_or_superseded": historical_alert_count,
             "ids": [row.id for row in alerts],
-            "dead_letter": _count(
-                db, OwnerNotification, OwnerNotification.status == "dead_letter"
+            "unacknowledged_ids": [row.id for row in all_alert_rows[:20]],
+            "classification_scanned": len(all_alert_rows),
+            "classification_unscanned": max(
+                0,
+                unacknowledged_alert_count - len(all_alert_rows),
+            ),
+            "dead_letter": all_dead_letter_count,
+            "actionable_dead_letter": len(actionable_dead_letters),
+            "historical_dead_letter": max(
+                0,
+                len(dead_letter_rows) - len(actionable_dead_letters),
+            ),
+            "dead_letter_classification_scanned": len(dead_letter_rows),
+            "dead_letter_classification_unscanned": max(
+                0,
+                all_dead_letter_count - len(dead_letter_rows),
             ),
         },
         "goals": {
@@ -870,10 +1023,16 @@ def format_ceo_brief(data: dict[str, Any]) -> str:
         ),
         f"• Тендеры: active {tenders.get('active', 0)}, owner review {tenders.get('ready_for_owner_review', 0)}",
         f"• Рост: {growth.get('status', 'goal_not_initialized')} · progress {growth.get('progress_percent', 0)}%",
-        f"• Ожидают owner approval: {approval_facts.get('pending', 0)} · IDs {approval_facts.get('ids') or []}",
         (
-            f"• Неподтверждённые alerts: {alert_facts.get('unacknowledged', 0)} "
-            f"· dead-letter {alert_facts.get('dead_letter', 0)} · IDs {alert_facts.get('ids') or []}"
+            f"• Ожидают owner approval: {approval_facts.get('pending', 0)} "
+            f"· истекли и ожидают фиксации {approval_facts.get('expired_pending', 0)} "
+            f"· IDs {approval_facts.get('ids') or []}"
+        ),
+        (
+            f"• Alerts: актуальные {alert_facts.get('actionable', alert_facts.get('unacknowledged', 0))} "
+            f"· исторические/заменённые {alert_facts.get('historical_or_superseded', 0)} "
+            f"· dead-letter актуальные {alert_facts.get('actionable_dead_letter', alert_facts.get('dead_letter', 0))} "
+            f"· IDs {alert_facts.get('ids') or []}"
         ),
         (
             f"• Просроченные платежи: {finance.get('overdue_payments', 0)} "
