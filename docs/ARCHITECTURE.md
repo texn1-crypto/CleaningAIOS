@@ -215,7 +215,10 @@ a deduplicated System Admin recovery task and remains an explicit CEO risk inste
 being counted as completed work. One daily owner plan records up to five priorities,
 responsible agents, metrics, deadlines, dependencies, approvals and stop conditions.
 Three failed checks move a candidate to explicit manual review instead of consuming
-the automated batch forever.
+the automated batch forever. Guarded-tool failures remain immutable `failed` history,
+but reconciliation writes a per-task resolution marker in the same transaction as
+the candidate retry accounting. The marker makes repeated CEO cycles idempotent even
+when several failed checks refer to the same candidate.
 
 `GET /api/ceo/brief` is a read-only cross-domain primary-database snapshot with a
 bounded reporting period, per-source freshness and explicit source endpoints/record
@@ -228,6 +231,9 @@ write option creates a normal analytical CEO task through the shared Tasks API. 
 report path performs outreach, spending, submission or another critical action.
 Credential-dependent blocked tasks are reported separately from actionable workflow
 failures, so missing provider access cannot inflate the engineering recovery KPI.
+Likewise, the CEO brief separates reconciled historical failures from actionable
+failures and excludes the reconciled set from recovery priorities while retaining
+their task IDs as evidence.
 The sales facts also expose owner-review leads and the measured monthly handoff goal.
 
 Recurring external-integration work has configuration backpressure. Twenty projection

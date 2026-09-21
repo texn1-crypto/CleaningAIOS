@@ -14,7 +14,7 @@ from .lead_reports import LEAD_REPORT_RECORD_TYPE, build_instant_lead_report
 from .management_companies import normalize_emails, normalize_phones
 from .models import AuditLog, BusinessGoal, BusinessRecord, OwnerNotification, Task
 from .notifications import queue_owner_notification
-from .task_state import record_task_created
+from .task_state import RECONCILED_FAILURE_STATUS, record_task_created
 
 
 LEAD_HANDOFF_METRIC = "qualified_owner_handoffs"
@@ -22,6 +22,7 @@ MANAGEMENT_COMPANY_RECORD_TYPE = "management_company"
 VERIFICATION_ACTION = "verify_existing_management_company_candidate"
 VERIFICATION_BATCH_SIZE = 8
 VERIFICATION_MAX_ATTEMPTS = 3
+VERIFICATION_FAILURE_RESOLUTION_KIND = "verification_candidate_retry_accounted"
 _TITLE_STOP_WORDS = {
     "ао",
     "гбу",
@@ -416,11 +417,18 @@ def _reconcile_failed_verification_tasks(db: Session) -> dict[str, Any]:
         )
         .order_by(Task.id.desc())
         .limit(200)
+        .with_for_update()
     ).all()
     reconciled: list[int] = []
+    backfilled: list[int] = []
     manual_review: list[int] = []
     for task in failed_tasks:
         result = task.result or {}
+        if (
+            result.get("resolution_status") == RECONCILED_FAILURE_STATUS
+            and result.get("resolution_kind") == VERIFICATION_FAILURE_RESOLUTION_KIND
+        ):
+            continue
         if result.get("error_type") not in {
             "AgentToolDenied",
             "AgentToolError",
@@ -440,6 +448,16 @@ def _reconcile_failed_verification_tasks(db: Session) -> dict[str, Any]:
             continue
         data = row.data or {}
         if data.get("internet_verification_last_failed_task_id") == task.id:
+            task.result = {
+                **result,
+                "resolution_status": RECONCILED_FAILURE_STATUS,
+                "resolution_kind": VERIFICATION_FAILURE_RESOLUTION_KIND,
+                "resolved_record_id": row.id,
+                "manual_review_required": (
+                    data.get("internet_verification_status") == "needs_manual_review"
+                ),
+            }
+            backfilled.append(task.id)
             continue
         source_url = _safe_candidate_url(payload.get("candidate_url"))
         if source_url is None:
@@ -456,11 +474,19 @@ def _reconcile_failed_verification_tasks(db: Session) -> dict[str, Any]:
             **(row.data or {}),
             "internet_verification_last_failed_task_id": task.id,
         }
+        task.result = {
+            **result,
+            "resolution_status": RECONCILED_FAILURE_STATUS,
+            "resolution_kind": VERIFICATION_FAILURE_RESOLUTION_KIND,
+            "resolved_record_id": row.id,
+            "manual_review_required": needs_manual_review,
+        }
         reconciled.append(task.id)
         if needs_manual_review:
             manual_review.append(row.id)
     return {
         "reconciled_task_ids": sorted(reconciled),
+        "backfilled_task_ids": sorted(backfilled),
         "manual_review_record_ids": sorted(manual_review),
     }
 

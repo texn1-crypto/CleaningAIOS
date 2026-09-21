@@ -27,7 +27,7 @@ from .money_opportunities import build_money_opportunities
 from .operations import goal_progress
 from .readiness import integration_status
 from .growth import growth_snapshot
-from .task_state import task_waits_for_configuration
+from .task_state import task_failure_is_reconciled, task_waits_for_configuration
 
 
 def _utcnow() -> datetime:
@@ -448,9 +448,18 @@ def build_ceo_brief(
         .order_by(Task.priority.desc(), Task.id.desc())
         .limit(20)
     ).all())
-    failed_tasks = list(db.scalars(
-        select(Task).where(Task.status == "failed").order_by(Task.id.desc()).limit(20)
+    all_failed_tasks = list(db.scalars(
+        select(Task).where(Task.status == "failed").order_by(Task.id.desc())
     ).all())
+    failed_tasks = all_failed_tasks[:20]
+    reconciled_failed = [
+        row for row in all_failed_tasks if task_failure_is_reconciled(row)
+    ]
+    actionable_failed = [
+        row for row in all_failed_tasks if not task_failure_is_reconciled(row)
+    ]
+    reconciled_failed_tasks = reconciled_failed[:20]
+    actionable_failed_tasks = actionable_failed[:20]
     all_blocked_tasks = list(db.scalars(
         select(Task).where(Task.status == "blocked").order_by(Task.id.desc())
     ).all())
@@ -494,7 +503,9 @@ def build_ceo_brief(
     ).all())
 
     active_task_count = _count(db, Task, Task.status.in_(["open", "queued", "running"]))
-    failed_task_count = _count(db, Task, Task.status == "failed")
+    failed_task_count = len(all_failed_tasks)
+    reconciled_failed_count = len(reconciled_failed)
+    actionable_failed_count = len(actionable_failed)
     blocked_task_count = _count(db, Task, Task.status == "blocked")
     waiting_configuration_count = len(waiting_configuration)
     actionable_blocked_count = len(actionable_blocked)
@@ -563,11 +574,15 @@ def build_ceo_brief(
         "tasks": {
             "active": active_task_count,
             "failed": failed_task_count,
+            "actionable_failed": actionable_failed_count,
+            "reconciled_failed": reconciled_failed_count,
             "blocked": blocked_task_count,
             "actionable_blocked": actionable_blocked_count,
             "waiting_configuration": waiting_configuration_count,
             "active_ids": [row.id for row in active_tasks],
             "failed_ids": [row.id for row in failed_tasks],
+            "actionable_failed_ids": [row.id for row in actionable_failed_tasks],
+            "reconciled_failed_ids": [row.id for row in reconciled_failed_tasks],
             "blocked_ids": [row.id for row in blocked_tasks],
             "actionable_blocked_ids": [row.id for row in actionable_blocked_tasks],
             "waiting_configuration_ids": [row.id for row in waiting_configuration_tasks],
@@ -656,14 +671,14 @@ def build_ceo_brief(
         "integrations": credential_statuses,
     }
     recommendations: list[dict[str, Any]] = []
-    if failed_tasks or actionable_blocked_tasks:
+    if actionable_failed_tasks or actionable_blocked_tasks:
         recommendations.append(
             {
                 "kind": "create_review_task",
                 "priority": "high",
                 "text": "Разобрать failed/blocked задачи и назначить ответственных.",
                 "source_ids": [
-                    row.id for row in (failed_tasks + actionable_blocked_tasks)
+                    row.id for row in (actionable_failed_tasks + actionable_blocked_tasks)
                 ],
             }
         )
@@ -700,9 +715,9 @@ def build_ceo_brief(
         sales=sales_summary,
         tenders=tender_summary,
         growth=growth,
-        failed_tasks=failed_tasks,
+        failed_tasks=actionable_failed_tasks,
         blocked_tasks=actionable_blocked_tasks,
-        failed_task_count=failed_task_count,
+        failed_task_count=actionable_failed_count,
         blocked_task_count=actionable_blocked_count,
         credential_statuses=credential_statuses,
         hot_lead_ids=hot_lead_ids,
@@ -774,6 +789,16 @@ def format_ceo_brief(data: dict[str, Any]) -> str:
     recommendations = data.get("recommendations") or []
     execution_plan = data.get("execution_plan") or []
     handoff_goal = sales.get("owner_handoff_goal") or {}
+    raw_actionable_failed_ids = (
+        task_facts.get("actionable_failed_ids")
+        if "actionable_failed_ids" in task_facts
+        else task_facts.get("failed_ids") or []
+    )
+    actionable_failed_ids = (
+        list(raw_actionable_failed_ids)
+        if isinstance(raw_actionable_failed_ids, list)
+        else []
+    )
     success_rate = agents.get("success_rate_percent")
     success_rate_text = f"{success_rate}%" if success_rate is not None else "нет завершённых запусков"
     lines = [
@@ -805,13 +830,14 @@ def format_ceo_brief(data: dict[str, Any]) -> str:
         ),
         (
             f"• Задачи сейчас: active {task_facts.get('active', 0)}, "
-            f"failed {task_facts.get('failed', 0)}, "
+            f"actionable failed {task_facts.get('actionable_failed', task_facts.get('failed', 0))}, "
+            f"reconciled failed {task_facts.get('reconciled_failed', 0)}, "
             f"actionable blocked {task_facts.get('actionable_blocked', task_facts.get('blocked', 0))}, "
             f"waiting configuration {task_facts.get('waiting_configuration', 0)}"
         ),
         (
             "  source task IDs: "
-            f"{(task_facts.get('failed_ids') or []) + (task_facts.get('actionable_blocked_ids') or task_facts.get('blocked_ids') or [])}"
+            f"{actionable_failed_ids + (task_facts.get('actionable_blocked_ids') or task_facts.get('blocked_ids') or [])}"
         ),
         f"• Тендеры: active {tenders.get('active', 0)}, owner review {tenders.get('ready_for_owner_review', 0)}",
         f"• Рост: {growth.get('status', 'goal_not_initialized')} · progress {growth.get('progress_percent', 0)}%",
