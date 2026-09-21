@@ -819,6 +819,10 @@ class FocusedLeadScoutAgent:
         self.name = name
 
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "research_public_lead_evidence":
+            from .lead_research import research_public_lead_evidence
+
+            return research_public_lead_evidence(db, payload)
         from .lead_coordination import focused_scout_payload
         from .lead_scout import run_public_lead_scout
 

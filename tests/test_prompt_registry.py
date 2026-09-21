@@ -81,6 +81,9 @@ def test_llm_adapters_report_selected_prompt_even_without_credentials(monkeypatc
         llm.PerplexityAgentCoach().coach_agents({"runs": 3}),
         llm.PerplexityAgentCoach().research_evolution({"sources": 2}),
         llm.PerplexityAgentCoach().discover_public_business_leads({"regions": ["Москва"]}),
+        llm.PerplexityAgentCoach().research_public_lead_evidence(
+            {"organization_name": "УК Тест"}
+        ),
     ]
 
     assert [result["prompt"]["name"] for result in results] == [
@@ -90,11 +93,14 @@ def test_llm_adapters_report_selected_prompt_even_without_credentials(monkeypatc
         "agent_coaching",
         "evolution_research",
         "public_lead_discovery",
+        "public_lead_research",
     ]
     for index, result in enumerate(results):
         assert result["prompt"]["variant"] == "stable"
         if index == 1:
             expected_version = "3.0.0"
+        elif index == 6:
+            expected_version = "1.0.0"
         else:
             expected_version = "1.1.0" if index in {3, 5} else "1.0.0"
         assert result["prompt"]["version"] == expected_version
@@ -115,6 +121,7 @@ def test_prompt_catalog_api_is_manager_only_and_content_free(client):
         "evolution_research",
         "request_analysis",
         "public_lead_discovery",
+        "public_lead_research",
     }
     assert "You are" not in response.text
     assert "content" not in response.text

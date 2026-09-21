@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.agents import SalesAgent
 from app.business_policy import LEAD_GOAL_TITLE
-from app import lead_qualification
+from app import lead_qualification, lead_research
 from app.lead_outcomes import LEAD_HANDOFF_METRIC, run_ceo_lead_outcome_cycle
 from app.lead_qualification import (
     QUALIFICATION_ACTION,
@@ -143,6 +143,32 @@ def test_legacy_public_researched_lead_is_promoted_into_owner_review_pipeline():
         )
         assert audit is not None
         assert audit.details["promoted_lead_ids"] == [lead.id]
+
+
+def test_cited_public_scout_lead_counts_as_verified_organization():
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        lead = _lead(title="Проверенный публичный БЦ")
+        lead.source = "perplexity_public_business_search"
+        lead.data = {
+            **lead.data,
+            "verification_reasons": [],
+            "contact_scope": "organization",
+        }
+        db.add(lead)
+        db.flush()
+
+        result = prioritize_owner_review_leads(db, current=now, notify_owner=False)
+
+        assert result["outcomes"] == {"owner_review": 1}
+        assert (
+            "organization_identity_verified"
+            not in lead.data["qualification"]["missing_facts"]
+        )
+        assert lead.data["qualification"]["score_breakdown"][
+            "organization_evidence"
+        ] == 15
 
 
 def test_russian_management_company_type_is_normalized():
@@ -396,6 +422,31 @@ def test_ceo_schedules_qualification_for_legacy_public_researched_lead():
         assert result["qualification_task_id"] is not None
 
 
+def test_ceo_schedules_targeted_research_after_qualification(monkeypatch):
+    monkeypatch.setattr(lead_research.settings, "perplexity_api_key", "configured")
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        lead = _lead(title="Карточка для исследования")
+        db.add_all([_goal(), lead])
+        db.flush()
+        prioritize_owner_review_leads(db, current=now, notify_owner=False)
+
+        result = run_ceo_lead_outcome_cycle(
+            db,
+            cycle_key="2045-06-05T12:00",
+            now=now,
+        )
+
+        assert result["lead_research_work"]["eligible_leads"] == 1
+        assert len(result["lead_research_work"]["tasks_created"]) == 1
+        task = db.get(Task, result["lead_research_work"]["tasks_created"][0])
+        assert task is not None
+        assert task.agent_type == "management_lead_scout"
+        assert task.payload["action"] == "research_public_lead_evidence"
+        assert task.payload["automatic_outreach"] is False
+
+
 def test_ceo_creates_new_same_day_task_when_qualification_backlog_changes():
     session_factory = _session_factory()
     now = datetime(2045, 6, 5, 12, 0)
@@ -417,6 +468,38 @@ def test_ceo_creates_new_same_day_task_when_qualification_backlog_changes():
         second_lead = _lead(title="Вторая карточка")
         db.add(second_lead)
         db.flush()
+        second = run_ceo_lead_outcome_cycle(
+            db,
+            cycle_key="2045-06-05T13:00",
+            now=now,
+        )
+
+        assert second["qualification_backlog"]["count"] == 1
+        assert second["qualification_task_id"] != first["qualification_task_id"]
+
+
+def test_researched_fact_requeues_same_lead_for_qualification():
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        lead = _lead(title="Карточка с новым фактом")
+        db.add_all([_goal(), lead])
+        db.flush()
+
+        first = run_ceo_lead_outcome_cycle(
+            db,
+            cycle_key="2045-06-05T12:00",
+            now=now,
+        )
+        prioritize_owner_review_leads(db, current=now, notify_owner=False)
+        first_task = db.get(Task, first["qualification_task_id"])
+        assert first_task is not None
+        first_task.status = "done"
+        data = dict(lead.data or {})
+        data["public_need_evidence"] = "Опубликован запрос на клининг"
+        data.pop("qualification_fingerprint", None)
+        lead.data = data
+
         second = run_ceo_lead_outcome_cycle(
             db,
             cycle_key="2045-06-05T13:00",
