@@ -231,6 +231,10 @@ write option creates a normal analytical CEO task through the shared Tasks API. 
 report path performs outreach, spending, submission or another critical action.
 Credential-dependent blocked tasks are reported separately from actionable workflow
 failures, so missing provider access cannot inflate the engineering recovery KPI.
+The same classification recognizes legacy task payloads that name credential-like
+blocking requirements. Active work is split into runnable work and future scheduled
+work, with the next scheduled time exposed, so a deliberate cadence is not reported
+as a stalled worker queue.
 Likewise, the CEO brief separates reconciled historical failures from actionable
 failures and excludes the reconciled set from recovery priorities while retaining
 their task IDs as evidence.

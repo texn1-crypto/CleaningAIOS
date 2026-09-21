@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -38,6 +38,7 @@ def test_ceo_brief_separates_primary_facts_from_recommendations(client, monkeypa
     approval_id = blocked["result"]["approval_id"]
 
     with SessionLocal() as db:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         payment = BusinessRecord(
             record_type="payment",
             title="CEO brief overdue payment",
@@ -64,6 +65,29 @@ def test_ceo_brief_separates_primary_facts_from_recommendations(client, monkeypa
                 "credentials_required": ["TWENTY_API_KEY"],
             },
         )
+        legacy_configuration_wait = Task(
+            title="CEO brief legacy configuration wait",
+            agent_type="research",
+            status="blocked",
+            payload={
+                "blocking_requirements": [
+                    "YANDEX_SEARCH_API_KEY",
+                    "YANDEX_CLOUD_FOLDER_ID",
+                ]
+            },
+        )
+        runnable_task = Task(
+            title="CEO brief runnable task",
+            agent_type="research",
+            status="queued",
+            run_after=now - timedelta(minutes=1),
+        )
+        scheduled_task = Task(
+            title="CEO brief scheduled task",
+            agent_type="research",
+            status="queued",
+            run_after=now + timedelta(days=1),
+        )
         reconciled_failure = Task(
             title="CEO brief reconciled verification failure",
             agent_type="lead_coordinator",
@@ -75,11 +99,24 @@ def test_ceo_brief_separates_primary_facts_from_recommendations(client, monkeypa
                 "resolution_kind": "verification_candidate_retry_accounted",
             },
         )
-        db.add_all([payment, alert, waiting_configuration, reconciled_failure])
+        db.add_all(
+            [
+                payment,
+                alert,
+                waiting_configuration,
+                legacy_configuration_wait,
+                runnable_task,
+                scheduled_task,
+                reconciled_failure,
+            ]
+        )
         db.commit()
         payment_id = payment.id
         alert_id = alert.id
         waiting_configuration_id = waiting_configuration.id
+        legacy_configuration_wait_id = legacy_configuration_wait.id
+        runnable_task_id = runnable_task.id
+        scheduled_task_id = scheduled_task.id
         reconciled_failure_id = reconciled_failure.id
 
     response = client.get("/api/ceo/brief", headers={"X-Role": "manager"})
@@ -98,7 +135,14 @@ def test_ceo_brief_separates_primary_facts_from_recommendations(client, monkeypa
     assert protected_task["id"] in brief["facts"]["tasks"]["blocked_ids"]
     assert protected_task["id"] in brief["facts"]["tasks"]["actionable_blocked_ids"]
     assert waiting_configuration_id in brief["facts"]["tasks"]["waiting_configuration_ids"]
-    assert brief["facts"]["tasks"]["waiting_configuration"] >= 1
+    assert legacy_configuration_wait_id in brief["facts"]["tasks"]["waiting_configuration_ids"]
+    assert legacy_configuration_wait_id not in brief["facts"]["tasks"]["actionable_blocked_ids"]
+    assert brief["facts"]["tasks"]["waiting_configuration"] >= 2
+    assert runnable_task_id in brief["facts"]["tasks"]["runnable_active_ids"]
+    assert scheduled_task_id in brief["facts"]["tasks"]["scheduled_active_ids"]
+    assert brief["facts"]["tasks"]["runnable_active"] >= 1
+    assert brief["facts"]["tasks"]["scheduled_active"] >= 1
+    assert brief["facts"]["tasks"]["next_scheduled_at"]
     assert approval_id in brief["facts"]["approvals"]["ids"]
     assert alert_id in brief["facts"]["critical_alerts"]["ids"]
     assert payment_id in brief["facts"]["finance"]["payment_ids"]
@@ -121,6 +165,8 @@ def test_telegram_ceo_brief_is_read_only_and_task_button_uses_tasks_api(monkeypa
         "facts": {
             "tasks": {
                 "active": 2,
+                "runnable_active": 1,
+                "scheduled_active": 1,
                 "failed": 1,
                 "actionable_failed": 1,
                 "reconciled_failed": 0,
@@ -184,6 +230,7 @@ def test_telegram_ceo_brief_is_read_only_and_task_button_uses_tasks_api(monkeypa
     text, kwargs = update.effective_message.replies[-1]
     assert "ФАКТЫ ИЗ БД" in text
     assert "РЕКОМЕНДАЦИИ (НЕ ВЫПОЛНЕНЫ)" in text
+    assert "active 2, runnable 1, scheduled 1" in text
     assert "source task IDs: [10, 11]" in text
     buttons = [button for row in kwargs["reply_markup"].inline_keyboard for button in row]
     assert [button.callback_data for button in buttons] == [
@@ -222,6 +269,25 @@ def test_ceo_brief_does_not_render_reconciled_failures_as_actionable_sources():
     assert "actionable failed 0" in rendered
     assert "reconciled failed 1" in rendered
     assert "source task IDs: []" in rendered
+
+
+def test_task_configuration_wait_supports_legacy_payload_without_false_positive():
+    from app.models import Task
+    from app.task_state import task_waits_for_configuration
+
+    legacy_wait = Task(
+        title="Legacy credentials wait",
+        status="blocked",
+        payload={"blocking_requirements": ["YANDEX_SEARCH_API_KEY", "YANDEX_CLOUD_FOLDER_ID"]},
+    )
+    operational_wait = Task(
+        title="Owner decision wait",
+        status="blocked",
+        payload={"blocking_requirements": ["owner approval"]},
+    )
+
+    assert task_waits_for_configuration(legacy_wait) is True
+    assert task_waits_for_configuration(operational_wait) is False
 
 
 def test_weekly_ceo_brief_joins_business_facts_and_reuses_notification(client):
