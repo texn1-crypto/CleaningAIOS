@@ -442,12 +442,28 @@ def build_ceo_brief(
         generated_at = generated_at.astimezone(timezone.utc).replace(tzinfo=None)
     period_days = max(1, min(int(period_days), 31))
     period_start = generated_at - timedelta(days=period_days)
-    active_tasks = list(db.scalars(
+    all_active_tasks = list(db.scalars(
         select(Task)
         .where(Task.status.in_(["open", "queued", "running"]))
         .order_by(Task.priority.desc(), Task.id.desc())
-        .limit(20)
     ).all())
+    active_tasks = all_active_tasks[:20]
+    scheduled_active = [
+        row
+        for row in all_active_tasks
+        if (
+            row.status in {"open", "queued"}
+            and row.run_after is not None
+            and row.run_after > generated_at
+        )
+    ]
+    runnable_active = [
+        row
+        for row in all_active_tasks
+        if row.status == "running" or row.run_after is None or row.run_after <= generated_at
+    ]
+    scheduled_active_tasks = scheduled_active[:20]
+    runnable_active_tasks = runnable_active[:20]
     all_failed_tasks = list(db.scalars(
         select(Task).where(Task.status == "failed").order_by(Task.id.desc())
     ).all())
@@ -502,7 +518,9 @@ def build_ceo_brief(
         .order_by(BusinessRecord.id.desc())
     ).all())
 
-    active_task_count = _count(db, Task, Task.status.in_(["open", "queued", "running"]))
+    active_task_count = len(all_active_tasks)
+    scheduled_active_count = len(scheduled_active)
+    runnable_active_count = len(runnable_active)
     failed_task_count = len(all_failed_tasks)
     reconciled_failed_count = len(reconciled_failed)
     actionable_failed_count = len(actionable_failed)
@@ -573,6 +591,8 @@ def build_ceo_brief(
     facts = {
         "tasks": {
             "active": active_task_count,
+            "runnable_active": runnable_active_count,
+            "scheduled_active": scheduled_active_count,
             "failed": failed_task_count,
             "actionable_failed": actionable_failed_count,
             "reconciled_failed": reconciled_failed_count,
@@ -580,6 +600,13 @@ def build_ceo_brief(
             "actionable_blocked": actionable_blocked_count,
             "waiting_configuration": waiting_configuration_count,
             "active_ids": [row.id for row in active_tasks],
+            "runnable_active_ids": [row.id for row in runnable_active_tasks],
+            "scheduled_active_ids": [row.id for row in scheduled_active_tasks],
+            "next_scheduled_at": (
+                min(row.run_after for row in scheduled_active).isoformat()
+                if scheduled_active
+                else None
+            ),
             "failed_ids": [row.id for row in failed_tasks],
             "actionable_failed_ids": [row.id for row in actionable_failed_tasks],
             "reconciled_failed_ids": [row.id for row in reconciled_failed_tasks],
@@ -830,6 +857,8 @@ def format_ceo_brief(data: dict[str, Any]) -> str:
         ),
         (
             f"• Задачи сейчас: active {task_facts.get('active', 0)}, "
+            f"runnable {task_facts.get('runnable_active', task_facts.get('active', 0))}, "
+            f"scheduled {task_facts.get('scheduled_active', 0)}, "
             f"actionable failed {task_facts.get('actionable_failed', task_facts.get('failed', 0))}, "
             f"reconciled failed {task_facts.get('reconciled_failed', 0)}, "
             f"actionable blocked {task_facts.get('actionable_blocked', task_facts.get('blocked', 0))}, "

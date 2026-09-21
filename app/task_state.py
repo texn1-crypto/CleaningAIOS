@@ -24,6 +24,18 @@ RECONCILED_FAILURE_KINDS = frozenset(
         "verification_candidate_retry_accounted",
     }
 )
+CONFIGURATION_REQUIREMENT_MARKERS = frozenset(
+    {
+        "API_KEY",
+        "CLIENT_ID",
+        "CLIENT_SECRET",
+        "CREDENTIAL",
+        "FOLDER_ID",
+        "PASSWORD",
+        "SECRET",
+        "TOKEN",
+    }
+)
 ALLOWED_TRANSITIONS = {
     "open": frozenset({"queued", "running", "blocked", "done", "failed"}),
     "queued": frozenset({"running", "blocked", "done", "failed"}),
@@ -48,10 +60,24 @@ def task_waits_for_configuration(task: Task) -> bool:
     }
     if states & CONFIGURATION_WAIT_STATES:
         return True
-    required = result.get("credentials_required")
-    if isinstance(required, str):
-        return bool(required.strip())
-    return isinstance(required, (list, tuple, set, dict)) and bool(required)
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    for required in (
+        result.get("credentials_required"),
+        payload.get("credentials_required"),
+        payload.get("required_credentials"),
+    ):
+        if isinstance(required, str) and required.strip():
+            return True
+        if isinstance(required, (list, tuple, set, dict)) and required:
+            return True
+    blockers = payload.get("blocking_requirements")
+    if isinstance(blockers, str):
+        blocker_text = blockers.upper()
+    elif isinstance(blockers, (list, tuple, set)):
+        blocker_text = " ".join(str(value) for value in blockers).upper()
+    else:
+        blocker_text = ""
+    return any(marker in blocker_text for marker in CONFIGURATION_REQUIREMENT_MARKERS)
 
 
 def task_failure_is_reconciled(task: Task) -> bool:
