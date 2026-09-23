@@ -105,6 +105,16 @@ evidence and serves all 21 roles through a read-only common runtime action.
 The CEO lead fallback uses it without granting prospect-outreach authority. See
 [`CRAWL4AI.md`](CRAWL4AI.md).
 
+Russian Telegram requests such as “Исследуй сайт https://example.org/” route to
+that real common action, not a generic domain analysis. The bot returns stored
+source excerpts and marks partial coverage explicitly. It waits at most 60 seconds
+for the API response; a timeout is neither success nor permission to rerun work.
+An optional actor-scoped `Idempotency-Key` on task creation binds the canonical
+request digest to one Task through a unique transactional outbox receipt. Repeated
+identical requests reuse the task; a changed body conflicts. Legacy requests without
+the header retain their old behavior. `GET /api/tasks/{id}` reads the same state
+without fetching the full history. A competing worker's claim is read back, not retried.
+
 Agent roles are registry entries over the same durable Task queue, not independent
 databases or uncontrolled loops. Production can scale `worker` consumers from 1 to
 60 with PostgreSQL `FOR UPDATE SKIP LOCKED`; deployment and watchdog scripts verify

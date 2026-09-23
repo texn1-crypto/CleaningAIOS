@@ -21,7 +21,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import NetworkError, TelegramError
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
-from .chat import redact_sensitive_text, understand_russian_message
+from .chat import format_public_research, redact_sensitive_text, understand_russian_message
 from .config import settings
 from .lead_autopilot import CLEANING_KIND_LABELS, FREQUENCY_LABELS, SERVICE_LABELS, URGENCY_LABELS, normalize_phone
 from .recipient_import import EMAIL_PATTERN, SUPPORTED_RECIPIENT_SUFFIXES, extract_recipient_emails
@@ -1794,6 +1794,30 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await _execute_image_generation(update, intent)
                 return
             task_payload = dict(intent["payload"])
+            if action == "public_web_research":
+                # Advisory council output is not part of the deterministic request identity.
+                task_payload.pop("request_council", None)
+                request_key = hashlib.sha256(_image_request_key(update).encode()).hexdigest()
+                data = await api("POST", "/api/tasks", headers={"Idempotency-Key": f"telegram-research:{request_key}"}, json={
+                    "title": intent["title"], "agent_type": intent["agent_type"],
+                    "priority": intent["priority"], "payload": task_payload, "max_attempts": 1,
+                })
+                await update.effective_message.reply_text(f"Исследование сайта: задача #{data['id']}.")
+                if data.get("status") in {"open", "queued"}:
+                    try:
+                        data = await api("POST", f"/api/tasks/{data['id']}/run", timeout=60)
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code != 409:
+                            raise
+                        data = await api("GET", f"/api/tasks/{data['id']}")
+                    except httpx.TimeoutException:
+                        await update.effective_message.reply_text(
+                            f"Ожидание ответа по задаче #{data['id']} завершилось. Это не подтверждение ошибки или успеха: "
+                            "проверьте сохранённый статус в разделе задач. Повторный запуск не выполнен."
+                        )
+                        return
+                await update.effective_message.reply_text(format_public_research(data), disable_web_page_preview=True)
+                return
             if action == "refresh_social_visuals":
                 task_payload["request_key"] = _image_request_key(update)
             data = await api("POST", "/api/tasks", json={

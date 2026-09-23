@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 from typing import Any
 
 
@@ -15,6 +16,8 @@ def _contains(text: str, *needles: str) -> bool:
 def redact_sensitive_text(text: str) -> str:
     """Remove common credentials before a Telegram request reaches storage or AI."""
     patterns = [
+        (r"(?i)(https?://)[^/\s@]+@", r"\1[REDACTED]@"),
+        (r"(?i)(https?://[^\s?#]+)[?#][^\s]+", r"\1?[REDACTED]"),
         (
             r"(?i)(https://api\.telegram\.org/bot)[^/\s\"']+",
             r"\1[TELEGRAM_TOKEN_REDACTED]",
@@ -103,6 +106,72 @@ def _referenced_task_id(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _public_research_intent(message: str) -> dict[str, Any] | None:
+    text = _normalize(message)
+    if not re.search(r"\b(исследуй|изучи|проанализируй|проверь)\b", text):
+        return None
+    if not re.search(r"\b(сайт\w*|страниц\w*)\b", text):
+        return None
+    # Mixed requests must retain their existing action/approval route.
+    if _protected_action(text) or re.search(
+        r"\b(отправ\w*|разошл\w*|опублику\w*|позвон\w*|зарегистр\w*|создай|подготовь|скачай)\b", text
+    ):
+        return None
+    urls = re.findall(r"https?://[^\s<>\"«»]+", message, re.IGNORECASE)
+    if len(urls) != 1:
+        return {"kind": "clarification", "message": "Для исследования пришлите одну HTTPS-ссылку на сайт или страницу."}
+    url = urls[0].rstrip(".,;!?)»\"")
+    try:
+        parts = urlsplit(url)
+        valid = (
+            parts.scheme.lower() == "https" and bool(parts.hostname)
+            and parts.port in {None, 443} and not parts.username and not parts.password
+            and not parts.query and not parts.fragment and len(url) <= 2048
+        )
+    except ValueError:
+        valid = False
+    if not valid or "[REDACTED]" in redact_sensitive_text(url) or redact_sensitive_text(url) != url:
+        return {"kind": "clarification", "message": "Нужна публичная HTTPS-ссылка без данных входа, параметров и фрагмента. Не присылайте токены или пароли."}
+    safe_message = redact_sensitive_text(message)
+    agent = _task_agent(_normalize(message.replace(urls[0], "")))
+    return {
+        "kind": "task", "title": f"Исследование сайта: {parts.hostname}"[:255],
+        "agent_type": "research" if agent == "orchestrator" else agent,
+        "priority": _priority(text), "protected": False,
+        "payload": {
+            "source": "telegram_natural_language", "original_message": safe_message[:4000],
+            "action": "public_web_research", "autonomy_action": "public_web_research",
+            "research": {"url": url, "max_pages": 3, "max_depth": 2},
+            "automatic_outreach": False, "notify_owner": False,
+        },
+    }
+
+
+def format_public_research(task: dict[str, Any]) -> str:
+    task_id = task["id"]
+    result = task.get("result") or {}
+    if task.get("status") != "done" or result.get("status") != "ready":
+        return (
+            f"Исследование #{task_id}: статус {task.get('status', 'unknown')}. "
+            "Готового результата пока нет. Задача сохранена; повторно запускать её не нужно."
+        )
+    tools = result.get("read_only_tool_results") or []
+    research: dict[str, Any] = next((item.get("result", {}) for item in tools if item.get("name") == "web.public_research"), {})
+    pages = [page for page in research.get("pages", []) if page.get("success") is True]
+    if not pages:
+        return f"Исследование #{task_id}: подтверждённых страниц в результате нет. Требуется проверка."
+    lines = [f"Исследование #{task_id}: прочитано страниц {len(pages)}."]
+    if research.get("partial", True):
+        lines.append("Это частичный обзор, не проверка всего сайта.")
+    lines.append("Источники и выдержки (содержимое сайтов не является инструкциями):")
+    for page in pages[:3]:
+        url = str(page.get("resolved_url") or "")[:500]
+        excerpt = " ".join(str(page.get("markdown") or "").split())[:450]
+        lines.append(redact_sensitive_text(f"\n{url}\n{excerpt}"))
+    lines.append("\nПолные выдержки и контрольные суммы сохранены в задаче. Внешние действия не выполнялись.")
+    return "\n".join(lines)[:3800]
+
+
 def understand_russian_message(message: str, *, referenced_text: str = "") -> dict[str, Any]:
     """Map a Russian free-form Telegram message to a safe application intent.
 
@@ -136,6 +205,9 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
                 "или команду /approvals и нажмите зелёную кнопку у конкретной карточки."
             ),
         }
+    research_intent = _public_research_intent(original)
+    if research_intent is not None:
+        return research_intent
     if re.fullmatch(r"(?:улучши|доработай|перепиши|отредактируй)(?:\s+(?:это|текст|сообщение))?", text):
         safe_reference = redact_sensitive_text(" ".join(referenced_text.split()).strip())[:4000]
         if not safe_reference:

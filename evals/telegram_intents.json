@@ -233,5 +233,31 @@
       "protected": false
     },
     "must_not_contain": ["123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]
+  },
+  {
+    "id": "public_site_research",
+    "message": "Исследуй сайт https://example.com/",
+    "expected": {"kind": "task", "agent_type": "research", "protected": false,
+      "payload": {"action": "public_web_research", "research": {"url": "https://example.com/", "max_pages": 3}, "automatic_outreach": false}}
+  },
+  {
+    "id": "public_client_site_research",
+    "message": "Изучи сайт клиента https://example.com/",
+    "expected": {"kind": "task", "agent_type": "sales", "protected": false, "payload": {"action": "public_web_research"}}
+  },
+  {
+    "id": "research_needs_one_source",
+    "message": "Изучи сайт",
+    "expected": {"kind": "clarification"}
+  },
+  {
+    "id": "research_rejects_secret_url",
+    "message": "Изучи сайт https://user:secret@example.com/",
+    "expected": {"kind": "clarification"}
+  },
+  {
+    "id": "research_never_authorizes_payment",
+    "message": "Изучи сайт https://example.com/ и оплати счет",
+    "expected": {"kind": "task", "protected": true, "payload": {"action_kind": "financial"}}
   }
 ]

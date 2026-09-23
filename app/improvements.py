@@ -338,6 +338,7 @@ def deterministic_assessment(message: str, intent: dict[str, Any]) -> dict[str, 
         "refresh_social_visuals",
         "generate_image",
         "run_safe_operations_cycle",
+        "public_web_research",
     }:
         return {
             "fully_supported": True,
