@@ -442,6 +442,11 @@ class AgentRuntime:
         if not agent:
             raise ValueError(f"Unknown agent: {task.agent_type}")
         base_payload = task.payload if isinstance(task.payload, dict) else {}
+        if base_payload.get("action") == "public_web_research":
+            base_payload = {
+                **base_payload,
+                "read_only_tools": [{"name": "web.public_research", "arguments": base_payload.get("research", {})}],
+            }
         execution_payload = {
             **base_payload,
             "agent_skill_context": agent_skill_context(task.agent_type),
@@ -474,7 +479,16 @@ class AgentRuntime:
                     **execution_payload,
                     "read_only_tool_results": tool_results,
                 }
-            if execution_payload.get("action") == "ceo_strategic_checkpoint":
+            if execution_payload.get("action") == "public_web_research":
+                research = tool_results[0]["result"]
+                raw_result = {
+                    "status": "ready" if research.get("success") else "unavailable",
+                    "partial": research.get("partial", True),
+                    "pages_succeeded": research.get("pages_succeeded", 0),
+                    "external_messages_sent": False,
+                    "evidence": [{"type": "public_web_research", "tool_call_id": tool_results[0]["tool_call_id"]}],
+                }
+            elif execution_payload.get("action") == "ceo_strategic_checkpoint":
                 from .operations import execute_ceo_strategy_checkpoint
 
                 raw_result = execute_ceo_strategy_checkpoint(db, task=task)

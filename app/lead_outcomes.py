@@ -332,8 +332,8 @@ def _schedule_verification_tasks(
                 "automatic_outreach": False,
                 "read_only_tools": [
                     {
-                        "name": "web.public_crawl",
-                        "arguments": {"url": url, "max_chars": 8_000},
+                        "name": "web.public_research",
+                        "arguments": {"url": url, "max_pages": 3, "max_depth": 2, "max_chars": 3000},
                     }
                 ],
             },
@@ -548,9 +548,23 @@ def verify_existing_management_company_candidate(
         raise ValueError("Exactly one audited Crawl4AI result is required")
     tool_result = tool_results[0]
     crawl = tool_result.get("result") if isinstance(tool_result, dict) else None
+    if isinstance(crawl, dict) and tool_result.get("name") == "web.public_research":
+        pages = crawl.get("pages")
+        if crawl.get("requested_url") != requested_url or not isinstance(pages, list):
+            raise ValueError("Public research evidence must match the candidate website")
+        usable_pages = [
+            page for page in pages
+            if isinstance(page, dict) and page.get("success") is True
+            and _host(page.get("resolved_url")) == _host(requested_url)
+        ]
+        matched_pages = [
+            page for page in usable_pages
+            if _organization_evidence_matches(row, str(page["resolved_url"]), str(page.get("markdown") or ""))[0]
+        ]
+        crawl = (matched_pages or usable_pages or [{"success": False}])[0]
     if (
         not isinstance(crawl, dict)
-        or tool_result.get("name") != "web.public_crawl"
+        or tool_result.get("name") not in {"web.public_crawl", "web.public_research"}
         or crawl.get("success") is not True
     ):
         attempts, manual_review = _record_verification_failure(

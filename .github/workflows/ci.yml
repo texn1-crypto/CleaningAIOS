@@ -59,7 +59,7 @@ jobs:
         run: |
           ruff check .
           mypy --strict app/chat.py app/agent_evals.py app/observability.py app/logging_config.py app/prompt_registry.py app/mcp_read_client.py app/company_brain_retrieval.py app/orchestrator_telemetry.py
-          mypy --strict --follow-imports=skip app/agent_tools.py
+          mypy --strict --follow-imports=skip app/agent_tools.py app/crawl4ai_client.py app/quality_criteria.py
           mypy --strict --follow-imports=skip app/company_profiles.py
           mypy --strict --follow-imports=skip app/tender_prequalification.py
           mypy --strict --follow-imports=skip app/tender_supplier_candidates.py
@@ -73,7 +73,16 @@ jobs:
         run: bash -n scripts/deploy_server.sh scripts/server_watchdog.sh scripts/install_server_watchdog.sh
       - name: Dependency vulnerability audit
         run: pip-audit -r requirements.txt
-      - run: pytest --cov=app --cov-report=term-missing
+      - run: pytest --cov=app --cov-report=term-missing --junitxml=test-results.xml
+      - name: Verify 100 quality criteria against executed regression results
+        run: python scripts/check_quality_criteria.py --junit test-results.xml > quality-results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-evidence
+          path: |
+            test-results.xml
+            quality-results.json
       - run: cp .env.example .env
       - run: python scripts/bootstrap_secrets.py .env
       - run: docker compose --env-file .env.example config
