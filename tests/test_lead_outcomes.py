@@ -105,7 +105,13 @@ def test_ceo_cycle_schedules_bounded_idempotent_crawl_work_and_daily_plan(
         assert all(task.agent_type == "lead_coordinator" for task in tasks)
         assert all(task.payload["automatic_outreach"] is False for task in tasks)
         assert all(task.payload["read_only_tools"][0]["name"] == "web.public_crawl" for task in tasks)
-        assert len(first["priorities"]) <= 5
+        assert len(first["priorities"]) == 4
+        assert first["priorities"][0]["accountable_agent"] == "system_admin"
+        assert all(
+            priority[key]
+            for priority in first["priorities"]
+            for key in ("accountable_agent", "metric", "deadline", "dependencies", "stop_condition")
+        )
         assert all(priority["accountable_agent"] for priority in first["priorities"])
         assert first["provider_health"]["status"] == "unavailable"
         assert first["provider_recovery_task_id"] == repeated["provider_recovery_task_id"]
@@ -278,7 +284,15 @@ def test_goal_counts_only_reports_actually_sent_to_owner_this_month():
                 external_id=f"lead:{index}",
                 title=f"Lead {index}",
                 status="owner_review",
-                data={},
+                source="perplexity_public_business_search",
+                data={
+                    "region": "Санкт-Петербург",
+                    "organization_type": "business_center",
+                    "contact_scope": "organization",
+                    "public_phones": ["+78120000000"],
+                    "source_urls": [f"https://lead-{index}.example/"],
+                    "last_verified_at": now.isoformat(),
+                },
             )
             for index in (101, 102)
         ]
@@ -333,6 +347,84 @@ def test_goal_counts_only_reports_actually_sent_to_owner_this_month():
         assert result["current"] == 2
         assert result["sent_report_count"] == 1
         assert goal.current == 2
+
+
+def test_goal_rechecks_evidence_and_deduplicates_organizations_without_changing_lifecycle(monkeypatch):
+    monkeypatch.setattr(lead_outcomes.settings, "management_contact_regions", "Санкт-Петербург|Ленинградская область")
+    session_factory = _session_factory()
+    now = datetime(2045, 6, 5, 12, 0)
+    with session_factory() as db:
+        goal = _goal()
+        goal.current = 62
+        db.add(goal)
+        base = {
+            "region": "Санкт-Петербург",
+            "organization_type": "business_center",
+            "contact_scope": "organization",
+            "public_phones": ["+78120000000"],
+            "source_urls": ["https://verified.example/contacts"],
+            "last_verified_at": now.isoformat(),
+            # Stored classifications must not override current source evidence.
+            "qualification": {"outcome": "owner_review"},
+        }
+        changes = [
+            {"inn": "1234567890"},
+            {"inn": "1234567890"},
+            {"region": "Москва"},
+            {"source_urls": []},
+            {"public_phones": []},
+            {"last_verified_at": "2044-01-01T00:00:00"},
+            {"organization_type": "unknown"},
+            {"contact_scope": "person"},
+        ]
+        leads = [
+            BusinessRecord(
+                record_type="lead", external_id=f"evidence:{index}",
+                title=f"Candidate {index}", status="owner_review",
+                source="perplexity_public_business_search", data={**base, **change},
+            )
+            for index, change in enumerate(changes)
+        ]
+        db.add_all(leads)
+        db.flush()
+        report = BusinessRecord(
+            record_type="lead_discovery_report", external_id="evidence:report",
+            title="Delivered report", status="completed",
+            data={"lead_ids": [lead.id for lead in leads] + [leads[0].id]},
+        )
+        db.add(report)
+        db.flush()
+        for suffix in ("first", "duplicate"):
+            db.add(OwnerNotification(
+                idempotency_key=f"evidence:{suffix}", channel="telegram",
+                resource_type="lead_discovery_report", resource_id=str(report.id),
+                status="sent", sent_at=now,
+            ))
+        db.flush()
+        result = reconcile_lead_handoff_goal(db, now=now)
+        assert result["current"] == 1
+        assert result["excluded_unqualified_lead_count"] == 6
+        assert result["sent_report_count"] == 1
+        assert goal.current == 1
+        assert all(lead.status == "owner_review" for lead in leads)
+        assert reconcile_lead_handoff_goal(db, now=now)["current"] == 1
+        assert db.scalar(select(func.count()).select_from(OutboundMessage)) == 0
+
+
+def test_ceo_cycle_has_four_complete_priorities_with_a_healthy_provider():
+    session_factory = _session_factory()
+    with session_factory() as db:
+        db.add(_goal())
+        db.add(Task(
+            title="Available provider", agent_type="management_lead_scout",
+            status="done", payload={"action": "discover_public_business_leads"},
+            result={"status": "completed"},
+        ))
+        db.flush()
+        result = run_ceo_lead_outcome_cycle(db, cycle_key="healthy-plan")
+        assert len(result["priorities"]) == 4
+        assert [item["priority"] for item in result["priorities"]] == [1, 2, 3, 4]
+        assert result["priorities"][0]["accountable_agent"] == "lead_scout"
 
 
 def test_ceo_cycle_counts_a_guarded_tool_failure_once_for_candidate_retry_limit():

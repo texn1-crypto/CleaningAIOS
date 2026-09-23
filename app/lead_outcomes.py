@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .lead_qualification import (
     QUALIFICATION_ACTION,
+    has_qualified_handoff_evidence,
     qualification_backlog,
     qualification_candidate_count,
 )
@@ -121,6 +122,8 @@ def reconcile_lead_handoff_goal(
         if str(row.resource_id).isdigit()
     }
     lead_ids: set[int] = set()
+    organization_keys: set[str] = set()
+    excluded_lead_ids: set[int] = set()
     for report_id in report_ids:
         report = db.get(BusinessRecord, report_id)
         if report is None or report.record_type != LEAD_REPORT_RECORD_TYPE:
@@ -134,7 +137,23 @@ def reconcile_lead_handoff_goal(
                 and lead.record_type == "lead"
                 and lead.status in {"owner_review", "qualified", "sales_ready", "won"}
             ):
-                lead_ids.add(lead.id)
+                if not has_qualified_handoff_evidence(db, lead, current=current):
+                    excluded_lead_ids.add(lead.id)
+                    continue
+                data = lead.data or {}
+                inn = re.sub(r"\D", "", str(data.get("inn") or ""))
+                # A legal organization can occur in reports from several scouts.
+                # Prefer its tax ID; otherwise match its normalized name and site.
+                host = _host(data.get("website"))
+                name = " ".join(lead.title.casefold().replace("ё", "е").split())
+                identity = (
+                    f"inn:{inn}" if len(inn) in {10, 12}
+                    else f"company:{host}:{name}" if host and name
+                    else f"lead:{lead.id}"
+                )
+                if identity not in organization_keys:
+                    organization_keys.add(identity)
+                    lead_ids.add(lead.id)
     previous = float(goal.current)
     goal.current = float(len(lead_ids))
     if previous != goal.current:
@@ -151,6 +170,7 @@ def reconcile_lead_handoff_goal(
                     "period_start": start.isoformat(),
                     "period_end": end.isoformat(),
                     "sent_report_count": len(report_ids),
+                    "excluded_unqualified_lead_count": len(excluded_lead_ids),
                 },
             )
         )
@@ -167,7 +187,8 @@ def reconcile_lead_handoff_goal(
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
         "sent_report_count": len(report_ids),
-        "source": "sent owner notifications for lead discovery reports",
+        "excluded_unqualified_lead_count": len(excluded_lead_ids),
+        "source": "unique qualified organizations in sent owner lead reports",
     }
 
 
@@ -898,6 +919,15 @@ def run_ceo_lead_outcome_cycle(
             "stop_condition": "контрольный поиск возвращает валидные публичные результаты",
         },
     ]
+    # Restore a blocked dependency before scheduling more work against it.
+    # Qualification, fallback and measured delivery remain accountable priorities.
+    priorities = (
+        [priorities[4], *priorities[1:4]]
+        if provider["status"] == "unavailable"
+        else priorities[:4]
+    )
+    for rank, priority in enumerate(priorities, start=1):
+        priority["priority"] = rank
     risk_reasons: list[str] = []
     if goal["status"] == "goal_not_configured":
         risk_reasons.append("lead_handoff_goal_not_configured")
