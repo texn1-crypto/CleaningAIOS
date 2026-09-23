@@ -50,6 +50,21 @@ configuration state only, not the credential.
 
 ## Agent contract
 
+Telegram accepts `Исследуй сайт https://example.org/`, `Изучи сайт ...` and
+`Проанализируй сайт клиента ...` as three-page research requests. Supply exactly
+one public HTTPS URL without credentials, query parameters or fragments. The
+runtime still resolves and validates every target and redirect. Mixed financial,
+contractual or outreach requests retain their existing approval/action route.
+The reply quotes the retrieved pages; it is not an LLM-generated audit or a claim
+that the whole site was checked. URL userinfo is redacted before request analysis.
+Repeated delivery of the same Telegram message reuses the persisted task. The bot
+does not retry execution after a timeout or a competing worker's claim.
+
+Regression evidence: `tests/test_research_chat.py` covers routing, ambiguous and
+sensitive input, mixed protected actions, task replay/conflicts, competing-claim
+rollback and Telegram success/partial/failure/timeout rendering. These tests use
+isolated crawler fixtures; production evidence belongs in the release PR.
+
 A permitted task can include one page request:
 
 ```json

@@ -49,6 +49,7 @@ from .task_state import (
     task_execution_lock_query,
     transition_task,
 )
+from .task_requests import TaskRequestConflict, create_requested_task
 from .observability import agent_observability_snapshot, prometheus_metrics
 from .logging_config import configure_logging, request_correlation_id
 from .approval_service import (
@@ -224,11 +225,25 @@ def list_tasks(
 
 
 @app.post("/api/tasks", status_code=201)
-def create_task(payload: TaskCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal)):
+def create_task(
+    payload: TaskCreate, db: Session = Depends(get_db), actor: Principal = Depends(principal),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", min_length=1, max_length=200),
+):
     require_role(actor, "operator")
     if payload.agent_type not in AGENTS: raise HTTPException(422, f"Unknown agent: {payload.agent_type}")
-    row = Task(**payload.model_dump(exclude_none=True))
-    db.add(row); db.flush(); record_task_created(db, row, actor=actor.subject); audit(db, actor.subject, "task.created", "task", str(row.id), {"agent_type": row.agent_type}); db.commit(); db.refresh(row)
+    try:
+        row = create_requested_task(db, payload, actor=actor.subject, idempotency_key=idempotency_key)
+    except TaskRequestConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    db.commit(); db.refresh(row)
+    return as_task(row)
+
+
+@app.get("/api/tasks/{task_id}")
+def read_task(task_id: int, db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    row = db.get(Task, task_id)
+    if row is None:
+        raise HTTPException(404, "Task not found")
     return as_task(row)
 
 
