@@ -272,19 +272,15 @@ print("application_health=ok")
 PY
 
 docker compose --env-file .env --profile telegram exec -T bot python - <<'PY'
-import json
 import os
-import urllib.request
+from app.deployment_probes import verify_telegram_identity
 
 token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 if not token:
     raise SystemExit("TELEGRAM_BOT_TOKEN is missing in the bot container")
 base = os.environ.get("TELEGRAM_BOT_API_BASE_URL", "").strip().rstrip("/") or "https://api.telegram.org"
-with urllib.request.urlopen(f"{base}/bot{token}/getMe", timeout=10) as response:
-    payload = json.load(response)
-if not payload.get("ok") or not payload.get("result", {}).get("id"):
-    raise SystemExit("Telegram getMe failed")
-print("telegram_getme=ok")
+attempts = verify_telegram_identity(token, base)
+print(f"telegram_getme=ok attempts={attempts}")
 PY
 
 if (( jarvis_enabled )); then
