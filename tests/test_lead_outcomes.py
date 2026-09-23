@@ -104,7 +104,8 @@ def test_ceo_cycle_schedules_bounded_idempotent_crawl_work_and_daily_plan(
         assert len(tasks) == 8
         assert all(task.agent_type == "lead_coordinator" for task in tasks)
         assert all(task.payload["automatic_outreach"] is False for task in tasks)
-        assert all(task.payload["read_only_tools"][0]["name"] == "web.public_crawl" for task in tasks)
+        assert all(task.payload["read_only_tools"][0]["name"] == "web.public_research" for task in tasks)
+        assert all(task.payload["read_only_tools"][0]["arguments"]["max_pages"] == 3 for task in tasks)
         assert len(first["priorities"]) == 4
         assert first["priorities"][0]["accountable_agent"] == "system_admin"
         assert all(

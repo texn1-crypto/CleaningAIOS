@@ -206,10 +206,20 @@ def dashboard(db: Session = Depends(get_db), _: Principal = Depends(principal)):
 
 
 @app.get("/api/tasks")
-def list_tasks(status: Optional[str] = None, db: Session = Depends(get_db), _: Principal = Depends(principal)):
+def list_tasks(
+    status: Optional[str] = None,
+    limit: Optional[int] = Query(default=None, ge=1, le=500),
+    before_id: Optional[int] = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+    _: Principal = Depends(principal),
+):
     query = select(Task).order_by(Task.id.desc())
     if status:
         query = query.where(Task.status == status)
+    if before_id is not None:
+        query = query.where(Task.id < before_id)
+    if limit is not None:
+        query = query.limit(limit)
     return [as_task(x) for x in db.scalars(query).all()]
 
 
@@ -625,6 +635,22 @@ def ai_prompt_deployments(actor: Principal = Depends(principal)):
 def read_only_agent_tools(actor: Principal = Depends(principal)):
     require_role(actor, "manager")
     return agent_tool_catalog()
+
+
+@app.get("/api/agents/quality-criteria")
+def agent_quality_criteria(actor: Principal = Depends(principal)):
+    require_role(actor, "manager")
+    from .quality_criteria import quality_criteria
+
+    return {
+        "release_sha": settings.release_sha,
+        "criteria": quality_criteria(),
+        "total": 100,
+        "assessment": "acceptance_catalog_not_a_production_score",
+        "runtime_evidence_endpoint": "/api/observability/agents",
+        "registered_agents": sorted(AGENTS),
+        "l6_achieved": False,
+    }
 
 
 @app.get("/api/observability/agents")

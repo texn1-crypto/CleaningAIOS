@@ -4,8 +4,10 @@ import hashlib
 import ipaddress
 import json
 import socket
+import time
+from collections import deque
 from typing import Any, cast
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -167,6 +169,13 @@ def configuration_status() -> str:
 
 
 def crawl_public_page(arguments: dict[str, Any]) -> dict[str, Any]:
+    return _crawl_page(arguments)
+
+
+def _crawl_page(
+    arguments: dict[str, Any], *, timeout_seconds: float | None = None,
+    include_links: bool = False,
+) -> dict[str, Any]:
     if configuration_status() != "configured":
         raise Crawl4AIUnavailable("Crawl4AI is not configured")
     if not isinstance(arguments, dict):
@@ -174,6 +183,9 @@ def crawl_public_page(arguments: dict[str, Any]) -> dict[str, Any]:
 
     content_limit = _content_limit(arguments)
     requested_url = _validated_public_https_url(arguments.get("url"))
+    timeout = max(1.0, settings.crawl4ai_timeout_seconds)
+    if timeout_seconds is not None:
+        timeout = max(0.1, min(timeout, timeout_seconds))
     base_url = _validated_service_base_url(settings.crawl4ai_base_url)
     payload = {
         "urls": [requested_url],
@@ -188,7 +200,7 @@ def crawl_public_page(arguments: dict[str, Any]) -> dict[str, Any]:
                 "cache_mode": "bypass",
                 "check_robots_txt": True,
                 "page_timeout": int(
-                    max(1.0, settings.crawl4ai_timeout_seconds) * 1_000
+                    timeout * 1_000
                 ),
             },
         },
@@ -199,7 +211,7 @@ def crawl_public_page(arguments: dict[str, Any]) -> dict[str, Any]:
     }
     try:
         with httpx.Client(
-            timeout=max(1.0, settings.crawl4ai_timeout_seconds),
+            timeout=timeout,
             follow_redirects=False,
             trust_env=False,
             headers=headers,
@@ -217,20 +229,19 @@ def crawl_public_page(arguments: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise Crawl4AIUnavailable("Crawl4AI returned an invalid crawl result")
 
-    success = row.get("success") is True
+    status_code = row.get("redirected_status_code") or row.get("status_code")
+    if isinstance(status_code, bool) or not isinstance(status_code, int):
+        status_code = None
+    success = row.get("success") is True and status_code is not None and 200 <= status_code < 300
     resolved_url = (
-        _validated_public_https_url(row.get("url") or requested_url)
+        _validated_public_https_url(row.get("redirected_url") or row.get("url") or requested_url)
         if success
         else requested_url
     )
     markdown = _markdown_text(row.get("markdown")) if success else ""
     truncated = len(markdown) > content_limit
     markdown = markdown[:content_limit]
-    status_code = row.get("status_code")
-    if isinstance(status_code, bool) or not isinstance(status_code, int):
-        status_code = None
-
-    return {
+    result = {
         "provider": "crawl4ai",
         "provider_version": CRAWL4AI_VERSION,
         "success": success,
@@ -244,4 +255,109 @@ def crawl_public_page(arguments: dict[str, Any]) -> dict[str, Any]:
         "truncated": truncated,
         "untrusted_external_data": True,
         "automatic_action_allowed": False,
+    }
+    if include_links:
+        result["links"] = _research_links(row.get("links"), resolved_url) if success else []
+    return result
+
+
+def _research_links(value: Any, base_url: str) -> list[str]:
+    if not isinstance(value, dict) or not isinstance(value.get("internal"), list):
+        return []
+    links: set[str] = set()
+    for row in value["internal"][:100]:
+        if not isinstance(row, dict) or not isinstance(row.get("href"), str):
+            continue
+        try:
+            candidate = urljoin(base_url, row["href"])
+            parsed = urlparse(candidate)
+        except ValueError:
+            continue
+        if (
+            parsed.scheme != "https" or parsed.hostname != urlparse(base_url).hostname
+            or parsed.username or parsed.password or parsed.query or len(candidate) > 2048
+        ):
+            continue
+        path = unquote(parsed.path).lower()
+        if any(part in path for part in ("login", "logout", "signin", "signup", "checkout", "cart", "admin")):
+            continue
+        if path.endswith((".pdf", ".zip", ".exe", ".jpg", ".png", ".mp4", ".docx", ".xlsx")):
+            continue
+        links.add(urlunparse(parsed._replace(fragment="")))
+    def priority(url: str) -> tuple[int, str]:
+        path = unquote(urlparse(url).path).lower()
+        relevant = ("contact", "about", "service", "object", "portfolio", "контакт", "услуг", "объект", "компани")
+        return (0 if any(word in path for word in relevant) else 1, url)
+    return sorted(links, key=priority)[:20]
+
+
+def research_public_site(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Traverse a small public site graph; every fetch still uses the guarded adapter."""
+    if not isinstance(arguments, dict) or set(arguments) - {"url", "max_pages", "max_depth", "max_chars"}:
+        raise Crawl4AIPolicyDenied("Public research received unsupported arguments")
+    max_pages = arguments.get("max_pages", 3)
+    max_depth = arguments.get("max_depth", 2)
+    for value, maximum, name in ((max_pages, 5, "max_pages"), (max_depth, 2, "max_depth")):
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+            raise Crawl4AIPolicyDenied(f"{name} must be an integer from 1 to {maximum}")
+    max_chars = arguments.get("max_chars", 3000)
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 1000 <= max_chars <= 3000:
+        raise Crawl4AIPolicyDenied("max_chars must be an integer from 1000 to 3000 per page")
+    seed = _validated_public_https_url(arguments.get("url"))
+    if urlparse(seed).query:
+        raise Crawl4AIPolicyDenied("Public research URLs must not contain query data")
+    deadline = time.monotonic() + min(28.0, max(1.0, settings.crawl4ai_timeout_seconds))
+    queue = deque([(seed, 0)])
+    seen = {seed}
+    pages: list[dict[str, Any]] = []
+    stop_reason = "frontier_exhausted"
+    depth_limited = False
+    while queue and len(pages) < max_pages:
+        remaining = deadline - time.monotonic()
+        if remaining < 1.0:
+            stop_reason = "time_budget"
+            break
+        url, depth = queue.popleft()
+        try:
+            page = _crawl_page(
+                {"url": url, "max_chars": max_chars},
+                timeout_seconds=min(15.0 if depth == 0 else 8.0, remaining), include_links=True,
+            )
+        except Crawl4AIPolicyDenied:
+            page = {"success": False, "failure_category": "target_denied"}
+        except Crawl4AIError:
+            page = {"success": False, "failure_category": "provider_unavailable"}
+        links = page.pop("links", [])
+        resolved_host = (urlparse(str(page.get("resolved_url"))).hostname or "").removeprefix("www.")
+        seed_host = (urlparse(seed).hostname or "").removeprefix("www.")
+        if page.get("success") and resolved_host != seed_host:
+            page = {"success": False, "failure_category": "cross_origin_redirect"}
+        if page.get("success") and not str(page.get("markdown") or "").strip():
+            page = {"success": False, "failure_category": "empty_content"}
+        pages.append({**page, "depth": depth})
+        if not page.get("success"):
+            if not pages[:-1] or page.get("status_code") in {401, 403, 429}:
+                stop_reason = "access_or_provider_unavailable"
+                break
+            continue
+        seen.add(str(page["resolved_url"]))
+        if depth < max_depth:
+            for link in links:
+                if link not in seen and len(seen) < 50:
+                    seen.add(link)
+                    queue.append((link, depth + 1))
+        elif any(link not in seen for link in links):
+            depth_limited = True
+    if stop_reason == "frontier_exhausted" and queue and len(pages) >= max_pages:
+        stop_reason = "page_budget"
+    elif stop_reason == "frontier_exhausted" and depth_limited:
+        stop_reason = "depth_budget"
+    succeeded = sum(page.get("success") is True for page in pages)
+    return {
+        "provider": "crawl4ai", "success": succeeded > 0,
+        "requested_url": seed, "pages": pages,
+        "pages_attempted": len(pages), "pages_succeeded": succeeded,
+        "partial": succeeded < len(pages) or stop_reason != "frontier_exhausted",
+        "stop_reason": stop_reason, "max_depth": max_depth, "max_pages": max_pages,
+        "untrusted_external_data": True, "automatic_action_allowed": False,
     }

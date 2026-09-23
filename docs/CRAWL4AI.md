@@ -2,7 +2,7 @@
 
 CleaningAI OS uses Crawl4AI as one isolated, read-only web extraction service.
 Agents do not receive a browser, arbitrary HTTP client or direct access to the
-Crawl4AI API. They can request only the registered `web.public_crawl` tool.
+Crawl4AI API. They use the registered `web.public_crawl` and `web.public_research` tools.
 
 The deployment is pinned to the multi-platform OCI digest for
 `unclecode/crawl4ai:0.9.3`, not only its mutable tag. The digest was verified from
@@ -66,7 +66,7 @@ A permitted task can include one page request:
 }
 ```
 
-The current allowlist covers research, tender, sales, marketing, growth,
+The legacy single-page allowlist covers research, tender, sales, marketing, growth,
 request-analysis, copy/creative and public lead-scouting roles. Finance, HR and
 system-administration agents do not receive the crawler. Add a role only after a
 concrete need and a policy test.
@@ -78,7 +78,7 @@ payment or any other external action.
 
 ## Enforced safety boundary
 
-- one URL and at most one crawl call per agent run, HTTPS port 443 only;
+- one public-web tool invocation per agent run, HTTPS port 443 only;
 - the application rejects local, private, reserved and direct-IP targets before
   forwarding; the container's own per-hop SSRF enforcement is the authoritative
   fetch-time boundary and must pass the live check below;
@@ -97,7 +97,41 @@ Operators remain responsible for robots rules, source terms, copyright and data
 protection. Do not use the tool to bypass logins, paywalls, access controls or
 anti-bot measures.
 
-## Verification
+## Linked-page research
+
+All 21 runtime roles have an explicit allowlist for `web.public_research`.
+Create a normal Task with this payload to research without invoking the agent's
+domain writer or asking for an approval:
+
+```json
+{
+  "action": "public_web_research",
+  "autonomy_action": "public_web_research",
+  "research": {"url": "https://example.org/", "max_pages": 3, "max_depth": 2}
+}
+```
+
+The worker persists Task/AgentRun/AgentToolCall evidence. Protected action kinds
+still block before execution. This route calls no external AI model and sends no
+prospect messages. Web text is data, never executable instructions or authority.
+
+Observed same-host links are followed with fresh validation for each fetch.
+Validated www redirects are accepted. Contact/about/services/property pages rank
+first. Query-bearing URLs, login/logout/cart paths, external links, downloads and
+active browser options are excluded. The existing authenticated, robots-aware
+SSRF-protected adapter fetches each page; provider deep-crawl strategies are not
+enabled. Both redirect destination and HTTP status are checked. Error and empty
+pages are not successful evidence.
+
+Default: three pages, depth two, 3,000 characters per page. Maximum: five pages,
+depth two, a 28-second traversal budget (or a lower service timeout), plus the
+outer gateway's budgets. Socket timeouts are not process-level cancellation.
+Partial results include their stop reason; zero successful pages blocks the task.
+Legacy single-page tasks remain supported. The CEO fallback now schedules this
+research and selects the matching organization's actual page and checksum.
+See the official [CrawlResult contract](https://docs.crawl4ai.com/core/crawler-result/).
+
+## Verification commands
 
 Run the focused tests and inspect the effective Compose configuration:
 

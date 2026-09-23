@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .company_brain_retrieval import KnowledgeError, search_documents
-from .crawl4ai_client import Crawl4AIPolicyDenied, crawl_public_page
+from .crawl4ai_client import Crawl4AIPolicyDenied, crawl_public_page, research_public_site
 from .mcp_read_client import (
     MCPPolicyDenied,
     MCPReadTool,
@@ -152,12 +152,32 @@ def _company_brain_search(db: Session, arguments: dict[str, Any]) -> dict[str, A
 def _public_web_crawl(db: Session, arguments: dict[str, Any]) -> dict[str, Any]:
     del db
     try:
-        return cast(dict[str, Any], crawl_public_page(arguments))
+        return crawl_public_page(arguments)
+    except Crawl4AIPolicyDenied as exc:
+        raise AgentToolDenied(str(exc)) from exc
+
+
+def _public_web_research(db: Session, arguments: dict[str, Any]) -> dict[str, Any]:
+    del db
+    try:
+        return research_public_site(arguments)
     except Crawl4AIPolicyDenied as exc:
         raise AgentToolDenied(str(exc)) from exc
 
 
 READ_ONLY_TOOLS: dict[str, ReadOnlyTool] = {
+    "web.public_research": ReadOnlyTool(
+        name="web.public_research",
+        description="Read linked public HTTPS pages with per-page provenance, no login or external writes.",
+        allowed_agents=frozenset({
+            "ceo", "commercial_lead_scout", "copywriter", "creative", "evolution_researcher",
+            "finance", "growth_officer", "hr", "lead_coordinator", "management_lead_scout",
+            "marketing", "meta_brain", "orchestrator", "lead_scout", "request_analyst",
+            "research", "sales", "social_lead_scout", "system_admin", "tender", "tender_lead_scout",
+        }),
+        timeout_seconds=30.0,
+        handler=_public_web_research,
+    ),
     "agent.slo_snapshot": ReadOnlyTool(
         name="agent.slo_snapshot",
         description="Aggregate agent success, latency and stale-run SLO snapshot.",
@@ -220,6 +240,7 @@ READ_ONLY_TOOLS: dict[str, ReadOnlyTool] = {
                 "evolution_researcher",
                 "growth_officer",
                 "lead_coordinator",
+                "lead_scout",
                 "management_lead_scout",
                 "marketing",
                 "meta_brain",
@@ -365,7 +386,7 @@ def execute_read_only_tools(
         )
         raise AgentToolDenied("Read-only tool call budget exceeded")
     crawl_calls = sum(
-        isinstance(request, dict) and request.get("name") == "web.public_crawl"
+        isinstance(request, dict) and request.get("name") in {"web.public_crawl", "web.public_research"}
         for request in requests
     )
     if crawl_calls > 1:

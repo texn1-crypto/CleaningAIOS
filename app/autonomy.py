@@ -24,6 +24,7 @@ class AutonomyMode(str, Enum):
 
 AUTO_SAFE_ACTIONS = frozenset(
     {
+        "public_web_research",
         "tender_source_refresh",
         "tender_document_download",
         "tender_document_analyze",

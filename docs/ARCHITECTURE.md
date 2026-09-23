@@ -99,7 +99,10 @@ Crawl4AI 0.9.3 container on a dedicated Compose network that excludes PostgreSQL
 the scheduler. Only the web, worker and Telegram bot application containers share
 that network; the bot uses the same validated adapter when `/jarvis` contains one
 public HTTPS URL. Agents cannot control browser internals or request active content,
-and receive only bounded Markdown marked as untrusted. See
+and receive only bounded Markdown marked as untrusted. The additive
+`web.public_research` tool follows validated same-site links, records per-page
+evidence and serves all 21 roles through a read-only common runtime action.
+The CEO lead fallback uses it without granting prospect-outreach authority. See
 [`CRAWL4AI.md`](CRAWL4AI.md).
 
 Agent roles are registry entries over the same durable Task queue, not independent
@@ -215,7 +218,7 @@ in-scope management companies. A positive organization/domain/INN match creates 
 `owner_review` lead, an idempotent PDF report and an owner notification; it never
 grants outreach consent or sends a prospect message. External search failure creates
 a deduplicated System Admin recovery task and remains an explicit CEO risk instead of
-being counted as completed work. One daily owner plan records up to five priorities,
+being counted as completed work. One daily owner plan records up to four priorities,
 responsible agents, metrics, deadlines, dependencies, approvals and stop conditions.
 Three failed checks move a candidate to explicit manual review instead of consuming
 the automated batch forever. Guarded-tool failures remain immutable `failed` history,

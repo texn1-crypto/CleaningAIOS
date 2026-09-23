@@ -1,0 +1,602 @@
+[
+  {
+    "id": 1,
+    "category": "public_research",
+    "criterion": "research follows real links and keeps per page hashes",
+    "test": "tests/test_public_research.py::test_research_follows_real_links_and_keeps_per_page_hashes"
+  },
+  {
+    "id": 2,
+    "category": "public_research",
+    "criterion": "research skips external query active and download links",
+    "test": "tests/test_public_research.py::test_research_skips_external_query_active_and_download_links"
+  },
+  {
+    "id": 3,
+    "category": "public_research",
+    "criterion": "research rechecks dns for every page",
+    "test": "tests/test_public_research.py::test_research_rechecks_dns_for_every_page"
+  },
+  {
+    "id": 4,
+    "category": "public_research",
+    "criterion": "research stops on root access failure without retry",
+    "test": "tests/test_public_research.py::test_research_stops_on_root_access_failure_without_retry"
+  },
+  {
+    "id": 5,
+    "category": "public_research",
+    "criterion": "research rejects cross origin redirect content",
+    "test": "tests/test_public_research.py::test_research_rejects_cross_origin_redirect_content"
+  },
+  {
+    "id": 6,
+    "category": "public_research",
+    "criterion": "research checks redirected url not just requested url",
+    "test": "tests/test_public_research.py::test_research_checks_redirected_url_not_just_requested_url"
+  },
+  {
+    "id": 7,
+    "category": "public_research",
+    "criterion": "research stops at page budget",
+    "test": "tests/test_public_research.py::test_research_stops_at_page_budget"
+  },
+  {
+    "id": 8,
+    "category": "public_research",
+    "criterion": "research stops at depth budget",
+    "test": "tests/test_public_research.py::test_research_stops_at_depth_budget"
+  },
+  {
+    "id": 9,
+    "category": "public_research",
+    "criterion": "research validates budgets and inputs before fetch",
+    "test": "tests/test_public_research.py::test_research_validates_budgets_and_inputs_before_fetch"
+  },
+  {
+    "id": 10,
+    "category": "public_research",
+    "criterion": "research bounds each page and prioritizes evidence links",
+    "test": "tests/test_public_research.py::test_research_bounds_each_page_and_prioritizes_evidence_links"
+  },
+  {
+    "id": 11,
+    "category": "public_research",
+    "criterion": "research preserves partial result after time budget",
+    "test": "tests/test_public_research.py::test_research_preserves_partial_result_after_time_budget"
+  },
+  {
+    "id": 12,
+    "category": "public_research",
+    "criterion": "every registered agent can research without approval or domain side effects",
+    "test": "tests/test_public_research.py::test_every_registered_agent_can_research_without_approval_or_domain_side_effects"
+  },
+  {
+    "id": 13,
+    "category": "public_research",
+    "criterion": "research unavailable is not a completed task",
+    "test": "tests/test_public_research.py::test_research_unavailable_is_not_a_completed_task"
+  },
+  {
+    "id": 14,
+    "category": "public_research",
+    "criterion": "research tool allowlist exactly matches registered roles",
+    "test": "tests/test_public_research.py::test_research_tool_allowlist_exactly_matches_registered_roles"
+  },
+  {
+    "id": 15,
+    "category": "public_research",
+    "criterion": "task listing keyset pages are bounded and do not overlap",
+    "test": "tests/test_public_research.py::test_task_listing_keyset_pages_are_bounded_and_do_not_overlap"
+  },
+  {
+    "id": 16,
+    "category": "public_research",
+    "criterion": "deep candidate verification uses matching child page provenance",
+    "test": "tests/test_public_research.py::test_deep_candidate_verification_uses_matching_child_page_provenance"
+  },
+  {
+    "id": 17,
+    "category": "qualified_handoffs",
+    "criterion": "ceo cycle schedules bounded idempotent crawl work and daily plan",
+    "test": "tests/test_lead_outcomes.py::test_ceo_cycle_schedules_bounded_idempotent_crawl_work_and_daily_plan"
+  },
+  {
+    "id": 18,
+    "category": "qualified_handoffs",
+    "criterion": "verified management company becomes owner review lead without outreach",
+    "test": "tests/test_lead_outcomes.py::test_verified_management_company_becomes_owner_review_lead_without_outreach"
+  },
+  {
+    "id": 19,
+    "category": "qualified_handoffs",
+    "criterion": "verified candidate runs through audited agent tool gateway",
+    "test": "tests/test_lead_outcomes.py::test_verified_candidate_runs_through_audited_agent_tool_gateway"
+  },
+  {
+    "id": 20,
+    "category": "qualified_handoffs",
+    "criterion": "mismatched public page does not create a lead",
+    "test": "tests/test_lead_outcomes.py::test_mismatched_public_page_does_not_create_a_lead"
+  },
+  {
+    "id": 21,
+    "category": "qualified_handoffs",
+    "criterion": "goal counts only reports actually sent to owner this month",
+    "test": "tests/test_lead_outcomes.py::test_goal_counts_only_reports_actually_sent_to_owner_this_month"
+  },
+  {
+    "id": 22,
+    "category": "qualified_handoffs",
+    "criterion": "goal rechecks evidence and deduplicates organizations without changing lifecycle",
+    "test": "tests/test_lead_outcomes.py::test_goal_rechecks_evidence_and_deduplicates_organizations_without_changing_lifecycle"
+  },
+  {
+    "id": 23,
+    "category": "qualified_handoffs",
+    "criterion": "ceo cycle has four complete priorities with a healthy provider",
+    "test": "tests/test_lead_outcomes.py::test_ceo_cycle_has_four_complete_priorities_with_a_healthy_provider"
+  },
+  {
+    "id": 24,
+    "category": "qualified_handoffs",
+    "criterion": "ceo cycle counts a guarded tool failure once for candidate retry limit",
+    "test": "tests/test_lead_outcomes.py::test_ceo_cycle_counts_a_guarded_tool_failure_once_for_candidate_retry_limit"
+  },
+  {
+    "id": 25,
+    "category": "qualified_handoffs",
+    "criterion": "ceo cycle reconciles each failed verification task once for same candidate",
+    "test": "tests/test_lead_outcomes.py::test_ceo_cycle_reconciles_each_failed_verification_task_once_for_same_candidate"
+  },
+  {
+    "id": 26,
+    "category": "qualified_handoffs",
+    "criterion": "ceo cycle backfills legacy reconciliation without incrementing attempts",
+    "test": "tests/test_lead_outcomes.py::test_ceo_cycle_backfills_legacy_reconciliation_without_incrementing_attempts"
+  },
+  {
+    "id": 27,
+    "category": "qualification",
+    "criterion": "owner review qualification records evidence gaps without outreach",
+    "test": "tests/test_lead_qualification.py::test_owner_review_qualification_records_evidence_gaps_without_outreach"
+  },
+  {
+    "id": 28,
+    "category": "qualification",
+    "criterion": "legacy public researched lead is promoted into owner review pipeline",
+    "test": "tests/test_lead_qualification.py::test_legacy_public_researched_lead_is_promoted_into_owner_review_pipeline"
+  },
+  {
+    "id": 29,
+    "category": "qualification",
+    "criterion": "cited public scout lead counts as verified organization",
+    "test": "tests/test_lead_qualification.py::test_cited_public_scout_lead_counts_as_verified_organization"
+  },
+  {
+    "id": 30,
+    "category": "qualification",
+    "criterion": "russian management company type is normalized",
+    "test": "tests/test_lead_qualification.py::test_russian_management_company_type_is_normalized"
+  },
+  {
+    "id": 31,
+    "category": "qualification",
+    "criterion": "sales agent routes the persisted qualification action",
+    "test": "tests/test_lead_qualification.py::test_sales_agent_routes_the_persisted_qualification_action"
+  },
+  {
+    "id": 32,
+    "category": "qualification",
+    "criterion": "sales ready recommendation requires verified unsuppressed consent",
+    "test": "tests/test_lead_qualification.py::test_sales_ready_recommendation_requires_verified_unsuppressed_consent"
+  },
+  {
+    "id": 33,
+    "category": "qualification",
+    "criterion": "research outcome names missing organization identity",
+    "test": "tests/test_lead_qualification.py::test_research_outcome_names_missing_organization_identity"
+  },
+  {
+    "id": 34,
+    "category": "qualification",
+    "criterion": "generic or out of scope region is not treated as service area fit",
+    "test": "tests/test_lead_qualification.py::test_generic_or_out_of_scope_region_is_not_treated_as_service_area_fit"
+  },
+  {
+    "id": 35,
+    "category": "qualification",
+    "criterion": "nurture outcome and metrics preserve missing contact permission",
+    "test": "tests/test_lead_qualification.py::test_nurture_outcome_and_metrics_preserve_missing_contact_permission"
+  },
+  {
+    "id": 36,
+    "category": "qualification",
+    "criterion": "bounded runs prioritize untriaged leads",
+    "test": "tests/test_lead_qualification.py::test_bounded_runs_prioritize_untriaged_leads"
+  },
+  {
+    "id": 37,
+    "category": "agent_runtime",
+    "criterion": "allowlisted read tool executes and is audited",
+    "test": "tests/test_agent_tools.py::test_allowlisted_read_tool_executes_and_is_audited"
+  },
+  {
+    "id": 38,
+    "category": "agent_runtime",
+    "criterion": "unknown or unallowlisted tool is denied before agent logic",
+    "test": "tests/test_agent_tools.py::test_unknown_or_unallowlisted_tool_is_denied_before_agent_logic"
+  },
+  {
+    "id": 39,
+    "category": "agent_runtime",
+    "criterion": "tool call count and result size budgets are enforced",
+    "test": "tests/test_agent_tools.py::test_tool_call_count_and_result_size_budgets_are_enforced"
+  },
+  {
+    "id": 40,
+    "category": "agent_runtime",
+    "criterion": "tool timeout discards result and records timeout",
+    "test": "tests/test_agent_tools.py::test_tool_timeout_discards_result_and_records_timeout"
+  },
+  {
+    "id": 41,
+    "category": "agent_skills",
+    "criterion": "every runtime agent has a project owned skill assignment",
+    "test": "tests/test_skill_registry.py::test_every_runtime_agent_has_a_project_owned_skill_assignment"
+  },
+  {
+    "id": 42,
+    "category": "agent_skills",
+    "criterion": "skill context is compact safe and cannot be overridden",
+    "test": "tests/test_skill_registry.py::test_skill_context_is_compact_safe_and_cannot_be_overridden"
+  },
+  {
+    "id": 43,
+    "category": "agent_skills",
+    "criterion": "skill catalog exposes only safe operational metadata",
+    "test": "tests/test_skill_registry.py::test_skill_catalog_exposes_only_safe_operational_metadata"
+  },
+  {
+    "id": 44,
+    "category": "knowledge",
+    "criterion": "document ingestion is authorized versioned and idempotent",
+    "test": "tests/test_company_brain_retrieval.py::test_document_ingestion_is_authorized_versioned_and_idempotent"
+  },
+  {
+    "id": 45,
+    "category": "knowledge",
+    "criterion": "search applies acl expiry latest version and exact citations",
+    "test": "tests/test_company_brain_retrieval.py::test_search_applies_acl_expiry_latest_version_and_exact_citations"
+  },
+  {
+    "id": 46,
+    "category": "knowledge",
+    "criterion": "company brain tool is viewer scoped and audited",
+    "test": "tests/test_company_brain_retrieval.py::test_company_brain_tool_is_viewer_scoped_and_audited"
+  },
+  {
+    "id": 47,
+    "category": "providers",
+    "criterion": "missing twenty key is persisted and notified once",
+    "test": "tests/test_twenty_crm.py::test_missing_twenty_key_is_persisted_and_notified_once"
+  },
+  {
+    "id": 48,
+    "category": "providers",
+    "criterion": "verified lead is created updated and then skipped idempotently",
+    "test": "tests/test_twenty_crm.py::test_verified_lead_is_created_updated_and_then_skipped_idempotently"
+  },
+  {
+    "id": 49,
+    "category": "providers",
+    "criterion": "twenty auth failure is redacted and stops batch",
+    "test": "tests/test_twenty_crm.py::test_twenty_auth_failure_is_redacted_and_stops_batch"
+  },
+  {
+    "id": 50,
+    "category": "providers",
+    "criterion": "timeout after create reconciles before retrying post",
+    "test": "tests/test_twenty_crm.py::test_timeout_after_create_reconciles_before_retrying_post"
+  },
+  {
+    "id": 51,
+    "category": "providers",
+    "criterion": "unavailable lead is rotated behind unattempted lead",
+    "test": "tests/test_twenty_crm.py::test_unavailable_lead_is_rotated_behind_unattempted_lead"
+  },
+  {
+    "id": 52,
+    "category": "evidence_research",
+    "criterion": "ceo research scheduler is bounded and idempotent",
+    "test": "tests/test_lead_research.py::test_ceo_research_scheduler_is_bounded_and_idempotent"
+  },
+  {
+    "id": 53,
+    "category": "evidence_research",
+    "criterion": "research scheduler does not queue without provider credentials",
+    "test": "tests/test_lead_research.py::test_research_scheduler_does_not_queue_without_provider_credentials"
+  },
+  {
+    "id": 54,
+    "category": "evidence_research",
+    "criterion": "research scheduler backs off after provider configuration failure",
+    "test": "tests/test_lead_research.py::test_research_scheduler_backs_off_after_provider_configuration_failure"
+  },
+  {
+    "id": 55,
+    "category": "evidence_research",
+    "criterion": "targeted research persists only exact cited facts",
+    "test": "tests/test_lead_research.py::test_targeted_research_persists_only_exact_cited_facts"
+  },
+  {
+    "id": 56,
+    "category": "evidence_research",
+    "criterion": "targeted research rejects another organization",
+    "test": "tests/test_lead_research.py::test_targeted_research_rejects_another_organization"
+  },
+  {
+    "id": 57,
+    "category": "bounded_autonomy",
+    "criterion": "owner can grant one bounded authority and usage is append only",
+    "test": "tests/test_authority_envelopes.py::test_owner_can_grant_one_bounded_authority_and_usage_is_append_only"
+  },
+  {
+    "id": 58,
+    "category": "bounded_autonomy",
+    "criterion": "envelope never bypasses protected or forbidden actions",
+    "test": "tests/test_authority_envelopes.py::test_envelope_never_bypasses_protected_or_forbidden_actions"
+  },
+  {
+    "id": 59,
+    "category": "bounded_autonomy",
+    "criterion": "owner can revoke envelope and replay does not consume twice",
+    "test": "tests/test_authority_envelopes.py::test_owner_can_revoke_envelope_and_replay_does_not_consume_twice"
+  },
+  {
+    "id": 60,
+    "category": "bounded_autonomy",
+    "criterion": "marketing envelope requires money cap and policy is visible",
+    "test": "tests/test_authority_envelopes.py::test_marketing_envelope_requires_money_cap_and_policy_is_visible"
+  },
+  {
+    "id": 61,
+    "category": "bounded_autonomy",
+    "criterion": "inbound reply is really queued and revocation blocks delivery",
+    "test": "tests/test_authority_envelopes.py::test_inbound_reply_is_really_queued_and_revocation_blocks_delivery"
+  },
+  {
+    "id": 62,
+    "category": "data_security",
+    "criterion": "contact exports neutralize spreadsheet formulas",
+    "test": "tests/test_security_hardening.py::test_contact_exports_neutralize_spreadsheet_formulas"
+  },
+  {
+    "id": 63,
+    "category": "data_security",
+    "criterion": "manual completion requires owner",
+    "test": "tests/test_security_hardening.py::test_manual_completion_requires_owner"
+  },
+  {
+    "id": 64,
+    "category": "data_security",
+    "criterion": "generic record crud rejects protected statuses",
+    "test": "tests/test_security_hardening.py::test_generic_record_crud_rejects_protected_statuses"
+  },
+  {
+    "id": 65,
+    "category": "data_security",
+    "criterion": "bulk campaign action derives protected policy",
+    "test": "tests/test_security_hardening.py::test_bulk_campaign_action_derives_protected_policy"
+  },
+  {
+    "id": 66,
+    "category": "data_security",
+    "criterion": "legacy outreach requires consent exact approval and inline attachments",
+    "test": "tests/test_security_hardening.py::test_legacy_outreach_requires_consent_exact_approval_and_inline_attachments"
+  },
+  {
+    "id": 67,
+    "category": "tender_evidence",
+    "criterion": "company profile snapshot is immutable idempotent and binds prequalification",
+    "test": "tests/test_tender_autopilot.py::test_company_profile_snapshot_is_immutable_idempotent_and_binds_prequalification"
+  },
+  {
+    "id": 68,
+    "category": "tender_evidence",
+    "criterion": "company profile fails closed on expiry and capability mismatch",
+    "test": "tests/test_tender_autopilot.py::test_company_profile_fails_closed_on_expiry_and_capability_mismatch"
+  },
+  {
+    "id": 69,
+    "category": "tender_evidence",
+    "criterion": "prequalification snapshot is fail closed idempotent and binds decision",
+    "test": "tests/test_tender_autopilot.py::test_prequalification_snapshot_is_fail_closed_idempotent_and_binds_decision"
+  },
+  {
+    "id": 70,
+    "category": "tender_evidence",
+    "criterion": "supplier quote snapshot is verified idempotent and binds decision",
+    "test": "tests/test_tender_autopilot.py::test_supplier_quote_snapshot_is_verified_idempotent_and_binds_decision"
+  },
+  {
+    "id": 71,
+    "category": "tender_evidence",
+    "criterion": "supplier candidates are provenance bound and quote linked",
+    "test": "tests/test_tender_autopilot.py::test_supplier_candidates_are_provenance_bound_and_quote_linked"
+  },
+  {
+    "id": 72,
+    "category": "tender_evidence",
+    "criterion": "supplier quote snapshot fails closed on unknown and invalid evidence",
+    "test": "tests/test_tender_autopilot.py::test_supplier_quote_snapshot_fails_closed_on_unknown_and_invalid_evidence"
+  },
+  {
+    "id": 73,
+    "category": "tender_evidence",
+    "criterion": "prequalification explains hard stops and rejects invalid evidence",
+    "test": "tests/test_tender_autopilot.py::test_prequalification_explains_hard_stops_and_rejects_invalid_evidence"
+  },
+  {
+    "id": 74,
+    "category": "tender_evidence",
+    "criterion": "tender decision snapshot is decimal evidence bound and idempotent",
+    "test": "tests/test_tender_autopilot.py::test_tender_decision_snapshot_is_decimal_evidence_bound_and_idempotent"
+  },
+  {
+    "id": 75,
+    "category": "tender_evidence",
+    "criterion": "a4 1000 pack reference scenario reaches application checklist",
+    "test": "tests/test_tender_autopilot.py::test_a4_1000_pack_reference_scenario_reaches_application_checklist"
+  },
+  {
+    "id": 76,
+    "category": "tender_evidence",
+    "criterion": "unknown mandatory requirement fails closed",
+    "test": "tests/test_tender_autopilot.py::test_unknown_mandatory_requirement_fails_closed"
+  },
+  {
+    "id": 77,
+    "category": "delivery",
+    "criterion": "critical event creates one correlated alert and consumer receipt",
+    "test": "tests/test_critical_alerts.py::test_critical_event_creates_one_correlated_alert_and_consumer_receipt"
+  },
+  {
+    "id": 78,
+    "category": "delivery",
+    "criterion": "non task approval event gets buttons notification fallback",
+    "test": "tests/test_critical_alerts.py::test_non_task_approval_event_gets_buttons_notification_fallback"
+  },
+  {
+    "id": 79,
+    "category": "delivery",
+    "criterion": "approval event reuses existing explicit notification",
+    "test": "tests/test_critical_alerts.py::test_approval_event_reuses_existing_explicit_notification"
+  },
+  {
+    "id": 80,
+    "category": "telegram",
+    "criterion": "telegram approval list excludes expired pending rows",
+    "test": "tests/test_telegram_control.py::test_telegram_approval_list_excludes_expired_pending_rows"
+  },
+  {
+    "id": 81,
+    "category": "telegram",
+    "criterion": "telegram identity is exact deny by default and pseudonymous",
+    "test": "tests/test_telegram_control.py::test_telegram_identity_is_exact_deny_by_default_and_pseudonymous"
+  },
+  {
+    "id": 82,
+    "category": "telegram",
+    "criterion": "non owner telegram role cannot decide approval",
+    "test": "tests/test_telegram_control.py::test_non_owner_telegram_role_cannot_decide_approval"
+  },
+  {
+    "id": 83,
+    "category": "telegram",
+    "criterion": "telegram update persists owner decision and resumes once",
+    "test": "tests/test_telegram_control.py::test_telegram_update_persists_owner_decision_and_resumes_once"
+  },
+  {
+    "id": 84,
+    "category": "telegram",
+    "criterion": "forged callback is rejected without secret or pii in logs",
+    "test": "tests/test_telegram_control.py::test_forged_callback_is_rejected_without_secret_or_pii_in_logs"
+  },
+  {
+    "id": 85,
+    "category": "telegram",
+    "criterion": "expired and stale signed callbacks are rejected",
+    "test": "tests/test_telegram_control.py::test_expired_and_stale_signed_callbacks_are_rejected"
+  },
+  {
+    "id": 86,
+    "category": "telegram",
+    "criterion": "concurrent approve reject has one terminal decision",
+    "test": "tests/test_telegram_control.py::test_concurrent_approve_reject_has_one_terminal_decision"
+  },
+  {
+    "id": 87,
+    "category": "operations",
+    "criterion": "system admin deduplicates incidents and verifies recovery",
+    "test": "tests/test_system_admin.py::test_system_admin_deduplicates_incidents_and_verifies_recovery"
+  },
+  {
+    "id": 88,
+    "category": "operations",
+    "criterion": "system admin deduplicates and resolves stale tender source",
+    "test": "tests/test_system_admin.py::test_system_admin_deduplicates_and_resolves_stale_tender_source"
+  },
+  {
+    "id": 89,
+    "category": "operations",
+    "criterion": "system admin does not treat owner approval as technical failure",
+    "test": "tests/test_system_admin.py::test_system_admin_does_not_treat_owner_approval_as_technical_failure"
+  },
+  {
+    "id": 90,
+    "category": "operations",
+    "criterion": "system admin ignores reconciled failure and its agent state",
+    "test": "tests/test_system_admin.py::test_system_admin_ignores_reconciled_failure_and_its_agent_state"
+  },
+  {
+    "id": 91,
+    "category": "operations",
+    "criterion": "system admin notifies only when incident state changes",
+    "test": "tests/test_system_admin.py::test_system_admin_notifies_only_when_incident_state_changes"
+  },
+  {
+    "id": 92,
+    "category": "operations",
+    "criterion": "system admin resolves historical notification failure after success",
+    "test": "tests/test_system_admin.py::test_system_admin_resolves_historical_notification_failure_after_success"
+  },
+  {
+    "id": 93,
+    "category": "operations",
+    "criterion": "system admin refreshes notification incident classification",
+    "test": "tests/test_system_admin.py::test_system_admin_refreshes_notification_incident_classification"
+  },
+  {
+    "id": 94,
+    "category": "observability",
+    "criterion": "agent observability reports per agent slo and prometheus metrics",
+    "test": "tests/test_observability.py::test_agent_observability_reports_per_agent_slo_and_prometheus_metrics"
+  },
+  {
+    "id": 95,
+    "category": "observability",
+    "criterion": "agent observability reports insufficient data honestly",
+    "test": "tests/test_observability.py::test_agent_observability_reports_insufficient_data_honestly"
+  },
+  {
+    "id": 96,
+    "category": "observability",
+    "criterion": "agent utilization is deterministic aggregate only and includes idle roles",
+    "test": "tests/test_observability.py::test_agent_utilization_is_deterministic_aggregate_only_and_includes_idle_roles"
+  },
+  {
+    "id": 97,
+    "category": "observability",
+    "criterion": "prometheus metrics require authentication in production",
+    "test": "tests/test_observability.py::test_prometheus_metrics_require_authentication_in_production"
+  },
+  {
+    "id": 98,
+    "category": "ceo_facts",
+    "criterion": "ceo brief separates primary facts from recommendations",
+    "test": "tests/test_ceo_brief.py::test_ceo_brief_separates_primary_facts_from_recommendations"
+  },
+  {
+    "id": 99,
+    "category": "ceo_facts",
+    "criterion": "telegram ceo brief is read only and task button uses tasks api",
+    "test": "tests/test_ceo_brief.py::test_telegram_ceo_brief_is_read_only_and_task_button_uses_tasks_api"
+  },
+  {
+    "id": 100,
+    "category": "ceo_facts",
+    "criterion": "ceo brief does not render reconciled failures as actionable sources",
+    "test": "tests/test_ceo_brief.py::test_ceo_brief_does_not_render_reconciled_failures_as_actionable_sources"
+  }
+]
