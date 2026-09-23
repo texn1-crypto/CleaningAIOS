@@ -361,6 +361,27 @@ def _fingerprint(snapshot: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def has_qualified_handoff_evidence(
+    db: Session, lead: BusinessRecord, *, current: datetime
+) -> bool:
+    """Re-evaluate evidence; a CRM lifecycle label alone is not qualification."""
+    snapshot = _qualification_snapshot(db, lead, current=current)
+    scores = snapshot["score_breakdown"]
+    return bool(
+        snapshot["outcome"] in {"owner_review", "sales_ready"}
+        and all(
+            scores[name] > 0
+            for name in (
+                "service_area_fit",
+                "property_type_fit",
+                "organization_evidence",
+                "evidence_freshness",
+                "organization_contact",
+            )
+        )
+    )
+
+
 def _priority_key(row: BusinessRecord) -> tuple[int, float, int]:
     qualification = (row.data or {}).get("qualification") or {}
     outcome_order = {
