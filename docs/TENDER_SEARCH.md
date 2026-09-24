@@ -12,10 +12,13 @@ Telegram/scheduler → Task → catalog observations → PostgreSQL tender recor
 → durable owner Telegram queue. No new project, LLM dependency or submission agent.
 
 This is a **partial source layer**, not the whole internet and not Tender Autopilot
-L6. Requirement 9 remains PARTIAL. Only these public catalogs are read:
+L6. Requirement 9 remains PARTIAL. These public catalogs are read:
 
 - https://www.b2b-center.ru/search/sankt-peterburg/uborka-pomeshhenij/
 - https://www.b2b-center.ru/search/leningradskaya-oblast/uborka-pomeshhenij/
+- Roseltorg's public GET search form: `query_field=уборк`, `region[]=47`,
+  `region[]=78`, first page only. These are customer regions, not delivery evidence.
+  Exact URL, DOM contract and live access evidence: `docs/TENDER_SOURCE_RESEARCH.md`.
 
 Same-origin public detail cards provide additional evidence. No account, hidden
 search API, official EIS API, CAPTCHA/MFA workaround or provider-key fallback is used.
@@ -30,7 +33,9 @@ In the existing authorized Telegram conversation:
 Quoted words become explicit keywords; without quotes the configured cleaning
 vocabulary is used. Up to eight phrases, combined with OR; words within each phrase
 must occur in the title, with limited deterministic Russian inflection matching.
-This is filtering within the two catalogs, not arbitrary internet keyword search.
+This filters those catalogs, not arbitrary internet keyword search. Roseltorg's
+first-page search is deliberately limited to «уборк»; it does not claim to find
+every notice matching other configured phrases or subsequent pages.
 Mixed search/submission requests retain their existing protected-action route.
 
 The existing task API can queue `agent_type=tender` or `research` with
@@ -49,9 +54,11 @@ restart only the active server scheduler; existing records/PDFs are retained.
 ## Evidence, filtering and delivery
 
 - Public GETs respect robots rules, identified User-Agent, minimum one-second
-  spacing, a 19-request budget, 12-second network timeouts and 2 MB response limits.
+  spacing, a 21-request budget, 12-second network timeouts and 2 MB response limits.
+  The budget covers two robots files, three catalogs and up to sixteen detail pages.
+  Robots policies are separate per origin and include the query path for Roseltorg.
   Redirects, access challenges, 401/403/429 and unreadable layouts are unavailable,
-  never simulated successful searches. If both catalogs fail, the Task is blocked
+  never simulated successful searches. If all catalogs fail, the Task is blocked
   without a fabricated empty report. One available catalog permits a partial PDF.
 - Unknown/expired deadlines and explicit supplies-only titles are excluded. A
   catalog's region can be the buyer's address, not the place of work. Explicit
@@ -64,8 +71,17 @@ restart only the active server scheduler; existing records/PDFs are retained.
   identity. Source hashes, timestamps, outcomes, exclusions and facts are retained
   in `tender_search_run`; current cards use `BusinessRecord(record_type=tender)`.
   All remain `NEEDS_VERIFICATION`. No CRM handoff metric credit is created.
+- Roseltorg uses its actual procedure number **and lot** as provider-local identity;
+  numeric procedure IDs are not silently relabeled as EIS IDs. Distinct lots remain
+  separate. Cross-source duplication without an explicit shared identity cannot be
+  ruled out; matching buyer/title is not sufficient to merge procurement records.
+  The detail page must confirm procedure number, current accepting stage and an
+  explicit future MSK deadline. The timezone-free catalog date is not substituted.
+  Detail title/organizer and performance-location text supersede catalog snippets.
+  Cadastral-only delivery text and dates ending in «г.» remain unverified geography.
 - One PostgreSQL advisory transaction lock serializes search publication across
-  worker replicas. Same keyword/time-window replays reuse the run. Same-day
+  worker replicas. Same source-profile/keyword/time-window replays reuse the run.
+  A source-profile revision prevents reuse of a narrower old discovery snapshot. Same-day
   unchanged material facts/source availability reuse the report/notification,
   even if unrelated page content or observation timestamps change.
 - `tender_search_report` stores the PDF path, hash, record IDs and notification ID.
@@ -102,3 +118,26 @@ The independent read-only Claude review timed out after 110 seconds without
 changing the working tree; this is not a review approval. The coordinator reviewed
 the diff and rendered/inspected the synthetic PDF; actual-source/runtime delivery
 evidence is still required after CI and deployment.
+
+### Roseltorg extension validation, 2026-09-24
+
+The second-source regression suite covers synthetic DOM fields, distinct lots,
+duplicate cards, timezone-free catalog rejection, explicit MSK dates, current
+stage versus inactive future stages, unknown cadastral geography, year suffixes
+and misleading street names, outside-region delivery, source isolation, exact
+query allowlisting, per-origin robots and the request budget. The combined-source
+test verifies PostgreSQL-compatible records, PDF text and notification/run dedup.
+
+Local pre-release: 650 pytest cases, 39/39 agent evals, Ruff and all 11 strict-mypy
+CI invocations passed; Compose configuration passed with `--no-env-resolution`.
+Actual-source read-only probes use the intended server transport but do not prove
+release or delivery. CI must still verify migrations, full Compose/API smoke,
+container security and 100 quality criteria before merge/deploy. The release PR
+will record exact commit, runtime SHA and actual report/notification IDs.
+The independent restricted Claude review again timed out at 110 seconds, without
+changing the tree; it is not an approval. The coordinator inspected the diff and
+rendered the combined-source synthetic PDF successfully. A final read-only live
+probe using the candidate parser found seven future-deadline notices for «уборка»,
+including four Roseltorg lots; three had explicit SPb/LO delivery geography. No
+record or notification was written by that probe. Counts depend on the observed
+first pages and keyword profile and are not a stable completeness guarantee.

@@ -78,7 +78,8 @@ def test_search_filters_keywords_expiry_and_delivery_not_customer_region(monkeyp
     assert result["excluded"]["expired"] == 2
     assert result["excluded"]["delivery_outside_target_region"] == 1
     assert result["partial"] is True
-    assert len(result["sources"]) == 2
+    assert len(result["sources"]) == 3
+    assert result["sources"][-1]["status"] == "unavailable"  # This fixture is B2B-only.
 
 
 def test_missing_deadline_rejected_and_missing_address_explicit(monkeypatch):
@@ -275,3 +276,161 @@ def test_report_download_requires_manager_and_valid_checksum(client, monkeypatch
     assert response.content.startswith(b"%PDF")
     path.write_bytes(b"%PDF-corrupted")
     assert client.get(result["download_url"], headers={"X-API-Key": search.settings.api_key}).status_code == 409
+
+
+def ros_card(number="0372200177726000099", lot="1", title="Услуги по уборке территории", price="2 850 000 <sub>,00</sub> ₽"):
+    """Synthetic fixture matching the observed public Roseltorg DOM, not a real notice."""
+    return f'''<div class="search-results__item" data-feature-favorite-lots-procedure-number="{number}"
+      data-feature-favorite-lots-lot-number="{lot}">
+      <a class="search-results__link--description" href="/procedure/{number}/{lot}">{title}</a>
+      <div class="search-results__customer">Организатор Тест - лишние теги не являются заказчиком</div>
+      <div class="search-results__region"><p title="Регион заказчика">78. г. Санкт-Петербург</p></div>
+      <div class="search-results__status">Прием заявок 5 дн.</div>
+      <div class="search-results__sum"><p class="desktop">{price}</p><p>999 999 ₽</p></div>
+      <div class="search-results__timing"><time class="search-results__time">30.09.2099 в 08:00</time></div>
+      </div>'''
+
+
+def ros_detail(number="0372200177726000099", address="Санкт-Петербург, ул. Тестовая, д. 1", deadline="до 01.02.30 08:00 (МСК)", stage="Прием заявок"):
+    fields = {"Дата публикации": "01.01.30 15:41 (МСК)", "Дата и время окончания подачи заявок": deadline,
+              "Номер процедуры": number, "Наименование процедуры": "Услуги по уборке территории",
+              "Организатор торгов": "Учреждение Тест"}
+    rows = "".join(f'<div class="lot-common-info__row"><div class="lot-common-info__label">{k}</div><div class="lot-common-info__value">{v}</div></div>' for k, v in fields.items())
+    return rows + f'''<div class="lot-steps__heading steps__item--current"><div class="lot-steps__title">{stage}</div></div>
+      <div class="lot-steps__heading"><div class="lot-steps__title">Завершен</div></div>
+      <div class="lot-delivery__text"><div class="lot-expand-text__text">{address}</div></div>'''
+
+
+def mock_both_sources(monkeypatch, ros_html=None, detail_html=None):
+    def read(self, url):
+        if url in search.CATALOGS:
+            return card()
+        if url == search.ROSELTORG_CATALOG:
+            return ros_html if ros_html is not None else ros_card()
+        if url.startswith(search.ROSELTORG_ORIGIN):
+            return detail_html if detail_html is not None else ros_detail()
+        return detail()
+    monkeypatch.setattr(search.CatalogReader, "read", read)
+
+
+def test_roseltorg_catalog_uses_lot_identity_not_guessed_eis_id():
+    rows = search.parse_roseltorg_catalog(ros_card() + ros_card(lot="2"), search.ROSELTORG_CATALOG)
+    assert [r["identity"] for r in rows] == ["roseltorg:0372200177726000099:1", "roseltorg:0372200177726000099:2"]
+    assert rows[0]["initial_price_rub"] == "2850000.00"
+    assert rows[0]["deadline_at"] == rows[0]["customer"] == rows[0]["official_url"] == ""
+    assert rows[0]["detail_url"].endswith("/0372200177726000099/1")
+    for price in ["0 ,00 ₽", "100 ,00 USD", "NaN", "не указана"]:
+        assert search.parse_roseltorg_catalog(ros_card(price=price), search.ROSELTORG_CATALOG)[0]["initial_price_rub"] == ""
+    assert search.parse_roseltorg_catalog(ros_card(number="../login"), search.ROSELTORG_CATALOG) == []
+    assert search.parse_roseltorg_catalog(ros_card().replace('href="/procedure/', 'href="https://evil.example/procedure/'), search.ROSELTORG_CATALOG) == []
+
+
+def test_roseltorg_detail_explicit_moscow_time_current_stage_and_customer():
+    result = search.roseltorg_details(ros_detail(), "0372200177726000099")
+    assert result["deadline_at"] == "2030-02-01T05:00:00+00:00"
+    assert result["published_at"] == "2030-01-01T12:41:00+00:00"
+    assert result["customer"] == "Учреждение Тест"
+    assert "Санкт-Петербург" in result["delivery_address"]
+    for deadline in ["01.02.30 08:00", "до 31.02.30 08:00 (МСК)", "неизвестно"]:
+        assert search.roseltorg_details(ros_detail(deadline=deadline), "0372200177726000099")["deadline_at"] == ""
+    with pytest.raises(ValueError, match="identity"):
+        search.roseltorg_details(ros_detail(number="ANOTHER"), "0372200177726000099")
+    with pytest.raises(ValueError, match="not_accepting"):
+        search.roseltorg_details(ros_detail(stage="Завершен"), "0372200177726000099")
+
+
+@pytest.mark.parametrize("html,reason", [
+    (ros_detail(deadline="до 01.01.20 08:00 (МСК)"), "expired"),
+    (ros_detail(deadline="01.02.30 08:00"), "deadline_unknown"),
+    (ros_detail(address="г. Мурманск, ул. Тестовая, 1"), "delivery_outside_target_region"),
+    (ros_detail(address="г. Москва, Ленинградский проспект, 1"), "delivery_outside_target_region"),
+    (ros_detail(stage="Работа комиссии"), "detail_not_verified"),
+    ("<html>changed layout</html>", "detail_not_verified"),
+])
+def test_roseltorg_detail_controls_eligibility_not_catalog_time_or_customer_region(monkeypatch, html, reason):
+    mock_both_sources(monkeypatch, detail_html=html)
+    result = search.discover_tenders(["уборка"], NOW)
+    assert len(result["items"]) == 1  # B2B keeps working independently.
+    assert result["excluded"][reason] == 1
+
+
+def test_roseltorg_cadastral_only_location_stays_unknown(monkeypatch):
+    mock_both_sources(monkeypatch, detail_html=ros_detail(address="Кадастровый номер 78:10:0516102:1; с 01.11.2030 г. по 30.04.2031 г. Летний период"))
+    result = search.discover_tenders(["уборка"], NOW)
+    row = next(r for r in result["items"] if r["identity"].startswith("roseltorg:"))
+    assert row["region_evidence"] == "needs_verification"
+    assert row["detail_sha256"] and row["catalog_sha256"]
+
+
+def test_roseltorg_partial_failure_and_detail_http_failure_preserve_b2b(monkeypatch):
+    def read(self, url):
+        if url in search.CATALOGS:
+            return card()
+        if url == search.ROSELTORG_CATALOG:
+            return ros_card()
+        if url.startswith(search.ROSELTORG_ORIGIN):
+            raise ValueError("source_http_403")
+        return detail()
+    monkeypatch.setattr(search.CatalogReader, "read", read)
+    result = search.discover_tenders(["уборка"], NOW)
+    assert len(result["items"]) == 1
+    assert result["excluded"]["detail_not_verified"] == 1
+
+
+def test_reader_separates_robots_origins_and_checks_exact_public_query(monkeypatch):
+    calls = []
+    def handle(request):
+        calls.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            body = "User-agent: *\nDisallow: /search/" if request.url.host == "www.b2b-center.ru" else "User-agent: *\nDisallow: /search/*?\nAllow: /procedures/"
+        else:
+            body = ros_card()
+        return httpx.Response(200, text=body, headers={"content-type": "text/plain"})
+    monkeypatch.setattr(search.time, "sleep", lambda _: None)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        reader = search.CatalogReader(client)
+        with pytest.raises(ValueError, match="robots"):
+            reader.read(search.CATALOGS[0])
+        assert "search-results__item" in reader.read(search.ROSELTORG_CATALOG)
+        assert len(reader.robots) == 2
+        for bad in [search.ROSELTORG_CATALOG + "&token=x", search.ROSELTORG_ORIGIN + "/login", search.ROSELTORG_ORIGIN + "/procedure/123/1?key=x", "https://www.roseltorg.ru@127.0.0.1/procedure/123/1"]:
+            with pytest.raises(ValueError, match="allowlisted"):
+                reader.read(bad)
+        reader.requests = 21
+        with pytest.raises(ValueError, match="budget"):
+            reader.read(search.ROSELTORG_ORIGIN + "/procedure/123/1")
+    assert len(calls) == 3
+
+
+def test_reader_respects_robots_query_disallow_for_roseltorg(monkeypatch):
+    monkeypatch.setattr(search.time, "sleep", lambda _: None)
+    calls = []
+    def handle(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, text="User-agent: *\nDisallow: /*?query_field=", headers={"content-type": "text/plain"})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(ValueError, match="robots"):
+            search.CatalogReader(client).read(search.ROSELTORG_CATALOG)
+    assert calls == [search.ROSELTORG_ORIGIN + "/robots.txt"]
+
+
+def test_combined_sources_persist_once_include_pdf_and_version_search_windows(factory, monkeypatch):
+    mock_both_sources(monkeypatch, ros_html=ros_card() + ros_card())
+    with factory() as db:
+        first = search.run_tender_search(db, {"keywords": ["уборка"]}, now=NOW)
+        db.commit()
+        report = db.get(BusinessRecord, first["report_id"])
+        pdf_text = " ".join(p.extract_text() for p in PdfReader(report.data["document_path"]).pages)
+        assert first["count"] == 2
+        assert "Росэлторга" in pdf_text and "2850000.00" in pdf_text and "01.02.2030 08:00" in pdf_text
+        assert "roseltorg:0372200177726000099:1" in pdf_text
+        monkeypatch.setattr(search, "SOURCE_PROFILE", "test-new-profile")
+        replay = search.run_tender_search(db, {"keywords": ["уборка"]}, now=NOW)
+        db.commit()
+        assert replay["report_id"] == first["report_id"]
+        assert db.scalar(select(func.count()).select_from(OwnerNotification)) == 1
+        assert db.scalar(select(func.count()).select_from(BusinessRecord).where(BusinessRecord.record_type == "tender_search_run")) == 2
+        assert db.scalar(select(func.count()).select_from(BusinessRecord).where(BusinessRecord.record_type == "tender")) == 2
+        row = db.get(BusinessRecord, next(i for i in first["record_ids"] if db.get(BusinessRecord, i).external_id.startswith("roseltorg:")))
+        assert row.data["source_kind"] == "public_etp_page"
+        assert row.data["qualification_status"] == "NEEDS_VERIFICATION" and row.data["submission_authorized"] is False
