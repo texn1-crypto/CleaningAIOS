@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -78,6 +78,54 @@ def verify_lead_report_artifact(report: BusinessRecord) -> tuple[Path, dict[str,
     }
 
 
+def _queue_report_delivery(db: Session, report: BusinessRecord) -> int:
+    verify_lead_report_artifact(report)
+    artifact = report.data["artifact"]
+    label = SCOUT_LABELS.get(str(report.data["scout_role"]), SCOUT_LABELS["lead_scout"])
+    notification = queue_owner_notification(
+        db,
+        idempotency_key=f"{report.external_id}:telegram",
+        channel="telegram",
+        resource_type=LEAD_REPORT_RECORD_TYPE,
+        resource_id=str(report.id),
+        subject=f"Найдены новые лиды: {report.data['lead_count']}",
+        body=(
+            f"Канал: {label}. Подробности, контакты и ссылки на публичные источники находятся в PDF. "
+            "Рассылка автоматически не запускалась."
+        ),
+        data={
+            "report_id": report.id,
+            "document_path": artifact["storage_path"],
+            "document_filename": artifact["filename"],
+            "document_sha256": artifact["sha256"],
+            "document_content_type": artifact["content_type"],
+        },
+    )
+    if not report.data.get("notification_id"):
+        report.data = {**report.data, "notification_id": notification.id}
+        db.add(AuditLog(
+            actor=str(report.data["scout_role"]),
+            action="lead_discovery_report.delivery_queued",
+            resource_type=LEAD_REPORT_RECORD_TYPE,
+            resource_id=str(report.id),
+            details={"notification_id": notification.id, "automatic_outreach": False},
+        ))
+    return int(notification.id)
+
+
+def _is_unsent_preview(db: Session, lead: BusinessRecord) -> bool:
+    report_id = str((lead.data or {}).get("instant_lead_report_id") or "")
+    if not report_id.isdigit():
+        return False
+    report = db.get(BusinessRecord, int(report_id))
+    return bool(
+        report is not None
+        and report.record_type == LEAD_REPORT_RECORD_TYPE
+        and lead.id in (report.data or {}).get("lead_ids", [])
+        and not (report.data or {}).get("notification_id")
+    )
+
+
 def build_instant_lead_report(
     db: Session,
     *,
@@ -88,6 +136,9 @@ def build_instant_lead_report(
 ) -> dict[str, Any]:
     """Create one idempotent PDF for newly discovered or materially changed leads."""
 
+    if db.get_bind().dialect.name == "postgresql":
+        # Serialize preview promotion with normal publication across worker replicas.
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 761943821})
     current = generated_at or _utcnow()
     if current.tzinfo is None:
         current_aware = current.replace(tzinfo=timezone.utc)
@@ -103,7 +154,8 @@ def build_instant_lead_report(
         snapshot = _material_snapshot(row)
         signature = _snapshot_signature(snapshot)
         if str((row.data or {}).get("instant_lead_report_signature") or "") == signature:
-            continue
+            if not notify_owner or not _is_unsent_preview(db, row):
+                continue
         rows.append(row)
         snapshots.append((row, snapshot, signature))
     if not rows:
@@ -132,6 +184,16 @@ def build_instant_lead_report(
     )
     if existing is not None:
         verify_lead_report_artifact(existing)
+        if notify_owner:
+            _queue_report_delivery(db, existing)
+        for row, _, signature in snapshots:
+            row.data = {
+                **(row.data or {}),
+                "instant_lead_report_signature": signature,
+                "instant_lead_report_id": existing.id,
+                "instant_lead_reported_at": local.isoformat(),
+            }
+        db.flush()
         return {
             "status": "completed",
             "reused": True,
@@ -183,28 +245,11 @@ def build_instant_lead_report(
     )
     db.add(report)
     db.flush()
-    notification = None
+    notification_id = None
     if notify_owner:
-        notification = queue_owner_notification(
-            db,
-            idempotency_key=f"lead-report:{digest}:telegram",
-            channel="telegram",
-            resource_type=LEAD_REPORT_RECORD_TYPE,
-            resource_id=str(report.id),
-            subject=f"Найдены новые лиды: {len(rows)}",
-            body=(
-                f"Канал: {label}. Подробности, контакты и ссылки на публичные источники находятся в PDF. "
-                "Рассылка автоматически не запускалась."
-            ),
-            data={
-                "report_id": report.id,
-                "document_path": artifact["storage_path"],
-                "document_filename": artifact["filename"],
-                "document_sha256": artifact["sha256"],
-                "document_content_type": artifact["content_type"],
-            },
-        )
-        report.data = {**report.data, "notification_id": notification.id}
+        notification_id = _queue_report_delivery(db, report)
+    else:
+        report.data = {**report.data, "notification_id": None}
     for row, _, signature in snapshots:
         row.data = {
             **(row.data or {}),
@@ -231,7 +276,7 @@ def build_instant_lead_report(
         "reused": False,
         "report_id": report.id,
         "lead_count": len(rows),
-        "notification_id": notification.id if notification is not None else None,
+        "notification_id": notification_id,
         "artifact": artifact,
         "external_messages_sent": False,
         "evidence": [

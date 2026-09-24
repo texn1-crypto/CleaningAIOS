@@ -1367,9 +1367,12 @@
         "app/notifications.py",
         "docs/PRODUCTION.md",
         "tests/test_app.py:test_telegram_owner_notification_bounds_long_text_and_preserves_source",
-        "tests/test_system_admin.py:test_owner_notification_uses_extended_bounded_retry_window"
+        "tests/test_system_admin.py:test_owner_notification_uses_extended_bounded_retry_window",
+        "app/lead_reports.py",
+        "tests/test_lead_report_delivery.py",
+        "docs/LEAD_REPORT_DELIVERY.md"
       ],
-      "notes": "Persisted owner notifications use bounded retries and dead-letter/system-administrator recovery, while oversized Telegram reports retain their full PostgreSQL source and deliver a contract-safe preview. Multi-region failover and full disaster-recovery evidence remain incomplete."
+      "notes": "Persisted owner notifications use bounded retries and dead-letter/system-administrator recovery, while oversized Telegram reports retain their full PostgreSQL source and deliver a contract-safe preview. Lead PDF previews can enter the existing owner outbox on a later notify_owner request without regenerating the PDF or resetting an existing delivery; regression and PostgreSQL concurrency evidence are recorded in docs/LEAD_REPORT_DELIVERY.md. Queueing is not proof of delivery. Multi-region failover and full disaster-recovery evidence remain incomplete."
     },
     {
       "id": 139,
