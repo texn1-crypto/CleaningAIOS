@@ -62,6 +62,7 @@ jobs:
           mypy --strict --follow-imports=skip app/agent_tools.py app/crawl4ai_client.py app/quality_criteria.py
           mypy --strict --follow-imports=skip app/task_requests.py app/deployment_probes.py
           mypy --strict --follow-imports=skip app/tender_search.py
+          mypy --strict --follow-imports=skip app/lead_reports.py
           mypy --strict --follow-imports=skip app/company_profiles.py
           mypy --strict --follow-imports=skip app/tender_prequalification.py
           mypy --strict --follow-imports=skip app/tender_supplier_candidates.py
