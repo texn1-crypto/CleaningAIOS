@@ -214,6 +214,9 @@ class Settings(BaseSettings):
     tender_request_timeout_seconds: int = 30
     tender_monitor_interval_minutes: int = 60
     tender_source_freshness_slo_minutes: int = 120
+    tender_search_enabled: bool = True
+    tender_search_interval_minutes: int = 240
+    tender_search_keywords: str = "уборка|клининг|мойка|мытье|комплексному и хозяйственному обслуживанию"
     document_storage_path: str = "/data/documents"
     proposal_font_path: str = ""
     max_document_bytes: int = 50_000_000

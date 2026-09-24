@@ -335,6 +335,16 @@ rows link back to their source resource. Navigation never infers task state loca
   A separate immutable supplier quote snapshot records typed commercial terms,
   freshness and exact document evidence after that gate. Only `verified` quote data
   matching the cited prequalification and inline decision input can feed economics.
+- Public tender keyword discovery has a separate bounded, deterministic adapter:
+  two allowlisted B2B-Center cleaning catalogs, robots-aware public GETs, future
+  deadlines and explicit delivery-address evidence. It does not require Perplexity
+  or `TENDER_SOURCES`. Scheduler and Russian Telegram research requests enter the
+  existing Task workflow; a PostgreSQL advisory lock serializes observations and
+  digest publication across replicas. Source hashes, observations and exclusions
+  are persisted separately from deduplicated tender records. Checksum-bound PDFs
+  use the existing owner-notification queue and manager-only download route.
+  Unknown geography stays `NEEDS_VERIFICATION`; no lead qualification, submission
+  or whole-internet coverage is inferred. See `docs/TENDER_SEARCH.md`.
 - The advisory router supports three native contracts. `LLM_BASE_URL` targets the
   OpenAI Responses API and sends `LLM_API_KEY` only in the Authorization header with
   `store=false`. `ANTHROPIC_BASE_URL` targets Claude Messages API and sends

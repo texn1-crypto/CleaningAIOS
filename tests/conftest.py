@@ -10,6 +10,7 @@ os.environ["LLM_API_KEY"] = ""
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["PERPLEXITY_API_KEY"] = ""
+os.environ["TENDER_SEARCH_ENABLED"] = "false"
 Path("test_cleaningai.db").unlink(missing_ok=True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

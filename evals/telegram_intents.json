@@ -85,6 +85,22 @@
     }
   },
   {
+    "id": "tender_keyword_pdf",
+    "message": "Найди тендеры по словам «уборка» и «мойка окон» и пришли PDF",
+    "expected": {
+      "kind": "task",
+      "agent_type": "research",
+      "payload": {"action": "search_public_tenders", "keywords": ["уборка", "мойка окон"], "notify_owner": true},
+      "protected": false
+    }
+  },
+  {
+    "id": "tender_search_and_submission_still_protected",
+    "message": "Найди тендеры и подай заявку на тендер",
+    "expected": {"kind": "task", "protected": true},
+    "must_not_contain": ["search_public_tenders"]
+  },
+  {
     "id": "sales_task",
     "message": "Создай задачу связаться с новым клиентом",
     "expected": {

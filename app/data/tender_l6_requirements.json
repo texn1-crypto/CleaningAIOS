@@ -104,9 +104,12 @@
         "migrations/versions/0025_tender_source_run_receipts.py",
         "migrations/versions/0029_tender_source_pagination.py",
         "tests/test_app.py",
-        "tests/test_tender_provider_pagination.py"
+        "tests/test_tender_provider_pagination.py",
+        "app/tender_search.py",
+        "tests/test_tender_search.py",
+        "docs/TENDER_SEARCH.md"
       ],
-      "notes": "A manager-triggered generic HTTP(S) JSON feed contract stores canonical content hashes and append-only observed versions, scopes provider-local IDs to each source, distinguishes unchanged replays and emits one outbox event per real version; bearer authentication is HTTPS-only. Every configured attempt persists a final source-run receipt with timing, HTTP/outcome counters, a secret-safe manager view and transactional outbox event. The optional tender-page-v1 contract now persists and resumes same-origin next-page checkpoints only after successful page transactions, hashes provider acknowledgements/cursors in receipts, records partial/complete/unknown and rejects invalid or non-advancing pagination fail-closed. Official EIS/ETP adapters, legal access agreements, stable provider keys and verified portal-specific completeness contracts remain missing."
+      "notes": "A manager-triggered generic HTTP(S) JSON feed contract stores canonical content hashes and append-only observed versions, scopes provider-local IDs to each source, distinguishes unchanged replays and emits one outbox event per real version; bearer authentication is HTTPS-only. Every configured attempt persists a final source-run receipt with timing, HTTP/outcome counters, a secret-safe manager view and transactional outbox event. The optional tender-page-v1 contract now persists and resumes same-origin next-page checkpoints only after successful page transactions, hashes provider acknowledgements/cursors in receipts, records partial/complete/unknown and rejects invalid or non-advancing pagination fail-closed. A separate bounded public-catalog adapter connects keyword discovery to scheduler/Telegram Tasks, observed source hashes, deduplicated tender records and checksum-bound owner PDF delivery without Perplexity. Its two B2B-Center regional catalogs are explicitly partial; missing delivery geography stays NEEDS_VERIFICATION. See docs/TENDER_SEARCH.md for tests and runtime evidence requirements. Official EIS/ETP adapters, legal access agreements, stable provider keys and verified portal-specific completeness contracts remain missing."
     },
     {
       "id": 10,

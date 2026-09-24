@@ -43,6 +43,10 @@ class DataCollectorAgent:
                     ],
                 },
             )
+        if payload.get("action") == "search_public_tenders":
+            from .tender_search import run_tender_search
+
+            return run_tender_search(db, payload)
         sources = payload.get("sources") or [x.strip() for x in settings.tender_sources.split(",") if x.strip()]
         query = payload.get("query", "")
         if payload.get("collection", "tenders") == "tenders":
@@ -187,6 +191,10 @@ class OrchestratorAgent:
 class TenderAgent:
     name = "tender"
     def execute(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("action") == "search_public_tenders":
+            from .tender_search import run_tender_search
+
+            return run_tender_search(db, payload)
         if payload.get("action") == "prepare_tender_package":
             from .models import TenderDocument
             from .tender_intelligence import TERMINAL_TENDER_STATUSES, classify_tender_scope, evaluate_tender_viability, merge_registered_document_risks
