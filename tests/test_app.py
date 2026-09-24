@@ -5738,6 +5738,7 @@ def test_incomplete_telegram_task_creates_deduplicated_improvement_and_ceo_repor
     assert first["result"]["ceo_incident_task_id"]
     assert first["result"]["handoff_status"] == "credentials_required"
     assert first["result"]["responsible_party"] == "owner_configuration"
+    assert first["result"]["failure_category"] == "credentials_required"
 
     incident = next(
         row for row in client.get("/api/tasks").json()

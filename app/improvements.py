@@ -683,6 +683,7 @@ def record_execution_gap(db: Session, task: Task, reason: str, *, credentials_re
         "improvement_id": row.id,
         "handoff_status": handoff["status"],
         "responsible_party": "owner_configuration" if credentials_required else "system_codex",
+        "failure_category": "credentials_required" if credentials_required else "execution_gap",
     }
 
 

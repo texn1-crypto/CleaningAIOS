@@ -7,6 +7,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from .chat import redact_sensitive_text
+from .backlog_health import improvement_backlog_counts, task_backlog_counts, task_backlog_rows
 from .config import settings
 from .models import (
     AgentRun,
@@ -1102,50 +1103,18 @@ def build_activity_report(
     ).all()
 
     active_total = _count(db, Task, Task.status.in_(["open", "queued", "running"]))
-    queued_improvements = _count(
-        db, ImprovementRequest, ImprovementRequest.status == "queued"
-    )
-    queued_improvements_perplexity = _count(
-        db,
-        ImprovementRequest,
-        ImprovementRequest.status == "queued",
-        ImprovementRequest.source_user == "perplexity_agent_coach",
-    )
-    queued_improvements_research = _count(
-        db,
-        ImprovementRequest,
-        ImprovementRequest.status == "queued",
-        ImprovementRequest.source_user == "github_evolution_researcher",
-    )
-    queued_improvements_telegram = _count(
-        db,
-        ImprovementRequest,
-        ImprovementRequest.status == "queued",
-        ImprovementRequest.source_channel == "telegram",
-    )
     summary = {
         "tasks_completed": len(completed),
         "business_tasks_completed": sum(row.agent_type != "request_analyst" for row in completed),
         "tasks_active": max(0, active_total - current_report_count),
-        "tasks_failed": _count(db, Task, Task.status == "failed"),
-        "tasks_blocked": _count(db, Task, Task.status == "blocked"),
+        **task_backlog_counts(db),
         "agent_runs_succeeded": _count(
             db, AgentRun, AgentRun.status == "succeeded", AgentRun.finished_at >= cutoff
         ),
         "agent_runs_failed": _count(
             db, AgentRun, AgentRun.status == "failed", AgentRun.finished_at >= cutoff
         ),
-        "queued_improvements": queued_improvements,
-        "queued_improvements_perplexity": queued_improvements_perplexity,
-        "queued_improvements_research": queued_improvements_research,
-        "queued_improvements_telegram": queued_improvements_telegram,
-        "queued_improvements_other": max(
-            0,
-            queued_improvements
-            - queued_improvements_perplexity
-            - queued_improvements_research
-            - queued_improvements_telegram,
-        ),
+        **improvement_backlog_counts(db),
         "implemented_improvements": _count(
             db,
             ImprovementRequest,
@@ -1179,10 +1148,12 @@ def build_activity_report(
         "coordination": "postgresql_task_queue_skip_locked",
     }
     blockers = []
-    if summary["tasks_failed"]:
-        blockers.append(f"Задач с ошибкой: {summary['tasks_failed']}")
-    if summary["tasks_blocked"]:
-        blockers.append(f"Заблокированных задач: {summary['tasks_blocked']}")
+    if summary["tasks_failed_actionable"]:
+        blockers.append(f"Необработанных ошибок: {summary['tasks_failed_actionable']}")
+    if summary["tasks_blocked_actionable"]:
+        blockers.append(f"Операционных блокировок: {summary['tasks_blocked_actionable']}")
+    if summary["tasks_waiting_configuration"]:
+        blockers.append(f"Ожидают настройки или доступа: {summary['tasks_waiting_configuration']}")
     if summary["events_dead_letter"]:
         blockers.append(f"Событий в dead-letter: {summary['events_dead_letter']}")
     if summary["pending_approvals"]:
@@ -1297,14 +1268,20 @@ def format_activity_report(result: dict[str, Any]) -> str:
         f"📋 Отчёт CleaningAI OS за {period_label}",
         f"✅ Выполнено задач: {summary.get('tasks_completed', 0)}",
         f"🔄 В работе и очереди: {summary.get('tasks_active', 0)}",
-        f"⚠️ Ошибок: {summary.get('tasks_failed', 0)}",
-        f"⛔ Заблокировано: {summary.get('tasks_blocked', 0)}",
+        *(f"{label}: {value}" for label, value in task_backlog_rows(summary)),
         (
-            f"🛠 Улучшений в очереди: {summary.get('queued_improvements', 0)} "
-            f"(Perplexity: {summary.get('queued_improvements_perplexity', 0)}, "
+            f"🛠 Предложений в очереди: {summary.get('queued_improvements', 0)} "
+            f"(источники, не ошибки сервисов: Perplexity: {summary.get('queued_improvements_perplexity', 0)}, "
             f"GitHub research: {summary.get('queued_improvements_research', 0)}, "
             f"Telegram: {summary.get('queued_improvements_telegram', 0)}, "
             f"прочие: {summary.get('queued_improvements_other', 0)})"
+        ),
+        (
+            (f"Из них: настройка доступа {summary['queued_improvements_configuration']}, "
+             f"разбор и разработка {summary['queued_improvements_development']}. "
+             if "queued_improvements_configuration" in summary and "queued_improvements_development" in summary
+             else "Классификация предложений в этом сохранённом отчёте отсутствует. ") +
+            "Предложение не означает подтверждённую неисправность."
         ),
         f"🔐 Ожидают подтверждения: {summary.get('pending_approvals', 0)}",
     ]

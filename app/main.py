@@ -198,12 +198,15 @@ def create_autopilot_lead(
 
 @app.get("/api/dashboard")
 def dashboard(db: Session = Depends(get_db), _: Principal = Depends(principal)):
+    from .backlog_health import task_backlog_counts
+
+    backlog = task_backlog_counts(db)
     open_tasks = db.scalar(select(func.count(Task.id)).where(Task.status.in_(["open", "queued", "running"]))) or 0
     pending = db.scalar(select(func.count(Decision.id)).where(Decision.status == "pending")) or 0
-    failed = db.scalar(select(func.count(Task.id)).where(Task.status == "failed")) or 0
+    failed = backlog["tasks_failed"]
     agents = db.scalars(select(AgentState).order_by(AgentState.agent_type)).all()
     pending_approvals = db.scalar(select(func.count(ApprovalRequest.id)).where(ApprovalRequest.status == "pending")) or 0
-    return {"company_health": max(0, 100 - failed * 10 - (pending + pending_approvals) * 5), "open_tasks": open_tasks, "pending_decisions": pending, "pending_approvals": pending_approvals, "failed_tasks": failed, "modules": module_summary(db), "agents": [{"type": x.agent_type, "status": x.status, "last_heartbeat_at": x.last_heartbeat_at, "last_error": x.last_error} for x in agents]}
+    return {"company_health": max(0, 100 - backlog["tasks_failed_actionable"] * 10 - (pending + pending_approvals) * 5), "open_tasks": open_tasks, "pending_decisions": pending, "pending_approvals": pending_approvals, "failed_tasks": failed, "task_backlog": backlog, "modules": module_summary(db), "agents": [{"type": x.agent_type, "status": x.status, "last_heartbeat_at": x.last_heartbeat_at, "last_error": x.last_error} for x in agents]}
 
 
 @app.get("/api/tasks")

@@ -29,6 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
+from .backlog_health import task_backlog_rows
 from .models import BusinessRecord, ContentItem, OwnerNotification
 from .notifications import queue_owner_notification
 from .publication_links import verified_publication_url
@@ -76,7 +77,7 @@ def _list_text(value: object, *, limit: int = 3) -> str:
 
 
 def _paragraph(value: object, style: ParagraphStyle) -> Paragraph:
-    raw = str(value or "")
+    raw = "" if value is None else str(value)
     if len(raw) > 8_000:
         raw = raw[:7_999] + "…"
     rendered = "<br/>".join(escape(_text(line)) for line in raw.splitlines())
@@ -498,8 +499,7 @@ def run_daily_owner_pack(
             "summary": [
                 ("Выполнено задач за 24 часа", summary.get("tasks_completed", 0)),
                 ("В работе и очереди", summary.get("tasks_active", 0)),
-                ("Ошибок", summary.get("tasks_failed", 0)),
-                ("Заблокировано", summary.get("tasks_blocked", 0)),
+                *task_backlog_rows(summary),
                 ("Улучшений в очереди", summary.get("queued_improvements", 0)),
                 ("Ожидают решения владельца", summary.get("pending_approvals", 0)),
                 ("Требуют внимания", "; ".join(operational.get("blockers") or []) or "нет"),

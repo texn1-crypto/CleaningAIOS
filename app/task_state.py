@@ -56,9 +56,20 @@ def task_waits_for_configuration(task: Task) -> bool:
     result = task.result if isinstance(task.result, dict) else {}
     states = {
         str(result.get(key) or "").strip().lower()
-        for key in ("status", "handoff_status", "failure_category")
+        for key in ("status", "failure_category")
     }
     if states & CONFIGURATION_WAIT_STATES:
+        return True
+    # Older quality-gate results persisted the dependency classification here,
+    # separately from the optional workspace handoff's authentication status.
+    improvement_id = result.get("improvement_id")
+    if (
+        result.get("responsible_party") == "owner_configuration"
+        and isinstance(improvement_id, int)
+        and not isinstance(improvement_id, bool)
+        and improvement_id > 0
+        and bool(result.get("execution_gap"))
+    ):
         return True
     payload = task.payload if isinstance(task.payload, dict) else {}
     for required in (

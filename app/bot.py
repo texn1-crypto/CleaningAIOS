@@ -22,6 +22,7 @@ from telegram.error import NetworkError, TelegramError
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .chat import format_public_research, redact_sensitive_text, understand_russian_message
+from .backlog_health import task_backlog_rows
 from .config import settings
 from .lead_autopilot import CLEANING_KIND_LABELS, FREQUENCY_LABELS, SERVICE_LABELS, URGENCY_LABELS, normalize_phone
 from .recipient_import import EMAIL_PATTERN, SUPPORTED_RECIPIENT_SUFFIXES, extract_recipient_emails
@@ -332,7 +333,9 @@ async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 async def dashboard(update: Update, _: ContextTypes.DEFAULT_TYPE):
     data = await api("GET", "/api/dashboard")
-    await update.effective_message.reply_text(f"🏢 Здоровье: {data['company_health']}%\n🧾 Открытые задачи: {data['open_tasks']}\n✅ Решения: {data['pending_decisions']}\n🔐 Подтверждения: {data['pending_approvals']}\n⚠️ Ошибки: {data['failed_tasks']}")
+    backlog = data.get("task_backlog") or {"tasks_failed": data["failed_tasks"]}
+    details = "\n".join(f"{label}: {value}" for label, value in task_backlog_rows(backlog))
+    await update.effective_message.reply_text(f"🏢 Операционный индикатор: {data['company_health']}% (не SLO)\n🧾 Открытые задачи: {data['open_tasks']}\n✅ Решения: {data['pending_decisions']}\n🔐 Подтверждения: {data['pending_approvals']}\n{details}")
 
 
 async def social_dashboard(update: Update, _: ContextTypes.DEFAULT_TYPE):

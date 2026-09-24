@@ -63,6 +63,7 @@ jobs:
           mypy --strict --follow-imports=skip app/task_requests.py app/deployment_probes.py
           mypy --strict --follow-imports=skip app/tender_search.py
           mypy --strict --follow-imports=skip app/lead_reports.py
+          mypy --strict --follow-imports=skip app/backlog_health.py app/task_state.py
           mypy --strict --follow-imports=skip app/company_profiles.py
           mypy --strict --follow-imports=skip app/tender_prequalification.py
           mypy --strict --follow-imports=skip app/tender_supplier_candidates.py

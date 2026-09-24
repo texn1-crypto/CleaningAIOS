@@ -144,6 +144,9 @@ def test_research_scheduler_backs_off_after_provider_configuration_failure(monke
             "status": "unavailable",
             "handoff_status": "credentials_required",
             "provider": "perplexity_sonar",
+            "responsible_party": "owner_configuration",
+            "improvement_id": 1,
+            "execution_gap": "HTTPStatusError: 401 Unauthorized",
         }
         db.flush()
 
