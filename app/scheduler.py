@@ -105,6 +105,18 @@ def schedule_cycle() -> None:
             db.flush()
             record_task_created(db, task, actor="scheduler", reason="daily_cleaning_news_social_plan")
         tender_sources = [source.strip() for source in settings.tender_sources.split(",") if source.strip()]
+        if settings.tender_search_enabled:
+            search_window = owner_report_window(now, max(60, min(settings.tender_search_interval_minutes, 1440)))
+            search_title = f"Public tender keyword search · {search_window.isoformat()}"
+            if not db.scalar(select(Task.id).where(Task.title == search_title)):
+                search_task = Task(
+                    title=search_title, agent_type="tender", status="queued", priority="high",
+                    run_after=now, max_attempts=2,
+                    payload={"action": "search_public_tenders", "source": "scheduler", "notify_owner": True},
+                )
+                db.add(search_task)
+                db.flush()
+                record_task_created(db, search_task, actor="scheduler", reason="public_tender_keyword_search")
         tender_interval = max(5, min(settings.tender_monitor_interval_minutes, 24 * 60))
         tender_recent_since = now - timedelta(minutes=tender_interval)
         tender_monitor_active = db.scalar(

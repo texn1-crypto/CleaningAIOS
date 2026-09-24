@@ -435,6 +435,11 @@ def understand_russian_message(message: str, *, referenced_text: str = "") -> di
         payload["action_kind"] = action_kind
     if agent_type == "research" and _contains(text, "тендер", "закупк", "конкурс"):
         payload.update({"collection": "tenders", "query": safe_original[:1000]})
+        if not _protected_action(text):
+            payload.update({"action": "search_public_tenders", "notify_owner": True})
+            quoted = re.findall(r'[«"]([^»"]{2,80})[»"]', safe_original)
+            if quoted:
+                payload["keywords"] = quoted[:8]
     if agent_type == "lead_scout":
         payload.update(
             {

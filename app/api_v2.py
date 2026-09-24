@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -3088,6 +3088,26 @@ def list_lead_reports(db: Session = Depends(get_db), actor: Principal = Depends(
         }
         for row in rows
     ]
+
+
+@router.get("/tender-search/reports/{report_id}/download")
+def download_tender_search_report(
+    report_id: int, db: Session = Depends(get_db), actor: Principal = Depends(principal),
+):
+    from .notifications import _verified_document_attachment
+    from .tender_search import REPORT_TYPE
+
+    require_role(actor, "manager")
+    report = db.get(BusinessRecord, report_id)
+    if report is None or report.record_type != REPORT_TYPE:
+        raise HTTPException(404, "Tender search report not found")
+    try:
+        raw, filename, content_type = _verified_document_attachment(report.data)
+    except RuntimeError as exc:
+        raise HTTPException(409, "Tender report integrity verification failed") from exc
+    audit(db, actor.subject, "tender_search_report.downloaded", REPORT_TYPE, str(report_id))
+    db.commit()
+    return Response(raw, media_type=content_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.get("/research/lead-reports/{report_id}/download")
