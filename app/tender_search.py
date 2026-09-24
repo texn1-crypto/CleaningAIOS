@@ -31,6 +31,10 @@ CATALOGS = (
     f"{ORIGIN}/search/sankt-peterburg/uborka-pomeshhenij/",
     f"{ORIGIN}/search/leningradskaya-oblast/uborka-pomeshhenij/",
 )
+ROSELTORG_ORIGIN = "https://www.roseltorg.ru"
+# Observed public GET form. Region is the CUSTOMER's region, not delivery evidence.
+ROSELTORG_CATALOG = ROSELTORG_ORIGIN + "/procedures/search?query_field=%D1%83%D0%B1%D0%BE%D1%80%D0%BA&region%5B%5D=47&region%5B%5D=78"
+SOURCE_PROFILE = "b2b-roseltorg-v1"
 USER_AGENT = "CleaningAIOS"
 MAX_BYTES = 2_000_000
 REPORT_TYPE = "tender_search_report"
@@ -186,6 +190,65 @@ def delivery_address(html: str) -> str:
     return ""
 
 
+def parse_roseltorg_catalog(html: str, source_url: str) -> list[dict[str, Any]]:
+    cards = _page(html).find("search-results__item")
+    if not cards:
+        raise ValueError("catalog_layout_unrecognized")
+    result: list[dict[str, Any]] = []
+    for card in cards[:100]:
+        number = card.attrs.get("data-feature-favorite-lots-procedure-number", "")
+        lot = card.attrs.get("data-feature-favorite-lots-lot-number", "")
+        if not re.fullmatch(r"[A-Z0-9-]{1,64}", number) or not re.fullmatch(r"[1-9][0-9]{0,5}", lot):
+            continue
+        path = f"/procedure/{number}/{lot}"
+        links = [n for n in card.find("search-results__link--description") if n.attrs.get("href") == path]
+        if not links or not _first(card, "search-results__status").lower().replace("ё", "е").startswith("прием заявок"):
+            continue
+        sums = card.find("search-results__sum")
+        desktop = sums[0].find("desktop", "p") if sums else []
+        price = _clean(desktop[0].content) if desktop else ""
+        try:
+            amount = Decimal(re.sub(r"\s", "", price.removesuffix("₽")).replace(",", "."))
+            price = str(amount) if price.endswith("₽") and amount.is_finite() and amount > 0 else ""
+        except InvalidOperation:
+            price = ""
+        result.append({
+            "identity": f"roseltorg:{number}:{lot}", "procedure_number": number, "lot_number": lot,
+            "title": _clean(links[0].content)[:1000], "customer": "",
+            "source_url": source_url, "detail_url": ROSELTORG_ORIGIN + path, "official_url": "",
+            # Catalog timestamps have NO zone; only a detail-page МСК timestamp is accepted.
+            "deadline_at": "", "published_at": "", "initial_price_rub": price,
+        })
+    return result
+
+
+def roseltorg_details(html: str, number: str) -> dict[str, str]:
+    root = _page(html)
+    fields = {_first(row, "lot-common-info__label"): _first(row, "lot-common-info__value")
+              for row in root.find("lot-common-info__row")}
+    if fields.get("Номер процедуры") != number:
+        raise ValueError("detail_identity_mismatch")
+    stages = [_first(n, "lot-steps__title").lower().replace("ё", "е") for n in root.find("lot-steps__heading")
+              if "steps__item--current" in n.attrs.get("class", "").split()]
+    if stages != ["прием заявок"]:
+        raise ValueError("procedure_not_accepting_applications")
+    result = {"customer": fields.get("Организатор торгов", "")[:800],
+              "title": fields.get("Наименование процедуры", "")[:1000]}
+    for key, label in (("deadline_at", "Дата и время окончания подачи заявок"), ("published_at", "Дата публикации")):
+        match = re.fullmatch(r"(?:до )?(\d{2}\.\d{2}\.\d{2}(?:\d{2})? \d{2}:\d{2}) \(МСК\)", fields.get(label, ""))
+        result[key] = ""
+        if match:
+            try:
+                raw = match[1]
+                value = datetime.strptime(raw, "%d.%m.%Y %H:%M" if len(raw) == 16 else "%d.%m.%y %H:%M")
+                result[key] = value.replace(tzinfo=ZoneInfo("Europe/Moscow")).astimezone(timezone.utc).isoformat()
+            except ValueError:
+                pass
+    delivery = root.find("lot-delivery__text")
+    result["delivery_address"] = _first(delivery[0], "lot-expand-text__text")[:1600] if delivery else ""
+    return result
+
+
 def _delivery(db: Session, report: BusinessRecord, notify: bool) -> tuple[int | None, str]:
     _verified_document_attachment(report.data)
     notification_id = report.data.get("notification_id")
@@ -242,13 +305,13 @@ class CatalogReader:
 
     def __init__(self, client: httpx.Client) -> None:
         self.client = client
-        self.robots: str | None = None
+        self.robots: dict[str, str] = {}
         self.last_request = 0.0
         self.requests = 0
 
     def _get(self, url: str) -> str:
         self.requests += 1
-        if self.requests > 19:
+        if self.requests > 21:
             raise ValueError("request_budget_exceeded")
         with self.client.stream("GET", url, headers={"User-Agent": USER_AGENT + "/2.1 public-procurement-monitor"}) as response:
             # No redirect traversal: an authentication/challenge route stays unavailable.
@@ -270,12 +333,16 @@ class CatalogReader:
 
     def read(self, url: str) -> str:
         parts = urlsplit(url)
-        if (parts.scheme != "https" or parts.netloc != "www.b2b-center.ru" or parts.query or parts.fragment
-                or (url not in CATALOGS and not re.fullmatch(r"/search/number/[a-zA-Z0-9-]+/", parts.path))):
+        catalog = url in (*CATALOGS, ROSELTORG_CATALOG)
+        detail = not parts.query and (
+            (parts.netloc == "www.b2b-center.ru" and re.fullmatch(r"/search/number/[a-zA-Z0-9-]+/", parts.path))
+            or (parts.netloc == "www.roseltorg.ru" and re.fullmatch(r"/procedure/[A-Z0-9-]{1,64}/[1-9][0-9]{0,5}", parts.path)))
+        if parts.scheme != "https" or parts.fragment or not (catalog or detail):
             raise ValueError("source_not_allowlisted")
-        if self.robots is None:
-            self.robots = self._get(ORIGIN + "/robots.txt")
-        allowed, delay = robots_policy(self.robots, parts.path)
+        origin = f"https://{parts.netloc}"
+        if origin not in self.robots:
+            self.robots[origin] = self._get(origin + "/robots.txt")
+        allowed, delay = robots_policy(self.robots[origin], parts.path + ("?" + parts.query if parts.query else ""))
         if not allowed or delay > 10 or not 0 <= delay <= 10:
             raise ValueError("source_robots_restricted")
         time.sleep(max(0.0, delay - (time.monotonic() - self.last_request)))
@@ -288,17 +355,17 @@ def discover_tenders(keywords: list[str], now: datetime) -> dict[str, Any]:
     excluded: Counter[str] = Counter()
     with httpx.Client(timeout=12, trust_env=False, follow_redirects=False, transport=_DNSPinningTransport()) as client:
         reader = CatalogReader(client)
-        for url in CATALOGS:
+        for url in (*CATALOGS, ROSELTORG_CATALOG):
             try:
                 body = reader.read(url)
-                rows = parse_catalog(body, url)
+                rows = parse_roseltorg_catalog(body, url) if url == ROSELTORG_CATALOG else parse_catalog(body, url)
                 receipts.append({"url": url, "status": "fetched", "sha256": hashlib.sha256(body.encode()).hexdigest(), "items": len(rows)})
                 for row in rows:
                     if not _matches(row["title"], keywords) or re.match(r"\s*поставка\b", row["title"], re.I):
                         excluded["keyword_or_service_mismatch"] += 1
-                    elif not row["deadline_at"]:
+                    elif not row["deadline_at"] and url != ROSELTORG_CATALOG:
                         excluded["deadline_unknown"] += 1
-                    elif datetime.fromisoformat(row["deadline_at"]) <= now:
+                    elif row["deadline_at"] and datetime.fromisoformat(row["deadline_at"]) <= now:
                         excluded["expired"] += 1
                     elif any(not place.startswith("ленинградск") for place in re.findall(
                         r"\b(?:по|в|на территории)\s+([а-я-]+)\s+област", row["title"].lower()
@@ -310,26 +377,42 @@ def discover_tenders(keywords: list[str], now: datetime) -> dict[str, Any]:
                 reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
                 receipts.append({"url": url, "status": "unavailable", "reason": reason[:80]})
         selected: list[dict[str, Any]] = []
-        for row in sorted(found.values(), key=lambda r: r["deadline_at"])[:16]:
+        for row in sorted(found.values(), key=lambda r: r["deadline_at"] or "9999")[:16]:
+            roseltorg = row["source_url"] == ROSELTORG_CATALOG
             try:
                 body = reader.read(row["detail_url"])
-                address = delivery_address(body)
+                if roseltorg:
+                    row.update(roseltorg_details(body, row["procedure_number"]))
+                    if not row["deadline_at"]:
+                        excluded["deadline_unknown"] += 1
+                        continue
+                    if datetime.fromisoformat(row["deadline_at"]) <= now:
+                        excluded["expired"] += 1
+                        continue
+                    if not _matches(row["title"], keywords) or re.match(r"\s*поставка\b", row["title"], re.I):
+                        excluded["keyword_or_service_mismatch"] += 1
+                        continue
+                address = row["delivery_address"] if roseltorg else delivery_address(body)
                 row["detail_sha256"] = hashlib.sha256(body.encode()).hexdigest()
                 row["delivery_address"] = address
-                if address and re.search(r"санкт[ -]петербург|ленинградск|\bспб\b", address, re.I):
+                if address and re.search(r"\b(?:санкт[ -]петербург(?:а|е)?|ленинградск(?:ая|ой|ую)\s+обл(?:асть|асти)?|спб)\b", address, re.I):
                     row["region_evidence"] = "delivery_address"
-                elif address:
+                elif address and (not roseltorg or re.search(r"(?<!\d )\bг\.\s*[А-ЯЁ][а-яё-]+|\b(?:город|область|обл\.)\b", address)):
                     excluded["delivery_outside_target_region"] += 1
                     continue
                 else:
                     row["region_evidence"] = "needs_verification"
             except (httpx.HTTPError, ValueError) as exc:
+                if roseltorg:
+                    # An unverified catalog time is not a usable future deadline.
+                    excluded["detail_not_verified"] += 1
+                    continue
                 row["delivery_address"] = ""
                 row["region_evidence"] = "needs_verification"
                 row["detail_error"] = str(exc)[:80] if isinstance(exc, ValueError) else type(exc).__name__
             row["catalog_sha256"] = next(x["sha256"] for x in receipts if x["url"] == row["source_url"] and x["status"] == "fetched")
             selected.append(row)
-    return {"items": selected, "sources": receipts, "excluded": dict(excluded), "partial": True,
+    return {"items": sorted(selected, key=lambda r: (r["deadline_at"], r["identity"])), "sources": receipts, "excluded": dict(excluded), "partial": True,
             "candidate_limit_reached": len(found) > 16, "observed_at": now.isoformat()}
 
 
@@ -339,7 +422,7 @@ def run_tender_search(db: Session, payload: dict[str, Any], *, now: datetime | N
     keywords = normalize_keywords(payload.get("keywords"))
     interval = max(60, min(settings.tender_search_interval_minutes, 1440))
     window = int(current.timestamp()) // (interval * 60)
-    run_key = "public-tender-search:" + _digest([window, keywords])
+    run_key = "public-tender-search:" + _digest([SOURCE_PROFILE, window, keywords])
     if db.get_bind().dialect.name == "postgresql":
         # A single transaction owns observation/report publication across worker replicas.
         db.execute(text("SELECT pg_advisory_xact_lock(724190831)"))
@@ -366,7 +449,7 @@ def run_tender_search(db: Session, payload: dict[str, Any], *, now: datetime | N
         row.title = item["title"][:255]
         row.deadline_at = datetime.fromisoformat(item["deadline_at"]).replace(tzinfo=None)
         row.data = {**(row.data or {}), **item, "last_observed_at": current.isoformat(),
-                    "qualification_status": "NEEDS_VERIFICATION", "source_kind": "public_catalog_not_official_api",
+                    "qualification_status": "NEEDS_VERIFICATION", "source_kind": "public_etp_page" if item["source_url"] == ROSELTORG_CATALOG else "public_catalog_not_official_api",
                     "search_facts_hash": facts_hash, "submission_authorized": False}
         db.flush()
         record_ids.append(row.id)
@@ -385,11 +468,11 @@ def run_tender_search(db: Session, payload: dict[str, Any], *, now: datetime | N
                 f"Приём заявок до: {deadline:%d.%m.%Y %H:%M} МСК (по публичной карточке)",
                 f"Начальная цена: {item['initial_price_rub'] + ' RUB' if item['initial_price_rub'] else 'не указана'}",
                 f"Адрес поставки: {item.get('delivery_address') or 'НЕ ПОДТВЕРЖДЁН; не считать закупкой СПб/ЛО'}",
-                f"Первоисточник ЕИС: {item['official_url'] or 'см. публичную карточку площадки'}",
+                f"Первоисточник ЕИС: {item['official_url'] or 'ссылка на извещение не подтверждена; см. карточку площадки'}",
                 "Условия, документы и возможность участия требуют отдельной проверки. Заявка не подавалась.",
             ]})
         entries.append({"label": "Проверенные источники и полнота поиска", "details": [
-            "Частичный поиск по двум публичным каталогам B2B-Center для СПб/ЛО, не весь интернет и не официальный API ЕИС.",
+            "Частичный поиск: два каталога B2B-Center и первая страница Росэлторга по слову «уборк» и регионам заказчика 47/78; не весь интернет и не официальный API ЕИС.",
             *[f"{s['url']}: {s['status']}" for s in discovery["sources"]],
             "Отклонено: " + json.dumps(discovery["excluded"], ensure_ascii=False),
             "Адрес заказчика не подменяет адрес выполнения работ. Неподтверждённая география явно отмечена.",
