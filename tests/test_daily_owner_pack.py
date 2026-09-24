@@ -78,6 +78,17 @@ def test_daily_owner_pack_builds_four_verified_pdfs_and_deduplicates_delivery(
                     status="done",
                     result={"evidence": [{"type": "test"}]},
                 ),
+                Task(
+                    title="Учтённая старая ошибка",
+                    status="failed",
+                    result={"resolution_status": "reconciled",
+                            "resolution_kind": "verification_candidate_retry_accounted"},
+                ),
+                Task(
+                    title="Ожидание настройки",
+                    status="blocked",
+                    result={"status": "credentials_required"},
+                ),
                 ContentItem(
                     channel="telegram",
                     title="Опубликованный пост",
@@ -153,6 +164,11 @@ def test_daily_owner_pack_builds_four_verified_pdfs_and_deduplicates_delivery(
         assert "Публичный бизнес-центр" in extracted[0]
         assert "Клиент из CRM" in extracted[1]
         assert "Ежедневный операционный отчёт" in extracted[2]
+        operations_text = " ".join(extracted[2].split())
+        assert "Необработанных ошибок 0" in operations_text
+        assert "Обработанных ошибок в истории 1" in operations_text
+        assert "Операционных блокировок 0" in operations_text
+        assert "Ожидают настройки или доступа 1" in operations_text
         publication_text = extracted[3]
         assert "https://t.me/cleaning_channel/812" in publication_text
         assert "https://cleaning.example/#news" in publication_text

@@ -456,6 +456,9 @@ def test_scheduler_backs_off_after_lead_provider_credential_failure(monkeypatch)
                 result={
                     "status": "unavailable",
                     "handoff_status": "credentials_required",
+                    "responsible_party": "owner_configuration",
+                    "improvement_id": 1,
+                    "execution_gap": "HTTPStatusError: 401 Unauthorized",
                 },
             )
         )

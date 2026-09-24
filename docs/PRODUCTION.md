@@ -85,6 +85,41 @@ latest task, queued work, or an explicit inactivity reason. The worker delivers 
 through the persisted owner notification queue. Set a value from 5 to 1440
 minutes; delivery requires `TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID`.
 
+Operational reports retain the historical `tasks_failed`, `tasks_blocked` and
+`queued_improvements` totals, but separately expose actionable failures,
+reconciled failures and explicit configuration waits. The Telegram summary labels
+Perplexity/GitHub/Telegram as proposal provenance, not integration error counts;
+queued configuration requests remain visible separately from development proposals.
+No report read changes task/improvement status, retries work or sends a message.
+Missing optional workspace-handoff credentials alone do not classify a business
+failure as configuration-only. Unknown failures remain actionable. The dashboard
+uses actionable failures for its existing heuristic health score while retaining
+the legacy total and adding a `task_backlog` breakdown; the score is not an SLO.
+Telegram `/dashboard`, Mission Control and the daily operations PDF consume the
+same breakdown. Old stored reports without that evidence are explicitly
+unclassified, not assumed actionable or resolved. PDF tables preserve zero values.
+Mission Control requests at most 30 tasks from the API instead of loading all
+history every 15 seconds. Polling counters aggregate failed history in SQL and
+project only classification fields for current blocks; they never load full
+historical task payloads/results. Old unresolved blocks are not hidden by a time cutoff.
+Regressions: `tests/test_backlog_health.py` and
+`tests/test_daily_owner_pack.py`. Diagnostics must use
+`GET /api/tasks?limit=20` (and `status`/`before_id` as needed), not the unbounded
+legacy history response. None of these reporting changes fixes missing provider
+credentials or implements queued feature suggestions.
+
+Validation on 2026-09-24: 671 isolated regressions passed, all CI strict-mypy
+targets and Ruff passed, 39 agent evals and 100 mapped regression criteria passed.
+The latter is test evidence, not proof of production integrations or L6.
+The PostgreSQL read-only counter probe returned 114 reconciled historical failures,
+0 actionable failures, 5 operational blocks and 90 configuration waits in 64.1 ms;
+296 queued proposals were split into 181 configuration and 115 review/development
+proposals. No task or improvement was completed, retried or deleted by the probe.
+The daily PDF was rendered and visually checked, including visible zero values.
+Release/CI/runtime SHA evidence belongs to the associated PR; deployment must not
+be inferred from these local tests. Perplexity authentication and incident-record
+deduplication are separate unresolved work, not fixed by this reporting change.
+
 `DAILY_OWNER_PACK_HOUR=18` and `DAILY_OWNER_PACK_TIMEZONE=Europe/Moscow` create one
 daily Orchestrator task that produces four separate checksum-bound PDFs under the
 protected document root: public organization prospects, CRM leads, a 24-hour

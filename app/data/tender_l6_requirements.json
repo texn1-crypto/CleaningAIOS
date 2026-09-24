@@ -787,9 +787,12 @@
       "priority": "P1",
       "status": "partial",
       "evidence": [
-        "app/observability.py"
+        "app/observability.py",
+        "app/backlog_health.py",
+        "tests/test_backlog_health.py",
+        "docs/PRODUCTION.md"
       ],
-      "notes": ""
+      "notes": "Operational API, Telegram, Mission Control and daily PDF distinguish persisted reconciled failures, unknown actionable failures and explicit configuration waits without rewriting task history. Improvement source counters are proposal provenance, not provider failures. Legacy snapshots remain unclassified; optional workspace handoff credentials do not conceal an unresolved business failure. This remains partial: full observability/SLO and external integration verification are not established by these counters."
     },
     {
       "id": 81,
