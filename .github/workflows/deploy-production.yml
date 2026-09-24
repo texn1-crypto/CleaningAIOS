@@ -32,7 +32,7 @@ jobs:
       PRODUCTION_MANAGEMENT_CONTACT_REGIONS: ${{ vars.PRODUCTION_MANAGEMENT_CONTACT_REGIONS || 'Санкт-Петербург|Ленинградская область' }}
     steps:
       - name: Check out the tested release
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0

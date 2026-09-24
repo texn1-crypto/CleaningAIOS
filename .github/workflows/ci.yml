@@ -22,7 +22,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build the production application image
         run: >-
           docker build
@@ -51,7 +51,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with: {python-version: "3.12"}
       - run: pip install -r requirements-dev.txt
