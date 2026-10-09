@@ -1,6 +1,6 @@
 -r requirements.txt
 
-pip-audit==2.9.0
+pip-audit==2.10.1
 mypy==1.18.2
 pytest==9.0.3
 pytest-cov==6.0.0
