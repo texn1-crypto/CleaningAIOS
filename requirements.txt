@@ -10,7 +10,7 @@ alembic==1.14.1
 openpyxl==3.1.5
 reportlab==5.0.1
 python-docx==1.2.0
-pypdf==6.16.2
+pypdf==6.19.0
 # Explicit security floors for transitive runtime packages.
 click==8.3.3
 pillow==12.3.0
